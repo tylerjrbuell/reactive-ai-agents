@@ -50,7 +50,10 @@ class GroqModelProvider(BaseModelProvider):
         completion = client.chat.completions.create(
             model=self.model,
             tools=kwargs["tools"] if kwargs.get("tools") else None,
-            messages=[{"role": "user", "content": kwargs["prompt"]}],
+            messages=[
+                {"role": "system", "content": kwargs["system"]},
+                {"role": "user", "content": kwargs["prompt"]},
+            ],
             response_format=(
                 {"type": "json_object"}
                 if kwargs.get("format") == "json"

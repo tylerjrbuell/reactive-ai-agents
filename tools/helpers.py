@@ -4,15 +4,15 @@ import docstring_parser
 from typing import get_type_hints
 
 
-def ollama_tool(description=None, parameters=None):
+def tool(description=None, parameters=None):
     """
-    A decorator to convert a Python function into Ollama tool JSON metadata.
+    A decorator to convert a Python function into tool JSON metadata.
 
     :param description: Optional. Description of the function's purpose.
                         If not provided, extracted from the function's docstring.
     :param parameters: Optional. JSON schema for function parameters.
                         If not provided, inferred from the function's signature.
-    :return: str: A decorator that adds Ollama tool JSON metadata to the function.
+    :return: str: A decorator that adds the tool JSON metadata to the function.
     """
 
     def decorator(func):
@@ -48,7 +48,7 @@ def ollama_tool(description=None, parameters=None):
 
         # Attach the Ollama tool metadata as an attribute
         wrapper.__setattr__(
-            "ollama_tool_definition",
+            "tool_definition",
             {
                 "type": "function",
                 "function": {

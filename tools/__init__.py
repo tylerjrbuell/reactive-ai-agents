@@ -1,7 +1,9 @@
 from typing import Any, Dict, List
-from tools.helpers import ollama_tool
+from tools.helpers import tool
 from bs4 import BeautifulSoup
 import ollama
+import asyncio
+import aiohttp
 import requests
 import fake_useragent
 from urllib.parse import urlparse
@@ -12,11 +14,10 @@ import sqlite3
 from pydantic import BaseModel
 from markitdown import MarkItDown
 
-
 conn = sqlite3.connect("./agent.db")
 
 
-@ollama_tool()
+@tool()
 async def query_sqlite_database(query: str) -> List[Dict[str, Any]] | str:
     """
     Query the database and return the results.
@@ -33,7 +34,7 @@ async def query_sqlite_database(query: str) -> List[Dict[str, Any]] | str:
     return cursor.fetchall()
 
 
-@ollama_tool()
+@tool()
 async def count_sqlite_records(
     table_name: str, conditions: Dict[str, Any]
 ) -> int | str:
@@ -62,7 +63,7 @@ async def count_sqlite_records(
         return f"Error counting records: {e}"
 
 
-@ollama_tool()
+@tool()
 async def get_sqlite_table_names() -> List[str]:
     """
     Get the names of all tables in the database.
@@ -75,7 +76,7 @@ async def get_sqlite_table_names() -> List[str]:
     return [row[0] for row in cursor.fetchall()]
 
 
-@ollama_tool()
+@tool()
 async def get_sqlite_table_schema(table_name: str) -> str | None:
     """
     Get the schema of a table in the database.
@@ -92,7 +93,7 @@ async def get_sqlite_table_schema(table_name: str) -> str | None:
     return ", ".join([f"{row[1]} {row[2]}" for row in cursor.fetchall()])
 
 
-@ollama_tool()
+@tool()
 async def create_sqlite_table(table_name: str, schema: str) -> str:
     """
     Create a new table in the database.
@@ -113,7 +114,7 @@ async def create_sqlite_table(table_name: str, schema: str) -> str:
         return f"Error creating table: {e}"
 
 
-@ollama_tool(description="Create a new record in the database")
+@tool(description="Create a new record in the database")
 async def create_sqlite_record(table: str, data: Dict[str, Any]) -> str:
     """
     Create a new record in the specified table.
@@ -139,7 +140,7 @@ async def create_sqlite_record(table: str, data: Dict[str, Any]) -> str:
     return "Record created successfully"
 
 
-@ollama_tool(description="Read records from the database")
+@tool(description="Read records from the database")
 async def read_sqlite_records(
     table: str, conditions: Dict[str, Any] | None = None
 ) -> List[Dict[str, Any]]:
@@ -178,7 +179,7 @@ async def read_sqlite_records(
     return [dict(row) for row in cursor.fetchall()]
 
 
-@ollama_tool(description="Update a record in the database")
+@tool(description="Update a record in the database")
 async def update_sqlite_record(
     table: str, data: Dict[str, Any], conditions: Dict[str, Any]
 ) -> str:
@@ -206,7 +207,7 @@ async def update_sqlite_record(
     return "Record updated successfully"
 
 
-@ollama_tool(description="Delete a record from the database")
+@tool(description="Delete a record from the database")
 async def delete_sqlite_record(table: str, conditions: Dict[str, Any]) -> str:
     """
     Delete a record from the specified table.
@@ -233,7 +234,7 @@ async def delete_sqlite_record(table: str, conditions: Dict[str, Any]) -> str:
         return f"Error deleting record: {e}"
 
 
-@ollama_tool()
+@tool()
 async def url_to_markdown(url: str):
     """
     Convert a URL to Markdown format.
@@ -266,7 +267,7 @@ async def google_search_api(query, num_results=1):
     """
     url = "https://www.googleapis.com/customsearch/v1"
     params = {
-        "key": os.environ.get("GOOGLE_API_KEY"),
+        "key": os.environ.get("GOOGLE_SEARCH_API_KEY"),
         "cx": "a60f759067ab94c36",
         "q": query.replace('"', ""),
         "num": num_results,
@@ -314,7 +315,7 @@ async def google_search_scrape(query, num_results=2):
     return results[:num_results]
 
 
-@ollama_tool()
+@tool()
 async def get_current_datetime():
     """
     Get the current date and time in the format "YYYY-MM-DD HH:MM:SS".
@@ -327,7 +328,55 @@ async def get_current_datetime():
     return f"Todays date and time is: {datetime.datetime.now().strftime('%A, %Y-%m-%d %H:%M:%S')}"
 
 
-@ollama_tool()
+async def summarize_search_result(result: dict, query: str):
+    if result.get("error"):
+        return result["error"]
+    if not result.get("link"):
+        return ""
+    print(f"Summarizing search result: {result['link']}")
+
+    print("Fetching markdown content...")
+
+    mkdown = await url_to_markdown(result["link"])
+    if not mkdown:
+        print("Fetching raw site content...")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(result["link"]) as res:
+                if res.status != 200:
+                    return "Error fetching site content"
+                text = await res.text()
+        soup = BeautifulSoup(text, "html.parser")
+        website_text = soup.get_text(separator=" ", strip=True)
+        summary_content = website_text.strip()
+    else:
+        summary_content = mkdown.strip()
+    print(f"Computing summary...")
+    ollama_client = ollama.AsyncClient()
+    summary = await ollama_client.chat(
+        model="llama3.2",
+        messages=[
+            {
+                "role": "system",
+                "content": """
+                You are an expert at extracting any relevant information from a website that would help answer a query.
+                Retain all source content, links and urls relevant to the query in your summary.
+                Try to be as concise as possible, only retaining information that is relevant to the query. Keep the summary as short as possible.
+                """,
+            },
+            {
+                "role": "user",
+                "content": f"Summarize the following website content optimized for the QUERY: '{query}'\n CONTENT: '{summary_content}'.",
+            },
+        ],
+        stream=False,
+        options={"num_gpu": 256, "temperature": 0, "num_ctx": 8000},
+    )
+    if summary.get("message"):
+        return summary["message"]["content"]
+    return f"No Summary found for query {query}"
+
+
+@tool()
 async def web_search(query: str):
     """
     Search the web using Google Custom Search JSON API.
@@ -338,58 +387,18 @@ async def web_search(query: str):
     Returns:
         list: List of search results
     """
+
     print(f"Searching web for: {query}")
-    search_summaries = []
     results = await google_search_api(query, num_results=2)
     if not results:
         print("Scraping data from Google Search...")
         results = await google_search_scrape(query, num_results=2)
-    for result in results:
-        if result.get("error"):
-            search_summaries.append(result["error"])
-        if not result.get("link"):
-            continue
-
-        mkdown = await url_to_markdown(result["link"])
-        if not mkdown:
-            print("Fetching raw site content...")
-            # Parse the HTML content with BeautifulSoup
-            res = requests.get(result["link"])
-            if res.status_code != 200:
-                continue
-            soup = BeautifulSoup(res.text, "html.parser")
-            website_text = soup.get_text(separator=" ", strip=True)
-            summary_content = website_text.strip()
-        else:
-            print("Fetching markdown content...")
-            summary_content = mkdown.strip()
-
-        print(f"Summarizing site: {result['link']}")
-        summary = ollama.chat(
-            model="llama3.2",
-            messages=[
-                {
-                    "role": "system",
-                    "content": """
-                    You are an expert at extracting the most relevant information from website content for a given query.
-                    Retain all source content, links and urls relevant to the query in your summary.
-                    Try to be as concise as possible.
-                    """,
-                },
-                {
-                    "role": "user",
-                    "content": f"Summarize the following website content optimized for the this query: '{query}' using the following website content: {summary_content}. Include source links and urls relevant to the query in your summary. Do not answer the query directly, only supply the most relevant information.",
-                },
-            ],
-            stream=False,
-            options={"num_gpu": 256, "temperature": 0, "num_ctx": 8000},
-        )
-        if summary.get("message"):
-            search_summaries.append(summary["message"]["content"])
+    summary_coroutines = [summarize_search_result(result, query) for result in results]
+    search_summaries = await asyncio.gather(*summary_coroutines)
     return "\n".join(search_summaries) if search_summaries else ""
 
 
-@ollama_tool()
+@tool()
 async def get_current_cryptocurrency_market_data(currency_id: str):
     """
     Get the real-time market data for a specific coin identifier of crypto currency vs USD.
@@ -416,7 +425,7 @@ async def get_current_cryptocurrency_market_data(currency_id: str):
         return f"Error: Invalid identifier, expected a string with a single coin identifier but got: {type(eval(str(currency_id)))}"
 
 
-@ollama_tool()
+@tool()
 async def get_user_input(question: str) -> str:
     """
     Get input from user for for a specific question to help complete the task.
@@ -435,7 +444,7 @@ async def get_user_input(question: str) -> str:
     return f"User answer to the question: {question} is: {(input(f'{question}: '))}"
 
 
-@ollama_tool()
+@tool()
 async def execute_python_code(code: str, return_value_variable_name: str) -> Any:
     """
     Execute Python code and optionally save the return value in a variable with the same name as the return_value_variable_name
@@ -490,7 +499,7 @@ async def execute_python_code(code: str, return_value_variable_name: str) -> Any
         return f"Execution Error: {e}"
 
 
-@ollama_tool()
+@tool()
 async def get_url_content(url: str) -> str | None:
     """
     Get the content of a URL in markdown format if possible otherwise raw HTML.
@@ -508,7 +517,7 @@ async def get_url_content(url: str) -> str | None:
     return soup.get_text(separator=" ", strip=True)
 
 
-@ollama_tool()
+@tool()
 async def list_directories(path: str) -> str:
     """
     List the directories in a given path.
@@ -523,7 +532,7 @@ async def list_directories(path: str) -> str:
     return "\n".join(os.listdir(path))
 
 
-@ollama_tool()
+@tool()
 async def move_directory(source_path: str, destination_path: str) -> str:
     """
     Move a directory from one path to another.
@@ -540,7 +549,7 @@ async def move_directory(source_path: str, destination_path: str) -> str:
     return f"Directory moved from {source_path} to {destination_path}"
 
 
-@ollama_tool()
+@tool()
 async def new_directory(path: str) -> str:
     """
     Create a new directory at a given path.
@@ -556,7 +565,7 @@ async def new_directory(path: str) -> str:
     return f"Directory created at {path}"
 
 
-@ollama_tool()
+@tool()
 async def read_file(path: str) -> str:
     """
     Read the contents of a file and return it as a string.

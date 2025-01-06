@@ -17,6 +17,7 @@ bs4 = "^0.0.2"
 groq = "^0.13.0"
 markitdown = "^0.0.1a3"
 pyodbc = "^5.2.0"
+aiohttp = "^3.11.11"
 
 
 [build-system]
