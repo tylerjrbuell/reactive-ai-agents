@@ -18,6 +18,10 @@ class BaseModelProvider(ABC, metaclass=AutoRegisterModelMeta):
         self.model = model
 
     @abstractmethod
+    async def validate_model(self, **kwargs) -> dict:
+        pass
+
+    @abstractmethod
     async def get_chat_completion(self, **kwargs) -> dict:
         pass
 

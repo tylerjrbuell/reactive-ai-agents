@@ -18,16 +18,13 @@ class BaseReactAgent:
         self,
         name: str,
         provider_model: str,
-        role: str = "",
-        purpose: str = "",
-        persona: str = "",
-        response_format: str = "",
         instructions: str = "",
         tools: List[Any] = [],
         tool_use: bool = True,
         reflect: bool = False,
         min_completion_score: float = 1.0,
         max_iterations: int | None = None,
+        log_level: str = "info",
     ):
         ## Agent Attributes
         self.name: str = name
@@ -36,10 +33,6 @@ class BaseReactAgent:
         )
         self.reflect: bool = reflect
         self.initial_task: str = ""
-        self.purpose: str = purpose
-        self.role: str = role
-        self.persona: str = persona
-        self.response_format: str = response_format
         self.instructions: str = instructions
         self.tools: List[Any] = tools if tools else []
         self.tool_use = tool_use
@@ -58,7 +51,7 @@ class BaseReactAgent:
 
         ## Logging
         self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(logging.INFO)
+        self.logger.setLevel(getattr(logging, log_level.upper()))
         formatter = logging.Formatter(f"{self.name}:%(levelname)s - %(message)s")
         console_handler = logging.StreamHandler()
         console_handler.setFormatter(formatter)
@@ -116,18 +109,17 @@ class BaseReactAgent:
                 tools=self.tool_signatures if tool_use else [],
                 **kwargs,
             )
-            print(result)
             if not result:
                 return None
-
             message_content = result["message"].get("content")
+            if not reflect:
+                self.logger.debug(f"Result: {message_content}")
             tool_calls = result["message"].get("tool_calls")
-
             if message_content and remember_messages:
                 self.messages.append({"role": "assistant", "content": message_content})
             elif tool_calls:
                 await self._process_tool_calls(tool_calls=tool_calls)
-                return await self._think_chain()
+                return await self._think_chain(tool_use=False)
 
             return result
         except Exception as e:
@@ -154,6 +146,7 @@ class BaseReactAgent:
                         "content": str(tool_result),
                     }
                 )
+                self.logger.debug(self.messages[-1])
                 processed_tool_calls.append(str(tool_call))
 
     async def _execute_tool(self, tool_call):
@@ -185,18 +178,21 @@ class BaseReactAgent:
                 return f"Tool Execution Error: {e}"
 
     async def _run_task(self, task, tool_use: bool = True) -> dict | None:
-        # print(
-        #     f"Observation: {self.memory[-1]['tool_suggestion'] if self.memory else ''}"
-        # )
+        print(
+            f"Observation: {self.memory[-1]['tool_suggestion'] if self.memory else ''}"
+        )
         self.messages.append(
             {
                 "role": "user",
                 "content": f"""
+                
+                 
                 TASK: {task}
                 
-                 {f"Make corrections to the previous Attempt Failure: {self.memory[-1]['failed_reason']}" if self.memory else ''}
+                {f"Previous Attempt Failure Reason: {self.memory[-1]['failed_reason']}" if self.memory else ''}
+                {f"Reflection Agent Suggested Improvement: {self.memory[-1]['tool_suggestion'] if self.memory else ''}"}
+                 
                 """.strip(),
-                # SUGGESTED ACTION: {self.memory[-1]['tool_suggestion'] if self.memory else ''}
             }
         )
         result = await self._think_chain(tool_use=tool_use)
@@ -244,30 +240,37 @@ class BaseReactAgent:
         running_task = task
         self.logger.info(f"Starting New Task: {running_task}")
         iterations = 0
-        plan = await self._plan(task=task)
-        if not plan:
-            self.logger.info(f"{self.name} Failed\n")
-            self.logger.info(f"Task: {task}\n")
-            return
-        plan = json.loads(plan)
-        print(f"Executing plan: ")
-        for step in plan["plan"]:
-            print(f"{list(step.keys())[0]}: {step.get(list(step.keys())[0])}")
-        # plan["plan"].append(self.initial_task)
-        for step in plan["plan"]:
+        while True if self.max_iterations is None else iterations < self.max_iterations:
             iterations += 1
-            step_type = list(step.keys())[0]
-            self.logger.info(
-                f"Running {step_type} Step {iterations}: {step.get(step_type)}"
-            )
-            tool_use = True if step_type == "action" else False
-            running_task = step.get("action", step.get("thought", self.initial_task))
-            result = await self._run_task(task=running_task, tool_use=tool_use)
+            print(f"Running Iteration: {iterations}")
+            # plan = await self._plan(task=task)
+            # if not plan:
+            #     self.logger.info(f"{self.name} Failed\n")
+            #     self.logger.info(f"Task: {task}\n")
+            #     return
+            # plan = json.loads(plan)
+            # print(f"Executing plan: ")
+            # for step in plan["plan"]:
+            #     print(f"{list(step.keys())[0]}: {step.get(list(step.keys())[0])}")
+            # # plan["plan"].append(self.initial_task)
+            # for step in plan["plan"]:
+            #     iterations += 1
+            #     step_type = list(step.keys())[0]
+            #     self.logger.info(
+            #         f"Running {step_type} Step {iterations}: {step.get(step_type)}"
+            #     )
+            #     tool_use = True if step_type == "action" else False
+            #     running_task = step.get("action", step.get("thought", self.initial_task))
+            #     result = await self._run_task(task=running_task, tool_use=tool_use)
+            #     if not result:
+            #         self.logger.info(f"{self.name} Failed\n")
+            #         self.logger.info(f"Task: {task}\n")
+            #         break
+            result = await self._run_task(task=running_task)
             if not result:
                 self.logger.info(f"{self.name} Failed\n")
                 self.logger.info(f"Task: {task}\n")
                 break
-
             if self.reflect:
                 reflection = await self._reflect(task, result=result)
                 if not reflection:

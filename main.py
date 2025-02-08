@@ -9,23 +9,24 @@ warnings.simplefilter("ignore", ResourceWarning)
 dotenv.load_dotenv()
 
 
-if __name__ == "__main__":
+async def main():
     agent = BaseReactAgent(
         name="TaskAgent",
-        provider_model="ollama:llama3.2",
-        # provider_model="groq:llama-3.3-70b-versatile",
-        purpose="Do anything in your power to complete the task",
-        role="Task Agent",
-        persona="You are very smart witty and resourceful AI",
-        instructions="""
-        Think through the steps to complete the task and select a tool or series of tools to complete the task as efficiently as possible.
-        """,
-        response_format="Respond in clear and concise Markdown format unless otherwise specified.",
-        min_completion_score=0.8,
+        provider_model="ollama:qwen2.5:14b",
+        min_completion_score=0.9,
         reflect=True,
-        max_iterations=5,
-        tools=[web_search],
+        log_level="info",
+        max_iterations=10,
+        tools=[web_search, get_url_content, get_user_input],
     )
     initial_task = input("\nEnter your initial task: ")
-    result = asyncio.run(agent.run(initial_task))
+    result = await agent.run(initial_task)
     print(f"{agent.name} result: {result}")
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n\nExiting...")
+        exit()

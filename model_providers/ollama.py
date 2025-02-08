@@ -1,6 +1,7 @@
 from typing import Literal, Sequence
 from .base import BaseModelProvider
 import ollama
+import asyncio
 
 
 class OllamaModelProvider(BaseModelProvider):
@@ -10,7 +11,15 @@ class OllamaModelProvider(BaseModelProvider):
         self.name = name
         self.model = model
         self.client = ollama.AsyncClient()
+        self.validate_model()
         super().__init__(model=model, name=self.name)
+
+    def validate_model(self, **kwargs):
+        models = ollama.Client().list().models
+        if self.model not in [m.model for m in models]:
+            raise Exception(
+                f"Model {self.model} is either not supported or has not been downloaded from Ollama. Run `ollama pull {self.model}` to download the model."
+            )
 
     async def get_chat_completion(self, **kwargs) -> ollama.ChatResponse:
         try:

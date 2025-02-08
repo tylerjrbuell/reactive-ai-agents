@@ -11,7 +11,13 @@ class GroqModelProvider(BaseModelProvider):
         self.name = __class__.id
         self.model = model
         self.client = Groq(api_key=os.environ["GROQ_API_KEY"])
+        self.validate_model()
         super().__init__(model=model, name=self.name)
+
+    def validate_model(self, **kwargs):
+        supported_models = self.client.models.list().model_dump().get("data", [])
+        if self.model not in [m.get("id") for m in supported_models]:
+            raise Exception(f"Model {self.model} is not currently supported by Groq.")
 
     async def get_chat_completion(
         self,

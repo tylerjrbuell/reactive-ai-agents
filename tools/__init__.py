@@ -114,7 +114,7 @@ async def create_sqlite_table(table_name: str, schema: str) -> str:
         return f"Error creating table: {e}"
 
 
-@tool(description="Create a new record in the database")
+@tool()
 async def create_sqlite_record(table: str, data: Dict[str, Any]) -> str:
     """
     Create a new record in the specified table.
@@ -140,16 +140,16 @@ async def create_sqlite_record(table: str, data: Dict[str, Any]) -> str:
     return "Record created successfully"
 
 
-@tool(description="Read records from the database")
+@tool()
 async def read_sqlite_records(
-    table: str, conditions: Dict[str, Any] | None = None
+    table: str, conditions: Dict[str, str] | None = None
 ) -> List[Dict[str, Any]]:
     """
     Read records from the specified table with optional conditions.
 
     Example usage:
         read_sqlite_records("table_name")
-        read_sqlite_records("table_name", {"column_name": "condition"})
+        read_sqlite_records("table_name", {"<column_name>": "<operator> <value>"})
 
     Real example:
         read_sqlite_records("students", {"age": "> 18"})
@@ -157,7 +157,7 @@ async def read_sqlite_records(
 
     Args:
         table (str): The name of the table to read records from.
-        conditions (Dict[str, Any], optional): A dictionary of conditions to filter the records. Defaults to None.
+        conditions (Dict[str, str], optional): A dictionary of conditions to filter the records. Defaults to None.
 
     Returns:
         List[Dict[str, Any]]: A list of dictionaries representing the records.
@@ -169,17 +169,21 @@ async def read_sqlite_records(
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     if conditions:
-        where_clause = " AND ".join([f"{k} ?" for k in conditions.keys()])
+        where_clause = " AND ".join(
+            [
+                f"{k} {v.split(' ')[0] or '='} {v.split(' ')[1]}"
+                for k, v in conditions.items()
+            ]
+        )
         cursor.execute(
             f"SELECT * FROM {table} WHERE {where_clause}",
-            tuple(conditions.values()),
         )
     else:
         cursor.execute(f"SELECT * FROM {table}")
     return [dict(row) for row in cursor.fetchall()]
 
 
-@tool(description="Update a record in the database")
+@tool()
 async def update_sqlite_record(
     table: str, data: Dict[str, Any], conditions: Dict[str, Any]
 ) -> str:
@@ -207,14 +211,22 @@ async def update_sqlite_record(
     return "Record updated successfully"
 
 
-@tool(description="Delete a record from the database")
-async def delete_sqlite_record(table: str, conditions: Dict[str, Any]) -> str:
+@tool()
+async def delete_sqlite_record(table: str, conditions: Dict[str, str]) -> str:
     """
     Delete a record from the specified table.
 
+    Example usage:
+        delete_sqlite_record("table_name")
+        delete_sqlite_record("table_name", {"<column_name>": "<operator> <value>"})
+
+    Real example:
+        delete_sqlite_record("students", {"age": "> 18"})
+        delete_sqlite_record("students", {"name": "= 'John'"})
+
     Args:
         table (str): The name of the table to delete the record from.
-        conditions (Dict[str, Any]): A dictionary of conditions to identify which records to delete.
+        conditions (Dict[str, str]): A dictionary of conditions to identify which records to delete.
 
     Returns:
         str: A message indicating the successful deletion of the record.
@@ -223,13 +235,19 @@ async def delete_sqlite_record(table: str, conditions: Dict[str, Any]) -> str:
     try:
         conditions = eval(str(conditions)) if type(conditions) == str else conditions
         cursor = conn.cursor()
-        where_clause = " AND ".join([f"{k} = ?" for k in conditions.keys()])
-        cursor.execute(
-            f"DELETE FROM {table} { f'WHERE {where_clause}' if conditions.values() else ''}",
-            tuple(conditions.values()),
-        )
-        conn.commit()
-        return "Record deleted successfully"
+        if conditions:
+            where_clause = " AND ".join(
+                [
+                    f"{k} {v.split(' ')[0] or '='} {v.split(' ')[1]}"
+                    for k, v in conditions.items()
+                ]
+            )
+            cursor.execute(
+                f"DELETE FROM {table} WHERE {where_clause}",
+            )
+            conn.commit()
+            return "Record deleted successfully"
+        raise Exception("No conditions provided")
     except Exception as e:
         return f"Error deleting record: {e}"
 
@@ -353,12 +371,13 @@ async def summarize_search_result(result: dict, query: str):
     print(f"Computing summary...")
     ollama_client = ollama.AsyncClient()
     summary = await ollama_client.chat(
-        model="llama3.2",
+        model="qwen2.5:14b",
         messages=[
             {
                 "role": "system",
                 "content": """
                 You are an expert at extracting any relevant information from a website that would help answer a query.
+                Do not attempt to answer the query, rather focus on extracting relevant information to the query so that another AI Agent can answer the query with the information you extract.
                 Retain all source content, links and urls relevant to the query in your summary.
                 Try to be as concise as possible, only retaining information that is relevant to the query. Keep the summary as short as possible.
                 """,
@@ -510,6 +529,7 @@ async def get_url_content(url: str) -> str | None:
     Returns:
         str: The markdown or raw HTML content of the URL.
     """
+    print(f"Fetching content from: {url}")
     mkdown = await url_to_markdown(url)
     if mkdown:
         return mkdown
