@@ -1,7 +1,6 @@
 from typing import Literal, Sequence
 from .base import BaseModelProvider
 import ollama
-import asyncio
 
 
 class OllamaModelProvider(BaseModelProvider):
@@ -40,4 +39,6 @@ class OllamaModelProvider(BaseModelProvider):
             raise Exception(f"Ollama Chat Completion Error: {e}")
 
     async def get_completion(self, **kwargs):
-        return ollama.generate(model=self.model, **kwargs)
+        if not kwargs.get("model"):
+            kwargs["model"] = self.model
+        return ollama.generate(**kwargs)

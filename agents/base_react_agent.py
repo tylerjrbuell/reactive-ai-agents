@@ -3,6 +3,7 @@ import logging
 from typing import List, Dict, Any
 
 from pydantic import BaseModel
+from tools.base import Tool
 from model_providers.base import BaseModelProvider
 from model_providers.factory import ModelProviderFactory
 from prompts.agent_prompts import (
@@ -34,9 +35,9 @@ class BaseReactAgent:
         self.reflect: bool = reflect
         self.initial_task: str = ""
         self.instructions: str = instructions
-        self.tools: List[Any] = tools if tools else []
+        self.tools: List[Tool] = [Tool(tool) for tool in tools] if tools else []
         self.tool_use = tool_use
-        self.tool_map: Dict[str, Any] = {tool.__name__: tool for tool in self.tools}
+        self.tool_map: Dict[str, Tool] = {tool.name: tool for tool in self.tools}
         self.tool_signatures: List[Dict[str, Any]] = [
             tool.tool_definition for tool in self.tools
         ]
@@ -126,13 +127,13 @@ class BaseReactAgent:
             self.logger.error(f"Chat Completion Error: {e}")
             return
 
-    async def _process_tool_calls(self, tool_calls):
+    async def _process_tool_calls(self, tool_calls) -> None:
         processed_tool_calls = []
         for tool_call in tool_calls:
             if str(tool_call) in processed_tool_calls:
                 print("Tool call already processed")
                 continue
-            tool_result = await self._execute_tool(tool_call=tool_call)
+            tool_result = await self._use_tool(tool_call=tool_call)
             if tool_result is not None:
                 self.messages.append(
                     {
@@ -146,36 +147,26 @@ class BaseReactAgent:
                         "content": str(tool_result),
                     }
                 )
-                self.logger.debug(self.messages[-1])
                 processed_tool_calls.append(str(tool_call))
 
-    async def _execute_tool(self, tool_call):
+    async def _use_tool(self, tool_call) -> dict | None:
         tool_name = tool_call["function"]["name"]
-        if tool_name in self.tool_map.keys():
+        tool = self.tool_map.get(tool_name)
+        if tool:
             self.logger.info(f"Executing tool: {tool_name}")
-            tool_function = self.tool_map.get(tool_name, None)
             params = (
                 tool_call["function"]["arguments"]
                 if type(tool_call["function"]["arguments"]) is dict
                 else json.loads(tool_call["function"]["arguments"])
             )
-            try:
-                result = await tool_function(**params)
-                self.tool_history.append(
-                    {"name": tool_name, "params": params, "result": result}
-                )
-                self.logger.debug(f"Tool Result: {result}")
-                return result
-            except Exception as e:
-                self.logger.debug(f"Tool Execution Error: {e}")
-                self.tool_history.append(
-                    {
-                        "name": tool_name,
-                        "params": params,
-                        "result": f"Tool Execution Error: {e}",
-                    }
-                )
-                return f"Tool Execution Error: {e}"
+            result = await tool.use(params=tool_call["function"]["arguments"])
+            self.tool_history.append(
+                {"name": tool.name, "params": params, "result": result}
+            )
+            self.logger.debug(f"Tool Result: {result}")
+            return result
+        print(f"Tool {tool_name} not found in available tools: {self.tool_map.keys()}")
+        return None
 
     async def _run_task(self, task, tool_use: bool = True) -> dict | None:
         print(
@@ -189,8 +180,8 @@ class BaseReactAgent:
                  
                 TASK: {task}
                 
-                {f"Previous Attempt Failure Reason: {self.memory[-1]['failed_reason']}" if self.memory else ''}
-                {f"Reflection Agent Suggested Improvement: {self.memory[-1]['tool_suggestion'] if self.memory else ''}"}
+                {f"Learn from your previous Attempt Failure: ({self.memory[-1]['failed_reason']})" if self.memory else ''}
+                {f"Consider the Reflection Agent's Suggested Improvement: ({self.memory[-1]['tool_suggestion'] if self.memory else ''})"}
                  
                 """.strip(),
             }

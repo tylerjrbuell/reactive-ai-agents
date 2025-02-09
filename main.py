@@ -1,5 +1,5 @@
 from agents.base_react_agent import BaseReactAgent
-from tools import *
+from tools.general import *
 import asyncio
 import dotenv
 import warnings
