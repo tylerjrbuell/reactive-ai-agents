@@ -1,4 +1,3 @@
-from typing import Literal, Sequence
 from .base import BaseModelProvider
 import ollama
 
@@ -15,7 +14,11 @@ class OllamaModelProvider(BaseModelProvider):
 
     def validate_model(self, **kwargs):
         models = ollama.Client().list().models
-        if self.model not in [m.model for m in models]:
+        model = self.model
+        if ":" not in self.model:
+            model = f"{self.model}:latest"
+        available_models = [m.model for m in models]
+        if model not in available_models:
             raise Exception(
                 f"Model {self.model} is either not supported or has not been downloaded from Ollama. Run `ollama pull {self.model}` to download the model."
             )

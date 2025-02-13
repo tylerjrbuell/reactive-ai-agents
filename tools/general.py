@@ -371,7 +371,7 @@ async def summarize_search_result(result: dict, query: str):
     print(f"Computing summary...")
     ollama_client = ollama.AsyncClient()
     summary = await ollama_client.chat(
-        model="qwen2.5:14b",
+        model="deepseek-r1:14b",
         messages=[
             {
                 "role": "system",
@@ -379,7 +379,8 @@ async def summarize_search_result(result: dict, query: str):
                 You are an expert at extracting any relevant information from a website that would help answer a query.
                 Do not attempt to answer the query, rather focus on extracting relevant information to the query so that another AI Agent can answer the query with the information you extract.
                 Retain all source content, links and urls relevant to the query in your summary.
-                Try to be as concise as possible, only retaining information that is relevant to the query. Keep the summary as short as possible.
+                Try to be as concise as possible, only retaining information that is relevant to the query, but do not leave out any information that is relevant to the query.
+                Keep the summary as short as possible while still retaining all relevant information to the query.
                 """,
             },
             {
@@ -388,7 +389,7 @@ async def summarize_search_result(result: dict, query: str):
             },
         ],
         stream=False,
-        options={"num_gpu": 256, "temperature": 0, "num_ctx": 8000},
+        options={"num_gpu": 256, "temperature": 0, "num_ctx": 10000},
     )
     if summary.get("message"):
         return summary["message"]["content"]
@@ -412,9 +413,10 @@ async def web_search(query: str):
     if not results:
         print("Scraping data from Google Search...")
         results = await google_search_scrape(query, num_results=2)
-    summary_coroutines = [summarize_search_result(result, query) for result in results]
-    search_summaries = await asyncio.gather(*summary_coroutines)
-    return "\n".join(search_summaries) if search_summaries else ""
+    # summary_coroutines = [summarize_search_result(result, query) for result in results]
+    # search_summaries = await asyncio.gather(*summary_coroutines)
+    # return "\n".join(search_summaries) if search_summaries else ""
+    return results
 
 
 @tool()
@@ -594,10 +596,30 @@ async def read_file(path: str) -> str:
         path (str): The path to the file to read.
 
     Returns:
-        str: The contents of the file as a string.
+        str: The contents of the file as a string. If an error occurs, it returns the error message.
     """
     try:
         with open(path, "r") as f:
             return f.read()
     except Exception as e:
         return f"Error reading file: {e}"
+
+
+@tool()
+async def write_markdown_file(path: str, content: str) -> str:
+    """
+    Write a markdown content to a file in Markdown format.
+
+    Args:
+        path (str): The path to the file to write.
+        content (str): The content to write to the file.
+
+    Returns:
+        str: A message indicating the successful writing of the file. If an error occurs, it returns the error message.
+    """
+    try:
+        with open(path, "w") as f:
+            f.write(content)
+        return f"File '{path}' written successfully."
+    except Exception as e:
+        return f"Error writing file: {e}"

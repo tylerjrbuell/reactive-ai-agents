@@ -1,4 +1,4 @@
-from agents.base_react_agent import BaseReactAgent
+from agents.react_agent import ReactAgent
 from tools.general import *
 import asyncio
 import dotenv
@@ -10,18 +10,27 @@ dotenv.load_dotenv()
 
 
 async def main():
-    agent = BaseReactAgent(
+    agent = ReactAgent(
         name="TaskAgent",
         provider_model="ollama:qwen2.5:14b",
-        min_completion_score=0.9,
+        min_completion_score=1,
         reflect=True,
-        log_level="info",
+        log_level="debug",
         max_iterations=10,
-        tools=[web_search, get_url_content, get_user_input],
+        tools=[
+            web_search,
+            get_url_content,
+            get_user_input,
+            write_markdown_file,
+            read_file,
+            list_directories,
+            get_current_datetime,
+        ],
     )
-    initial_task = input("\nEnter your initial task: ")
-    result = await agent.run(initial_task)
-    print(f"{agent.name} result: {result}")
+    while True:
+        initial_task = input("\nEnter your initial task: ")
+        result = await agent.run(initial_task)
+        print(f"{agent.name} result: {result}")
 
 
 if __name__ == "__main__":

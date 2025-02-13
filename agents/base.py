@@ -1,20 +1,17 @@
-import json
 import logging
-from typing import List, Dict, Any
-
-from pydantic import BaseModel
-from tools.base import Tool
+import json
 from model_providers.base import BaseModelProvider
-from model_providers.factory import ModelProviderFactory
 from prompts.agent_prompts import (
-    REACT_AGENT_SYSTEM_PROMPT,
-    TASK_REFLECTION_SYSTEM_PROMPT,
     TASK_PLANNING_SYSTEM_PROMPT,
-    TASK_TOOL_REVISION_SYSTEM_PROMPT,
+    TASK_REFLECTION_SYSTEM_PROMPT,
 )
+from model_providers.factory import ModelProviderFactory
+from tools.base import Tool
+from typing import List, Dict, Any
+from pydantic import BaseModel
 
 
-class BaseReactAgent:
+class Agent:
     def __init__(
         self,
         name: str,
@@ -22,7 +19,6 @@ class BaseReactAgent:
         instructions: str = "",
         tools: List[Any] = [],
         tool_use: bool = True,
-        reflect: bool = False,
         min_completion_score: float = 1.0,
         max_iterations: int | None = None,
         log_level: str = "info",
@@ -32,7 +28,6 @@ class BaseReactAgent:
         self.model_provider: BaseModelProvider = (
             ModelProviderFactory.get_model_provider(provider_model)
         )
-        self.reflect: bool = reflect
         self.initial_task: str = ""
         self.instructions: str = instructions
         self.tools: List[Tool] = [Tool(tool) for tool in tools] if tools else []
@@ -45,7 +40,7 @@ class BaseReactAgent:
         self.memory: list = []
         self.reflections: list = []
         self.reflection_messages: list = []
-        self.messages: list = [{"role": "system", "content": REACT_AGENT_SYSTEM_PROMPT}]
+        self.messages: list = [{"role": "system", "content": self.instructions}]
 
         self.min_completion_score = min_completion_score
         self.max_iterations = max_iterations
@@ -234,35 +229,12 @@ class BaseReactAgent:
         while True if self.max_iterations is None else iterations < self.max_iterations:
             iterations += 1
             print(f"Running Iteration: {iterations}")
-            # plan = await self._plan(task=task)
-            # if not plan:
-            #     self.logger.info(f"{self.name} Failed\n")
-            #     self.logger.info(f"Task: {task}\n")
-            #     return
-            # plan = json.loads(plan)
-            # print(f"Executing plan: ")
-            # for step in plan["plan"]:
-            #     print(f"{list(step.keys())[0]}: {step.get(list(step.keys())[0])}")
-            # # plan["plan"].append(self.initial_task)
-            # for step in plan["plan"]:
-            #     iterations += 1
-            #     step_type = list(step.keys())[0]
-            #     self.logger.info(
-            #         f"Running {step_type} Step {iterations}: {step.get(step_type)}"
-            #     )
-            #     tool_use = True if step_type == "action" else False
-            #     running_task = step.get("action", step.get("thought", self.initial_task))
-            #     result = await self._run_task(task=running_task, tool_use=tool_use)
-            #     if not result:
-            #         self.logger.info(f"{self.name} Failed\n")
-            #         self.logger.info(f"Task: {task}\n")
-            #         break
             result = await self._run_task(task=running_task)
             if not result:
                 self.logger.info(f"{self.name} Failed\n")
                 self.logger.info(f"Task: {task}\n")
                 break
-            if self.reflect:
+            if self._reflect:
                 reflection = await self._reflect(task, result=result)
                 if not reflection:
                     self.logger.info(f"{self.name} Failed\n")

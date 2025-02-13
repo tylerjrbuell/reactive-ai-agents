@@ -3,11 +3,11 @@ from typing import Type
 
 
 class AutoRegisterModelMeta(ABCMeta):
-    def __init__(cls, name, bases, attrs):
+    def __init__(cls, name: str, bases: tuple, attrs: dict):
         super().__init__(name, bases, attrs)
         # Exclude abstract classes
         if not any(base.__name__ == "ABC" for base in bases):
-            model_providers[attrs.get("id")] = cls
+            model_providers[attrs.get("id")] = cls  # type: ignore
             # print(f"Registered model provider: {attrs.get('id', name)}")
 
 
