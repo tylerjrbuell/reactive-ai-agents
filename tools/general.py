@@ -18,20 +18,44 @@ conn = sqlite3.connect("./agent.db")
 
 
 @tool()
-async def query_sqlite_database(query: str) -> List[Dict[str, Any]] | str:
+async def execute_sqlite_query(query: str) -> List[Any] | str:
     """
-    Query the database and return the results.
+    Execute a SQL query in the database.
 
     Args:
         query (str): The SQL query to execute.
 
     Returns:
-        List[Dict[str, Any]]: A list of dictionaries representing the query results.
+        str: A message indicating the successful execution of the query.
     """
-    print(f"Querying database: {query}")
-    cursor = conn.cursor()
-    cursor.execute(query)
-    return cursor.fetchall()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(query)
+        conn.commit()
+        return cursor.fetchall()
+    except Exception as e:
+        return f"Error executing query: {e}"
+
+
+@tool()
+async def alter_sqlite_table(table_name: str, schema: str) -> str:
+    """
+    Alter the schema of a table in the database.
+
+    Args:
+        table_name (str): The name of the table to alter.
+        schema (str): The new schema for the table.
+
+    Returns:
+        str: A message indicating the successful alteration of the table.
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"ALTER TABLE {table_name} {schema}")
+        conn.commit()
+        return f"Table {table_name} altered successfully with schema: {schema}"
+    except Exception as e:
+        return f"Error altering table: {e}"
 
 
 @tool()
@@ -48,7 +72,6 @@ async def count_sqlite_records(
     Returns:
         int: The number of records in the table or an error message.
     """
-    print(f"Counting records in table: {table_name}, conditions: {conditions}")
     try:
         conditions = eval(str(conditions)) if type(conditions) == str else conditions
         if conditions:
@@ -87,7 +110,6 @@ async def get_sqlite_table_schema(table_name: str) -> str | None:
     Returns:
         str: The schema of the table or None if the table does not exist.
     """
-    print(f"Getting schema for table: {table_name}")
     cursor = conn.cursor()
     cursor.execute(f"PRAGMA table_info({table_name})")
     return ", ".join([f"{row[1]} {row[2]}" for row in cursor.fetchall()])
@@ -126,7 +148,6 @@ async def create_sqlite_record(table: str, data: Dict[str, Any]) -> str:
     Returns:
         str: A message indicating the successful creation of the record.
     """
-    print(f"Creating record in table: {table}, data: {data}")
     # serialize the data if it comes in as json
     data = eval(str(data)) if type(data) == str else data
     cursor = conn.cursor()
@@ -165,7 +186,6 @@ async def read_sqlite_records(
     # serialize the conditions if they come in as json
     conditions = eval(str(conditions)) if type(conditions) == str else conditions
 
-    print(f"Reading records from table: {table}, conditions: {conditions}")
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     if conditions:
@@ -231,7 +251,6 @@ async def delete_sqlite_record(table: str, conditions: Dict[str, str]) -> str:
     Returns:
         str: A message indicating the successful deletion of the record.
     """
-    print(f"Deleting record from table: {table}, conditions: {conditions}")
     try:
         conditions = eval(str(conditions)) if type(conditions) == str else conditions
         cursor = conn.cursor()
@@ -408,7 +427,6 @@ async def web_search(query: str):
         list: List of search results
     """
 
-    print(f"Searching web for: {query}")
     results = await google_search_api(query, num_results=2)
     if not results:
         print("Scraping data from Google Search...")
@@ -431,7 +449,6 @@ async def get_current_cryptocurrency_market_data(currency_id: str):
         str: The current price of the crypto currency queried.
     """
 
-    print(f"Getting current crypto price for: '{currency_id}'")
     if type(currency_id) == str:
         try:
             url = f"https://api.coingecko.com/api/v3/coins/markets?ids={currency_id}&vs_currency=usd&order=market_cap_desc"
@@ -482,7 +499,6 @@ async def execute_python_code(code: str, return_value_variable_name: str) -> Any
     Returns:
         Any: The value of the return variable.
     """
-    print(f"Executing Python code with return variable: {return_value_variable_name}")
     import ast
 
     # User confirmation
@@ -531,7 +547,6 @@ async def get_url_content(url: str) -> str | None:
     Returns:
         str: The markdown or raw HTML content of the URL.
     """
-    print(f"Fetching content from: {url}")
     mkdown = await url_to_markdown(url)
     if mkdown:
         return mkdown
@@ -540,7 +555,7 @@ async def get_url_content(url: str) -> str | None:
 
 
 @tool()
-async def list_directories(path: str) -> str:
+async def list_directories(path: str) -> list:
     """
     List the directories in a given path.
 
@@ -548,10 +563,9 @@ async def list_directories(path: str) -> str:
         path (str): The path to list the directories from.
 
     Returns:
-        str: A string containing the list of directories in the path.
+        list: A list of directories in the path.
     """
-    print(f"Listing directories in: {path}")
-    return "\n".join(os.listdir(path))
+    return os.listdir(path)
 
 
 @tool()
@@ -566,7 +580,6 @@ async def move_directory(source_path: str, destination_path: str) -> str:
     Returns:
         str: A message indicating the successful movement of the directory.
     """
-    print(f"Moving directory from: {source_path} to: {destination_path}")
     shutil.move(source_path, destination_path)
     return f"Directory moved from {source_path} to {destination_path}"
 
@@ -582,7 +595,6 @@ async def new_directory(path: str) -> str:
     Returns:
         str: A message indicating the successful creation of the directory.
     """
-    print(f"Creating directory at: {path}")
     os.mkdir(path)
     return f"Directory created at {path}"
 
@@ -606,19 +618,20 @@ async def read_file(path: str) -> str:
 
 
 @tool()
-async def write_markdown_file(path: str, content: str) -> str:
+async def write_file(path: str, content: str, mode: str = "w") -> str:
     """
-    Write a markdown content to a file in Markdown format.
+    Write content to a file.
 
     Args:
         path (str): The path to the file to write.
         content (str): The content to write to the file.
+        mode (str, optional): The python file mode to open the file in. Defaults to "w". Use this to change the file mode for the purpose of appending to a file or overwriting a file for example.
 
     Returns:
         str: A message indicating the successful writing of the file. If an error occurs, it returns the error message.
     """
     try:
-        with open(path, "w") as f:
+        with open(path, mode) as f:
             f.write(content)
         return f"File '{path}' written successfully."
     except Exception as e:

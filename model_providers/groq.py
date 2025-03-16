@@ -36,11 +36,10 @@ class GroqModelProvider(BaseModelProvider):
                 response_format=(
                     {"type": "json_object"} if format == "json" else {"type": "text"}
                 ),
-                tool_choice="auto",
+                tool_choice="required" if tool_use else "none",
                 stream=stream,
                 **(options or {}),
             )
-
             if type(completion) is ChatCompletion:
                 result = completion.choices[0].model_dump()
                 return result
@@ -57,7 +56,6 @@ class GroqModelProvider(BaseModelProvider):
             model=self.model,
             tools=kwargs["tools"] if kwargs.get("tools") else None,
             messages=[
-                {"role": "system", "content": kwargs["system"]},
                 {"role": "user", "content": kwargs["prompt"]},
             ],
             response_format=(

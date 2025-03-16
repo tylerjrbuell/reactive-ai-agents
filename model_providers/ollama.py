@@ -25,8 +25,10 @@ class OllamaModelProvider(BaseModelProvider):
 
     async def get_chat_completion(self, **kwargs) -> ollama.ChatResponse:
         try:
+            if not kwargs.get("model"):
+                kwargs["model"] = self.model
             result = await self.client.chat(
-                model=self.model,
+                model=kwargs["model"],
                 messages=kwargs["messages"],
                 stream=kwargs["stream"] if kwargs.get("stream") else False,
                 tools=kwargs["tools"] if kwargs.get("tools") else [],

@@ -1,5 +1,5 @@
-import logging
 import json
+from loggers.base import Logger
 from model_providers.base import BaseModelProvider
 from prompts.agent_prompts import (
     TASK_PLANNING_SYSTEM_PROMPT,
@@ -37,37 +37,45 @@ class Agent:
             tool.tool_definition for tool in self.tools
         ]
         self.tool_history: List[Dict[str, Any]] = []
-        self.memory: list = []
-        self.reflections: list = []
-        self.reflection_messages: list = []
+        self.memory: str = ""
         self.messages: list = [{"role": "system", "content": self.instructions}]
 
         self.min_completion_score = min_completion_score
         self.max_iterations = max_iterations
+        self.iterations: int = 0
+        self.agent_logger = Logger(
+            name=name,
+            type="agent",
+            level=log_level,
+        )
 
-        ## Logging
-        self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(getattr(logging, log_level.upper()))
-        formatter = logging.Formatter(f"{self.name}:%(levelname)s - %(message)s")
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(formatter)
-        self.logger.addHandler(console_handler)
+        self.tool_logger = Logger(
+            name=f"{self.name} Tool",
+            type="tool",
+            level=log_level,
+        )
 
-        self.logger.info(f"{self.name} Initialized")
-        self.logger.info(f"Provider:Model: {provider_model}")
-        self.logger.info(f"Available Tools: {list(self.tool_map.keys())}")
+        self.result_logger = Logger(
+            name=f"{self.name} Result", type="agent_response", level=log_level
+        )
+
+        self.agent_logger.info(f"{self.name} Initialized")
+        self.agent_logger.info(f"Provider:Model: {provider_model}")
+        self.agent_logger.info(
+            f"Available Tools: {", ".join(list(self.tool_map.keys()))}"
+        )
 
     async def _think(self, **kwargs) -> dict | None:
         try:
-            self.logger.info("Thinking...")
+            self.agent_logger.info("Thinking...")
             return await self.model_provider.get_completion(**kwargs)
         except Exception as e:
-            self.logger.error(f"Completion Error: {e}")
+            self.agent_logger.error(f"Completion Error: {e}")
             return
 
     async def _plan(self, **kwargs) -> str | None:
         try:
-            self.logger.info("Planning...")
+            self.agent_logger.info("Planning...")
             result = await self.model_provider.get_completion(
                 system=TASK_PLANNING_SYSTEM_PROMPT,
                 prompt="""
@@ -87,19 +95,18 @@ class Agent:
             )
             return result.get("response", None)
         except Exception as e:
-            self.logger.error(f"Completion Error: {e}")
+            self.agent_logger.error(f"Completion Error: {e}")
             return
 
     async def _think_chain(
         self,
         tool_use: bool = True,
         remember_messages: bool = True,
-        reflect: bool = False,
         **kwargs,
     ) -> dict | None:
         try:
             kwargs.setdefault("messages", self.messages)
-            self.logger.info("Thinking..." if not reflect else "Reflecting...")
+            self.agent_logger.info(f"Thinking...")
 
             result = await self.model_provider.get_chat_completion(
                 tools=self.tool_signatures if tool_use else [],
@@ -108,25 +115,26 @@ class Agent:
             if not result:
                 return None
             message_content = result["message"].get("content")
-            if not reflect:
-                self.logger.debug(f"Result: {message_content}")
             tool_calls = result["message"].get("tool_calls")
             if message_content and remember_messages:
+
                 self.messages.append({"role": "assistant", "content": message_content})
             elif tool_calls:
                 await self._process_tool_calls(tool_calls=tool_calls)
-                return await self._think_chain(tool_use=False)
+                return await self._think_chain(tool_use=False, **kwargs)
 
             return result
         except Exception as e:
-            self.logger.error(f"Chat Completion Error: {e}")
+            self.agent_logger.error(f"Chat Completion Error: {e}")
             return
 
     async def _process_tool_calls(self, tool_calls) -> None:
         processed_tool_calls = []
         for tool_call in tool_calls:
             if str(tool_call) in processed_tool_calls:
-                print("Tool call already processed")
+                self.tool_logger.info(
+                    f"Tool Call Already Processed: {tool_call["function"]["name"]}"
+                )
                 continue
             tool_result = await self._use_tool(tool_call=tool_call)
             if tool_result is not None:
@@ -139,7 +147,7 @@ class Agent:
                         ),
                         "role": "tool",
                         "name": tool_call["function"]["name"],
-                        "content": str(tool_result),
+                        "content": f"{tool_result}",
                     }
                 )
                 processed_tool_calls.append(str(tool_call))
@@ -148,129 +156,63 @@ class Agent:
         tool_name = tool_call["function"]["name"]
         tool = self.tool_map.get(tool_name)
         if tool:
-            self.logger.info(f"Executing tool: {tool_name}")
+            self.tool_logger.info(
+                f"Executing tool: {tool_name} with parameters: {tool_call['function']['arguments']}"
+            )
             params = (
                 tool_call["function"]["arguments"]
                 if type(tool_call["function"]["arguments"]) is dict
                 else json.loads(tool_call["function"]["arguments"])
             )
-            result = await tool.use(params=tool_call["function"]["arguments"])
+            result = await tool.use(params=params)
             self.tool_history.append(
                 {"name": tool.name, "params": params, "result": result}
             )
-            self.logger.debug(f"Tool Result: {result}")
+            self.tool_logger.debug(f"Tool Result: {result}")
             return result
-        print(f"Tool {tool_name} not found in available tools: {self.tool_map.keys()}")
+        self.tool_logger.error(
+            f"Tool {tool_name} not found in available tools: {self.tool_map.keys()}"
+        )
         return None
 
     async def _run_task(self, task, tool_use: bool = True) -> dict | None:
-        print(
-            f"Observation: {self.memory[-1]['tool_suggestion'] if self.memory else ''}"
-        )
+        self.agent_logger.debug(f"MAIN TASK: {task}")
         self.messages.append(
             {
                 "role": "user",
                 "content": f"""
                 
-                 
-                TASK: {task}
-                
-                {f"Learn from your previous Attempt Failure: ({self.memory[-1]['failed_reason']})" if self.memory else ''}
-                {f"Consider the Reflection Agent's Suggested Improvement: ({self.memory[-1]['tool_suggestion'] if self.memory else ''})"}
-                 
+                MAIN TASK: {task}
                 """.strip(),
             }
         )
         result = await self._think_chain(tool_use=tool_use)
-        return result if result else None
-
-    async def _reflect(self, task_description, result):
-        class format(BaseModel):
-            completion_score: float
-            reason: str
-            tool_suggestion: str
-
-        reflect_prompt = """
-        {TASK_REFLECTION_SYSTEM_PROMPT}
-        
-        <task>{task_description}</task>
-        <result>{result}</result>
-        <available-tools>{tools}</available-tools>
-               """.format(
-            task_description=task_description,
-            result=result["message"]["content"],
-            TASK_REFLECTION_SYSTEM_PROMPT=TASK_REFLECTION_SYSTEM_PROMPT,
-            tools=json.dumps(self.tool_signatures),
-        )
-        reflection = await self._think_chain(
-            format=(
-                format.model_json_schema()
-                if self.model_provider.name == "ollama"
-                else "json"
-            ),
-            messages=[
-                {
-                    "role": "user",
-                    "content": reflect_prompt,
-                },
-            ],
-            reflect=True,
-            tool_use=False,
-            remember_messages=False,
-        )
-        return {
-            "response": (reflection["message"]["content"] if reflection else ""),
-        }
+        return result
 
     async def _run_task_iteration(self, task):
         running_task = task
-        self.logger.info(f"Starting New Task: {running_task}")
-        iterations = 0
-        while True if self.max_iterations is None else iterations < self.max_iterations:
-            iterations += 1
-            print(f"Running Iteration: {iterations}")
+        self.agent_logger.info(f"Starting New Task: {running_task}")
+        self.iterations = 0
+        while (
+            True
+            if self.max_iterations is None
+            else self.iterations < self.max_iterations
+        ):
+            self.iterations += 1
+            self.agent_logger.info(f"Running Iteration: {self.iterations}")
             result = await self._run_task(task=running_task)
             if not result:
-                self.logger.info(f"{self.name} Failed\n")
-                self.logger.info(f"Task: {task}\n")
+                self.agent_logger.info(f"{self.name} Failed\n")
+                self.agent_logger.info(f"Task: {task}\n")
                 break
-            if self._reflect:
-                reflection = await self._reflect(task, result=result)
-                if not reflection:
-                    self.logger.info(f"{self.name} Failed\n")
-                    self.logger.info(f"Task: {task}\n")
-                    break
-                reflection = (
-                    json.loads(reflection["response"]) if reflection["response"] else {}
-                )
-                print(f"Percent Complete: {reflection.get('completion_score', 0)}%")
-                self.reflections.append(reflection)
-                if reflection.get("completion_score", 0) >= self.min_completion_score:
-                    self.logger.info(
-                        f"{self.name} Task Completed Successfully because: {reflection['reason']}\n"
-                    )
-                    return result["message"]["content"]
-                else:
-                    self.logger.info(
-                        f"{self.name} Task Failed because: {reflection['reason']}\n"
-                    )
-                    self.memory.append(
-                        {
-                            "result": result["message"]["content"],
-                            "failed_reason": reflection["reason"],
-                            "tool_suggestion": reflection["tool_suggestion"],
-                            "tool": (
-                                self.tool_history[-1] if self.tool_history else None
-                            ),
-                        }
-                    )
         return result["message"]["content"] if result else None
 
     def set_model_provider(self, provider_model: str):
         self.model_provider = ModelProviderFactory.get_model_provider(provider_model)
-        self.logger.info(f"Model Provider Set to: {self.model_provider.name}")
+        self.agent_logger.info(f"Model Provider Set to: {self.model_provider.name}")
 
     async def run(self, initial_task):
         self.initial_task = initial_task
         result = await self._run_task_iteration(task=initial_task)
+        self.result_logger.info(result)
         return result

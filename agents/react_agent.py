@@ -1,14 +1,10 @@
 import json
-from typing import List, Dict, Any
+from typing import List, Any
 
 from pydantic import BaseModel
-from tools.base import Tool
-from model_providers.base import BaseModelProvider
-from model_providers.factory import ModelProviderFactory
 from prompts.agent_prompts import (
     REACT_AGENT_SYSTEM_PROMPT,
     TASK_REFLECTION_SYSTEM_PROMPT,
-    TASK_PLANNING_SYSTEM_PROMPT,
 )
 from agents.base import Agent
 
@@ -22,6 +18,7 @@ class ReactAgent(Agent):
         tools: List[Any] = [],
         tool_use: bool = True,
         reflect: bool = False,
+        reflections: List[Any] = [],
         min_completion_score: float = 1.0,
         max_iterations: int | None = None,
         log_level: str = "info",
@@ -37,13 +34,35 @@ class ReactAgent(Agent):
             log_level=log_level,
         )
         self.reflect: bool = reflect
+        self.reflections: List[Any] = reflections
         self.messages: list = [{"role": "system", "content": REACT_AGENT_SYSTEM_PROMPT}]
+
+    async def _run_task(self, task, tool_use: bool = True) -> dict | None:
+        final_iteration = self.iterations >= (self.max_iterations or 0)
+        working_task = self.reflections[-1]["next_step"] if self.reflections else task
+        self.agent_logger.debug(f"MEMORY: {self.memory}")
+        self.agent_logger.debug(f"MAIN TASK: {task}")
+        self.agent_logger.debug(f"WORKING TASK: {working_task}")
+        self.messages.append(
+            {
+                "role": "user",
+                "content": f"""
+                {"** This is the final iteration provide your best final response to the main task using everything you have learned **" if final_iteration else ""}
+                {f"Your main task: { task }"}
+
+                {f"Your working task: { working_task }" }
+                 
+                """.strip(),
+            }
+        )
+        result = await self._think_chain(tool_use=tool_use)
+        return result
 
     async def _reflect(self, task_description, result):
         class format(BaseModel):
             completion_score: float
             reason: str
-            tool_suggestion: str
+            next_step: str
 
         reflect_prompt = """
         {TASK_REFLECTION_SYSTEM_PROMPT}
@@ -57,7 +76,10 @@ class ReactAgent(Agent):
             TASK_REFLECTION_SYSTEM_PROMPT=TASK_REFLECTION_SYSTEM_PROMPT,
             tools=json.dumps(self.tool_signatures),
         )
+
+        self.agent_logger.info("Reflecting...")
         reflection = await self._think_chain(
+            # model="deepseek-r1:14b",
             format=(
                 format.model_json_schema()
                 if self.model_provider.name == "ollama"
@@ -69,7 +91,6 @@ class ReactAgent(Agent):
                     "content": reflect_prompt,
                 },
             ],
-            reflect=True,
             tool_use=False,
             remember_messages=False,
         )
@@ -79,44 +100,60 @@ class ReactAgent(Agent):
 
     async def _run_task_iteration(self, task):
         running_task = task
-        self.logger.info(f"Starting New Task: {running_task}")
-        iterations = 0
-        while True if self.max_iterations is None else iterations < self.max_iterations:
-            iterations += 1
-            print(f"Running Iteration: {iterations}")
+        self.agent_logger.info(f"Starting New Task: {running_task}")
+        self.iterations = 0
+        while (
+            True
+            if self.max_iterations is None
+            else self.iterations < self.max_iterations
+        ):
+            self.iterations += 1
+            self.agent_logger.info(f"Running Iteration: {self.iterations}")
             result = await self._run_task(task=running_task)
             if not result:
-                self.logger.info(f"{self.name} Failed\n")
-                self.logger.info(f"Task: {task}\n")
+                self.agent_logger.info(f"{self.name} Failed\n")
+                self.agent_logger.info(f"Task: {task}\n")
                 break
-            if self._reflect:
+            if self.reflect:
                 reflection = await self._reflect(task, result=result)
                 if not reflection:
-                    self.logger.info(f"{self.name} Failed\n")
-                    self.logger.info(f"Task: {task}\n")
+                    self.agent_logger.info(f"{self.name} Failed\n")
+                    self.agent_logger.info(f"Task: {task}\n")
                     break
                 reflection = (
                     json.loads(reflection["response"]) if reflection["response"] else {}
                 )
-                print(f"Percent Complete: {reflection.get('completion_score', 0)}%")
-                self.reflections.append(reflection)
+                self.agent_logger.info(
+                    f"Percent Complete: {reflection.get('completion_score', 0)}%"
+                )
                 if reflection.get("completion_score", 0) >= self.min_completion_score:
-                    self.logger.info(
+                    self.agent_logger.info(
                         f"{self.name} Task Completed Successfully because: {reflection['reason']}\n"
                     )
                     return result["message"]["content"]
                 else:
-                    self.logger.info(
-                        f"{self.name} Task Failed because: {reflection['reason']}\n"
+                    self.agent_logger.debug(
+                        f"Iterating task again because: {reflection['reason']}\n"
                     )
-                    self.memory.append(
+
+                    self.reflections.append(
                         {
                             "result": result["message"]["content"],
                             "failed_reason": reflection["reason"],
-                            "tool_suggestion": reflection["tool_suggestion"],
+                            "completion_score": reflection["completion_score"],
+                            "next_step": reflection["next_step"],
                             "tool": (
                                 self.tool_history[-1] if self.tool_history else None
                             ),
                         }
                     )
-        return result["message"]["content"] if result else None
+        best_reflection = self.reflections.index(
+            max(self.reflections, key=lambda x: x["completion_score"])
+        )
+        self.result_logger.debug(
+            f"""**Best Reflection**: 
+            Reflection Reason: {self.reflections[best_reflection]['failed_reason']}
+            Reflection Completion Score: {self.reflections[best_reflection]['completion_score']}%
+            Reflection Next Step: {self.reflections[best_reflection]['next_step']}"""
+        )
+        return self.reflections[best_reflection]["result"] if result else None
