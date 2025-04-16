@@ -1,9 +1,18 @@
 [tool.poetry]
 name = "reactive-agents"
 version = "0.1.0"
-description = ""
+description = "A custom reactive AI Agent framework for LLM-driven task execution"
 authors = ["Tyler Buell"]
 readme = "README.md"
+packages = [
+    { include = "agents" },
+    { include = "model_providers" },
+    { include = "tools" },
+    { include = "prompts" },
+    { include = "loggers" },
+    { include = "config" },
+    { include = "agent_mcp" },
+]
 
 [tool.poetry.dependencies]
 python = "^3.10"
@@ -16,7 +25,6 @@ groq = "^0.13.0"
 markitdown = "^0.0.1a3"
 colorlog = "^6.9.0"
 mcp = "^1.4.1"
-
 
 [build-system]
 requires = ["poetry-core"]
