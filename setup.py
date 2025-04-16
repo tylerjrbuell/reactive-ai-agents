@@ -4,7 +4,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(
-    name="reactive-ai-agent",
+    name="reactive-agents",
     version="0.1.0",
     author="Tyler Buell",
     description="A custom reactive AI Agent framework for LLM-driven task execution",
@@ -22,16 +22,12 @@ setup(
     python_requires=">=3.10",
     install_requires=[
         "ollama>=0.4.4",
-        "fake-useragent>=2.0.2",
         "requests>=2.32.3",
         "python-dotenv>=1.0.1",
         "pydantic>=2.10.3",
         "docstring-parser>=0.16",
-        "bs4>=0.0.2",
         "groq>=0.13.0",
         "markitdown>=0.0.1a3",
-        "pyodbc>=5.2.0",
-        "aiohttp>=3.11.11",
         "colorlog>=6.9.0",
         "mcp>=1.4.1",
     ],
