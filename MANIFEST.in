@@ -1,0 +1,12 @@
+include README.md
+include LICENSE
+recursive-include agents *.py
+recursive-include model_providers *.py
+recursive-include tools *.py
+recursive-include prompts *.py
+recursive-include loggers *.py
+recursive-include config *.py
+recursive-include agent_mcp *.py
+include *.py
+include *.json
+include *.txt

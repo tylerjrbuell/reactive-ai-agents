@@ -22,8 +22,10 @@ class Logger:
             "CRITICAL": get_color(self.type, "CRITICAL"),
         }
         self.formatter = ColoredFormatter(
-            f"%(log_color)s%(class_name)s:%(levelname)s - %(message)s",
+            f"%(asctime)s %(log_color)s%(class_name)s:%(levelname)s%(reset)s - %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
             log_colors=colors,
+            reset=True,
         )
 
         logger.setLevel(getattr(logging, level.upper()))
@@ -32,11 +34,12 @@ class Logger:
     def get_logger(self):
         return logger
 
-    def log(self, message: str, level: str = "info"):
+    def log(self, message: str, level: str = "info", exc_info=None):
         logger.log(
             getattr(logging, level.upper()),
             f"{self.name}: {message}",
             extra={"class_name": self.name, "formatter": self.formatter},
+            exc_info=exc_info,
         )
 
     def info(self, message: Any):
@@ -50,17 +53,27 @@ class Logger:
             msg=message, extra={"class_name": self.name, "formatter": self.formatter}
         )
 
-    def error(self, message: str):
+    def error(
+        self, message: str, exc_info=True
+    ):  # Changed to include exc_info by default
         logger.error(
-            msg=message, extra={"class_name": self.name, "formatter": self.formatter}
+            msg=message,
+            extra={"class_name": self.name, "formatter": self.formatter},
+            exc_info=exc_info,
         )
 
-    def warning(self, message: str):
+    def warning(self, message: str, exc_info=None):
         logger.warning(
-            msg=message, extra={"class_name": self.name, "formatter": self.formatter}
+            msg=message,
+            extra={"class_name": self.name, "formatter": self.formatter},
+            exc_info=exc_info,
         )
 
-    def critical(self, message: str):
+    def critical(
+        self, message: str, exc_info=True
+    ):  # Changed to include exc_info by default
         logger.critical(
-            msg=message, extra={"class_name": self.name, "formatter": self.formatter}
+            msg=message,
+            extra={"class_name": self.name, "formatter": self.formatter},
+            exc_info=exc_info,
         )

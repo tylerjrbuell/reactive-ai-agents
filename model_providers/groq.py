@@ -56,6 +56,7 @@ class GroqModelProvider(BaseModelProvider):
             model=self.model,
             tools=kwargs["tools"] if kwargs.get("tools") else None,
             messages=[
+                {"role": "system", "content": kwargs["system"]},
                 {"role": "user", "content": kwargs["prompt"]},
             ],
             response_format=(

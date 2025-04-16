@@ -1,6 +1,8 @@
 from .base import BaseModelProvider
 import ollama
 
+HOST = "http://localhost:11434"  # "localhost:11434"
+
 
 class OllamaModelProvider(BaseModelProvider):
     id = "ollama"
@@ -8,12 +10,12 @@ class OllamaModelProvider(BaseModelProvider):
     def __init__(self, model="llama3.2", name="ollama"):
         self.name = name
         self.model = model
-        self.client = ollama.AsyncClient()
+        self.client = ollama.AsyncClient(host=HOST)
         self.validate_model()
         super().__init__(model=model, name=self.name)
 
     def validate_model(self, **kwargs):
-        models = ollama.Client().list().models
+        models = ollama.Client(host=HOST).list().models
         model = self.model
         if ":" not in self.model:
             model = f"{self.model}:latest"
@@ -36,7 +38,7 @@ class OllamaModelProvider(BaseModelProvider):
                 options=(
                     kwargs["options"]
                     if kwargs.get("options")
-                    else {"temperature": 0, "num_gpu": 256, "num_ctx": 15000}
+                    else {"temperature": 0, "num_gpu": 256, "num_ctx": 10000}
                 ),
             )
             return result
@@ -46,4 +48,6 @@ class OllamaModelProvider(BaseModelProvider):
     async def get_completion(self, **kwargs):
         if not kwargs.get("model"):
             kwargs["model"] = self.model
+        if not kwargs.get("options"):
+            kwargs["options"] = {"temperature": 0, "num_gpu": 256, "num_ctx": 10000}
         return ollama.generate(**kwargs)

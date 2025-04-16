@@ -1,93 +1,90 @@
+from agent_mcp.client import MCPClient
 from agents.react_agent import ReactAgent
-from tools.general import (
-    web_search,
-    get_url_content,
-    read_file,
-    write_file,
-    get_current_datetime,
-    read_sqlite_records,
-    get_sqlite_table_names,
-    get_sqlite_table_schema,
-    create_sqlite_table,
-    create_sqlite_record,
-    update_sqlite_record,
-    execute_sqlite_query,
-    alter_sqlite_table,
-    get_user_input,
-    get_current_cryptocurrency_market_data,
-    list_directories,
-)
-from tools.decorators import tool
 import asyncio
 import dotenv
 import warnings
+import tracemalloc
+from typing import Dict, Any
+from config.workflow import AgentConfig, WorkflowConfig, Workflow
+from pydantic import PydanticDeprecatedSince211
 
 warnings.simplefilter("ignore", ResourceWarning)
-
+warnings.filterwarnings("ignore", category=PydanticDeprecatedSince211)
+tracemalloc.start()
 dotenv.load_dotenv()
-research_agents: dict[str, ReactAgent] = {}
 
 
-@tool()
-async def run_ai_research_agent(
-    task_prompt: str,
-    provider_model: str = "ollama:qwen2.5:14b",
-    max_iterations: int = 5,
-):
-    """
-    Creates and runs an AI research agent to complete a specific task. May take some time to complete and return the result.
+async def create_example_workflow() -> Workflow:
+    workflow_config = WorkflowConfig()
 
-    Args:
-        task_prompt (str): The prompt to the AI Agent for the task to be completed. The prompt should be specific and concise instruction for the AI Agent.
-        provider_model (str, optional): The provider model to use for the AI task agent. Defaults to "ollama:qwen2.5:14b".
-        max_iterations (int, optional): The maximum number of iterations to run the AI task agent. Defaults to 5.
-
-    Returns:
-        str: The response from the AI task agent.
-    """
-    from tools.general import web_search, read_file, write_file, get_url_content
-
-    if research_agents.get(task_prompt):
-        return await research_agents[task_prompt].run(task_prompt)
-    agent = ReactAgent(
-        name="ResearchAgent",
-        provider_model=provider_model,
-        tools=[web_search, read_file, write_file, get_url_content],
+    # Create a planner agent
+    planner = AgentConfig(
+        role="planner",
+        model="ollama:cogito:14b",
+        min_score=0.9,
+        instructions="""You are a planning specialist. Your job is to break down a task into steps for the executor agent to follow and set them up for success to execute.
+        Consider the following constraints:
+        - Your deliverable is not to solve the task but rather to make a step by step plan for the executor agent.
+        - You may use your tools to help give the executor agent the information it needs to complete the task.
+        - You can only use tools that are available to you.
+        - Assume the executor doesn't have research ability only execution ability.
+        - If you have done some of the work exclude it from the plan to prevent the executor agent from repeating it.
+        
+        Here is the task you need to create a plan for: {task}
+        """,
+        max_iterations=3,
+        instructions_as_task=True,
         reflect=True,
-        max_iterations=max_iterations,
-        min_completion_score=1,
-        log_level="info",
+        mcp_servers=["local", "brave-search", "time"],
     )
-    research_agents[task_prompt] = agent
-    return await agent.run(task_prompt)
+
+    # Create an executor agent
+    executor = AgentConfig(
+        role="executor",
+        model="ollama:cogito:14b",
+        mcp_servers=["local", "filesystem", "sqlite"],
+        min_score=1.0,
+        instructions="You are an execution specialist. Implement solutions using available tools and planning steps provided by the planner",
+        dependencies=["planner"],
+        max_iterations=10,
+        reflect=True,
+    )
+
+    # Add agents to workflow
+    workflow_config.add_agent(planner)
+    # workflow_config.add_agent(researcher)
+    workflow_config.add_agent(executor)
+
+    return Workflow(workflow_config)
+
+
+async def run_workflow(task: str) -> Dict[str, str]:
+    workflow = await create_example_workflow()
+    return await workflow.run(task)
 
 
 async def main():
+    task = "Find the current price of xrp using a web search, then create a table called crypto_prices (currency, price, timestamp), then insert the price of xrp into the table."
+    mcp_client = await MCPClient(server_filter=["duckduckgo", "sqlite"]).initialize()
     agent = ReactAgent(
-        name="TaskAgent",
-        provider_model="ollama:qwen2.5:14b",
-        # provider_model="groq:llama-3.3-70b-versatile",
-        min_completion_score=1,
-        log_level="debug",
+        name="Task Agent",
+        role="Task Executor",
+        provider_model="ollama:cogito:14b",
+        mcp_client=mcp_client,
+        min_completion_score=1.0,
+        instructions="Solve the given task as quickly as possible using the tools at your disposal.",
         max_iterations=10,
-        tools=[
-            run_ai_research_agent,
-            read_file,
-            write_file,
-            get_url_content,
-            get_current_datetime,
-            list_directories,
-        ],
         reflect=True,
+        log_level="debug",
     )
-    while True:
-        initial_task = input("\nEnter your initial task: ")
-        result = await agent.run(initial_task)
+    result = await agent.run(task)
+    print(result)
+    # results = await run_workflow(task)
+    # print("\nWorkflow Results:")
+    # for role, result in results.items():
+    #     print(f"\n{role.upper()} Result:")
+    #     print(result)
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n\nExiting...")
-        exit()
+    asyncio.run(main())

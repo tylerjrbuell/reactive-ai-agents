@@ -19,6 +19,7 @@ markitdown = "^0.0.1a3"
 pyodbc = "^5.2.0"
 aiohttp = "^3.11.11"
 colorlog = "^6.9.0"
+mcp = "^1.4.1"
 
 
 [build-system]

@@ -2,7 +2,8 @@ from typing import Any, Dict, List
 from tools.decorators import tool
 from bs4 import BeautifulSoup
 import ollama
-import asyncio
+from agents.react_agent import ReactAgent
+from agent_mcp.client import MCPClient
 import aiohttp
 import requests
 import fake_useragent
@@ -636,3 +637,37 @@ async def write_file(path: str, content: str, mode: str = "w") -> str:
         return f"File '{path}' written successfully."
     except Exception as e:
         return f"Error writing file: {e}"
+
+
+@tool()
+async def run_ai_agent(
+    agent_name: str,
+    task_prompt: str,
+    provider_model: str = "ollama:qwen2.5:14b",
+    max_iterations: int = 5,
+):
+    """
+    Creates and runs an AI agent to complete a specific task. May take some time to complete and return the result.
+    Create an appropriate name for the AI agent that matches the task the agent will be completing.
+    The task prompt should be specific and concise instruction for the AI agent to complete the task. The more specific the task prompt, the more accurate and complete the result will be.
+
+    Args:
+        agent_name (str): The name of the AI agent.
+        task_prompt (str): The prompt to the AI Agent for the task to be completed. The prompt should be specific and concise instruction for the AI Agent.
+        provider_model (str, optional): The provider model to use for the AI task agent. Defaults to "ollama:qwen2.5:14b".
+        max_iterations (int, optional): The maximum number of iterations to run the AI task agent. Defaults to 5.
+
+    Returns:
+        str: The response from the AI task agent.
+    """
+
+    agent = ReactAgent(
+        name=agent_name,
+        provider_model=provider_model,
+        mcp_client=await MCPClient().initialize(),
+        reflect=True,
+        max_iterations=max_iterations,
+        min_completion_score=1,
+        log_level="debug",
+    )
+    return await agent.run(task_prompt)
