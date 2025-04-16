@@ -9,11 +9,15 @@ This framework provides a flexible system for creating AI agents that can:
 
 __version__ = "0.1.0"
 
-from .agents import Agent, ReactAgent
-from .model_providers import ModelProviderFactory, BaseModelProvider
-from .tools import Tool, tool, ToolProtocol
-from .config import AgentConfig, WorkflowConfig, Workflow
-from .loggers import Logger
+from agents.base import Agent
+from agents.react_agent import ReactAgent
+from model_providers.factory import ModelProviderFactory
+from model_providers.base import BaseModelProvider
+from tools.decorators import tool
+from tools.base import Tool
+from tools.abstractions import ToolProtocol
+from config.workflow import AgentConfig, WorkflowConfig, Workflow
+from loggers.base import Logger
 
 __all__ = [
     "Agent",
