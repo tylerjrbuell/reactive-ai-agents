@@ -4,7 +4,7 @@ import asyncio
 import dotenv
 import warnings
 import tracemalloc
-from typing import Dict, Any
+from typing import Dict
 from config.workflow import AgentConfig, WorkflowConfig, Workflow
 from pydantic import PydanticDeprecatedSince211
 
@@ -21,7 +21,7 @@ async def create_example_workflow() -> Workflow:
     planner = AgentConfig(
         role="planner",
         model="ollama:cogito:14b",
-        min_score=0.9,
+        min_score=0.7,
         instructions="""You are a planning specialist. Your job is to break down a task into steps for the executor agent to follow and set them up for success to execute.
         Consider the following constraints:
         - Your deliverable is not to solve the task but rather to make a step by step plan for the executor agent.
@@ -35,14 +35,14 @@ async def create_example_workflow() -> Workflow:
         max_iterations=3,
         instructions_as_task=True,
         reflect=True,
-        mcp_servers=["local", "brave-search", "time"],
+        mcp_servers=["brave-search", "time"],
     )
 
     # Create an executor agent
     executor = AgentConfig(
         role="executor",
         model="ollama:cogito:14b",
-        mcp_servers=["local", "filesystem", "sqlite"],
+        mcp_servers=["filesystem", "sqlite"],
         min_score=1.0,
         instructions="You are an execution specialist. Implement solutions using available tools and planning steps provided by the planner",
         dependencies=["planner"],
@@ -52,7 +52,6 @@ async def create_example_workflow() -> Workflow:
 
     # Add agents to workflow
     workflow_config.add_agent(planner)
-    # workflow_config.add_agent(researcher)
     workflow_config.add_agent(executor)
 
     return Workflow(workflow_config)
@@ -65,6 +64,7 @@ async def run_workflow(task: str) -> Dict[str, str]:
 
 async def main():
     task = "Find the current price of xrp using a web search, then create a table called crypto_prices (currency, price, timestamp), then insert the price of xrp into the table."
+
     mcp_client = await MCPClient(server_filter=["duckduckgo", "sqlite"]).initialize()
     agent = ReactAgent(
         name="Task Agent",
@@ -79,11 +79,14 @@ async def main():
     )
     result = await agent.run(task)
     print(result)
-    # results = await run_workflow(task)
-    # print("\nWorkflow Results:")
-    # for role, result in results.items():
-    #     print(f"\n{role.upper()} Result:")
-    #     print(result)
+
+    # OR run the example workflow
+
+    results = await run_workflow(task)
+    print("\nWorkflow Results:")
+    for role, result in results.items():
+        print(f"\n{role.upper()} Result:")
+        print(result)
 
 
 if __name__ == "__main__":

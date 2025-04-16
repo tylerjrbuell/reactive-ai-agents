@@ -14,6 +14,7 @@ import shutil
 import sqlite3
 from pydantic import BaseModel
 from markitdown import MarkItDown
+import json
 
 conn = sqlite3.connect("./agent.db")
 
@@ -671,3 +672,26 @@ async def run_ai_agent(
         log_level="debug",
     )
     return await agent.run(task_prompt)
+
+
+@tool()
+def query_json_file(
+    file_path: str, key: str, result_cursor: int = 0, results: int = 10
+) -> dict:
+    """
+    Read a specific key from a JSON file and get back a specified number of results
+
+    Args:
+        file_path (str): The path to the JSON file.
+        key (str): The key to retrieve from the JSON file.
+        result_cursor (int, optional): The index of the first result to return. Defaults to 0.
+        results (int, optional): The number of results to return from the specified index. Defaults to 10. If -1, return all results from the specified index.
+
+    Returns:
+        dict: The contents of the JSON file as a dictionary.
+    """
+    with open(file_path, "r") as f:
+        data = json.load(f)
+        if key in data:
+            return data[key][int(result_cursor) : int(result_cursor) + int(results)]
+        return data

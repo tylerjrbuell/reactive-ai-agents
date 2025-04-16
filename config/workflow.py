@@ -1,13 +1,11 @@
 from __future__ import annotations
 from typing import Dict, List, Optional, Any, TYPE_CHECKING
 from dataclasses import dataclass, field
-from enum import Enum
 from contextlib import AsyncExitStack
-from model_providers.factory import ModelProviderFactory
-from agent_mcp.client import MCPClient
 
 if TYPE_CHECKING:
     from agents.react_agent import ReactAgent
+    from agent_mcp.client import MCPClient
 
 
 @dataclass
@@ -22,6 +20,7 @@ class AgentConfig:
     tools: Optional[List[str]] = None
     instructions_as_task: bool = False
     reflect: bool = False
+    log_level: str = "info"
 
 
 @dataclass
@@ -75,11 +74,6 @@ class Workflow:
         """Setup the workflow context"""
         await self._exit_stack.__aenter__()
 
-        # Only create base MCP client if any agent needs it
-        if any(agent.mcp_servers for agent in self.config.agents.values()):
-            self._mcp_client = await MCPClient().__aenter__()
-            self._exit_stack.push_async_callback(self._cleanup_mcp_client)
-
         return self
 
     async def _cleanup_mcp_client(self):
@@ -96,6 +90,7 @@ class Workflow:
     ) -> ReactAgent:
         """Create an agent instance from configuration"""
         from agents.react_agent import ReactAgent  # Import at runtime
+        from agent_mcp.client import MCPClient  # Import at runtime
 
         # Initialize agent's context in the workflow context if it doesn't exist
         if agent_config.role not in self._workflow_context:
@@ -110,13 +105,12 @@ class Workflow:
         # Only create MCP client if servers are configured
         filtered_mcp_client = None
         if agent_config.mcp_servers:
-            if not self._mcp_client:
-                raise RuntimeError("MCP client not initialized")
-
-            # Create an MCP client with filtered servers
-            filtered_mcp_client = await MCPClient(
-                server_filter=agent_config.mcp_servers
-            ).__aenter__()
+            # Create an MCP client with filtered servers if needed otherwise use default
+            filtered_mcp_client = (
+                await MCPClient(server_filter=agent_config.mcp_servers).__aenter__()
+                if agent_config.mcp_servers
+                else await MCPClient().__aenter__()
+            )
             # Add filtered client to exit stack for cleanup
             self._exit_stack.push_async_callback(
                 filtered_mcp_client.__aexit__, None, None, None
@@ -133,7 +127,7 @@ class Workflow:
             workflow_context=self._workflow_context,
             workflow_dependencies=dependencies,
             reflect=agent_config.reflect,
-            log_level="debug",
+            log_level=agent_config.log_level,
         )
 
     async def _execute_workflow(self, task: str) -> Dict[str, str]:
