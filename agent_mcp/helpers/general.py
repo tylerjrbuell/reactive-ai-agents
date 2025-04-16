@@ -1,4 +1,3 @@
-import re
 import aiohttp
 import fake_useragent
 import os

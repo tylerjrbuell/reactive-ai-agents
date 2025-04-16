@@ -4,7 +4,6 @@ Provides client implementation and helper functions for MCP.
 """
 
 from .client import MCPClient
-from .helpers.general import *
 
 __all__ = [
     "MCPClient",
