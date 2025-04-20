@@ -1,5 +1,9 @@
 # Reactive AI Agent Framework
 
+[![PyPI version](https://badge.fury.io/py/reactive-agents.svg)](https://badge.fury.io/py/reactive-agents)
+[![Python](https://img.shields.io/pypi/pyversions/reactive-agents.svg)](https://pypi.org/project/reactive-agents/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A custom reactive AI Agent framework that allow for creating reactive agents to carry out tasks using tools. The framework provides a flexible system for creating AI agents that can use different LLM providers (Ollama, Groq) and reflect on their actions and improve iteratively.
 
 ## Overview
@@ -11,6 +15,22 @@ The main purpose of this project is to create a custom AI Agent Framework that a
 - **Tool Integration**: Agents can take tools as ordinary Python functions and use a `@tool()` decorator to transform these functions into function definitions that the language model can understand.
 - **Model Context Protocol (MCP)**: Supports distributed tool execution through MCP servers, allowing agents to use tools from multiple sources.
 - **Workflow Management**: Supports creating complex agent workflows with dependencies and parallel execution.
+
+## Installation
+
+You can install the package directly from PyPI:
+
+```sh
+pip install reactive-agents
+```
+
+Or using Poetry:
+
+```sh
+poetry add reactive-agents
+```
+
+For development installation:
 
 ## Installation Instructions
 

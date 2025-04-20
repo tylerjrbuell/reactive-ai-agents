@@ -3,18 +3,22 @@ name = "reactive-agents"
 version = "0.1.0"
 description = "A custom reactive AI Agent framework for LLM-driven task execution"
 authors = ["Tyler Buell"]
+maintainers = ["Tyler Buell"]
 license = "MIT"
 readme = "README.md"
 homepage = "https://github.com/tylerbuell/reactive-ai-agent"
 repository = "https://github.com/tylerbuell/reactive-ai-agent"
-documentation = "https://github.com/tylerbuell/reactive-ai-agent#readme"
-keywords = ["ai", "agents", "llm", "reactive", "automation"]
+documentation = "https://github.com/tylerbuell/reactive-ai-agent/blob/main/README.md"
+keywords = ["ai", "agents", "llm", "automation", "workflow"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -42,12 +46,8 @@ mcp = "^1.4.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"
-pytest-asyncio = "^0.23.5"  # For testing async code
-pytest-cov = "^4.1.0"       # For code coverage
-
-[tool.poetry.urls]
-"Bug Tracker" = "https://github.com/tylerbuell/reactive-ai-agent/issues"
-"Changelog" = "https://github.com/tylerbuell/reactive-ai-agent/releases"
+pytest-asyncio = "^0.23.5"
+pytest-cov = "^4.1.0"
 
 [build-system]
 requires = ["poetry-core"]
