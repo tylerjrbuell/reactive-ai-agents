@@ -1,3 +1,4 @@
+import json
 from agent_mcp.client import MCPClient
 from agents.react_agent import ReactAgent
 import asyncio
@@ -65,7 +66,7 @@ async def run_workflow(task: str) -> Dict[str, str]:
 async def main():
     task = "Find the current price of xrp using a web search, then create a table called crypto_prices (currency, price, timestamp), then insert the price of xrp into the table."
 
-    mcp_client = await MCPClient(server_filter=["duckduckgo", "sqlite"]).initialize()
+    mcp_client = await MCPClient(server_filter=["brave-search", "sqlite"]).initialize()
     agent = ReactAgent(
         name="Task Agent",
         role="Task Executor",
@@ -78,15 +79,16 @@ async def main():
         log_level="debug",
     )
     result = await agent.run(task)
-    print(result)
+    json_result = json.dumps(result, indent=4)
+    print(json_result)
 
     # OR run the example workflow
 
-    results = await run_workflow(task)
-    print("\nWorkflow Results:")
-    for role, result in results.items():
-        print(f"\n{role.upper()} Result:")
-        print(result)
+    # results = await run_workflow(task)
+    # print("\nWorkflow Results:")
+    # for role, result in results.items():
+    #     print(f"\n{role.upper()} Result:")
+    #     print(result)
 
 
 if __name__ == "__main__":

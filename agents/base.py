@@ -1,7 +1,8 @@
 from __future__ import annotations
 import json
 import traceback
-from typing import List, Dict, Any, Optional, Union, Sequence
+import asyncio
+from typing import List, Dict, Any, Optional, Union, Sequence, Callable
 from loggers.base import Logger
 from model_providers.base import BaseModelProvider
 from prompts.agent_prompts import (
@@ -14,6 +15,7 @@ from pydantic import BaseModel
 
 from agent_mcp.client import MCPClient
 from tools.abstractions import ToolProtocol, MCPToolWrapper, ToolResult
+import time
 
 
 class Agent:
@@ -29,6 +31,9 @@ class Agent:
         max_iterations: Optional[int] = None,
         log_level: str = "info",
         workflow_context: Optional[Dict[str, Any]] = None,
+        confirmation_callback: Optional[Callable[[str, Dict[str, Any]], bool]] = None,
+        enable_caching: bool = True,
+        cache_ttl: int = 3600,  # 1 hour default TTL
     ):
         try:
             ## Agent Attributes
@@ -41,6 +46,8 @@ class Agent:
             self.instructions: str = instructions
             self.mcp_client = mcp_client
             self.tool_use: bool = tool_use
+            self.confirmation_callback = confirmation_callback
+            self.reasoning_log: List[str] = []  # For thought surfacing
 
             # Handle tools based on whether we have an MCP client or manual tools
             self.tools = ()  # Use empty tuple for initialization
@@ -113,6 +120,13 @@ class Agent:
             self.agent_logger.info(
                 f"Available Tools: {', '.join([tool.name for tool in self.tools])}"
             )
+
+            # Tool caching setup
+            self.enable_caching = enable_caching
+            self.cache_ttl = cache_ttl
+            self.tool_cache = {}
+            self.cache_hits = 0
+            self.cache_misses = 0
         except Exception as e:
             # Get the full stack trace
             stack_trace = "".join(
@@ -248,28 +262,124 @@ class Agent:
             tool = next((t for t in self.tools if t.name == tool_name), None)
             if not tool:
                 available_tools = [t.name for t in self.tools]
-                self.tool_logger.error(
-                    f"Tool {tool_name} not found in available tools: {available_tools}"
-                )
-                return None
+                error_message = f"Tool '{tool_name}' not found. Available tools: {', '.join(available_tools)}"
+                self.tool_logger.error(error_message)
+                return error_message
 
-            self.tool_logger.info(
-                f"Executing tool: {tool_name} with parameters: {params}"
+            # Add reasoning to the log if present in params
+            if "reasoning" in params:
+                self.reasoning_log.append(params["reasoning"])
+
+            # Check if caching is enabled and result is in cache
+            cache_key = None
+            if self.enable_caching:
+                # Generate a stable cache key from the tool name and params
+                cache_key = f"{tool_name}:{json.dumps(params, sort_keys=True)}"
+                if cache_key in self.tool_cache:
+                    cache_entry = self.tool_cache[cache_key]
+                    # Check if cache entry is still valid based on TTL
+                    if time.time() - cache_entry["timestamp"] < self.cache_ttl:
+                        self.tool_logger.info(f"Cache hit for tool: {tool_name}")
+                        self.cache_hits += 1
+
+                        # Record the tool usage but note it came from cache
+                        self.tool_history.append(
+                            {
+                                "name": tool_name,
+                                "params": params,
+                                "result": cache_entry["result"][:500]
+                                + ("..." if len(cache_entry["result"]) > 500 else ""),
+                                "cached": True,
+                            }
+                        )
+
+                        # Handle final answer case
+                        if tool_name == "final_answer":
+                            self.final_answer = cache_entry["result"]
+
+                        return cache_entry["result"]
+                # Record cache miss if we get here
+                self.cache_misses += 1
+
+            # Request confirmation for potentially sensitive operations
+            sensitive_actions = [
+                "delete",
+                "remove",
+                "send",
+                "email",
+                "subscribe",
+                "unsubscribe",
+                "cancel",
+                "payment",
+            ]
+            requires_confirmation = any(
+                action in tool_name.lower() for action in sensitive_actions
             )
+
+            if requires_confirmation:
+                # Create a user-friendly description of the action
+                action_description = f"Use tool '{tool_name}' with parameters: {json.dumps(params, indent=2)}"
+                # Request confirmation from the user
+                confirmed = await self.ask_user_confirmation(
+                    action_description, {"tool": tool_name, "params": params}
+                )
+                if not confirmed:
+                    return f"Action cancelled by user: {tool_name}"
 
             # Use the tool and get standardized result
+            tool_start_time = time.time()
+            self.tool_logger.info(f"Using tool: {tool_name} with {params}")
             result = await tool.use(params)
+            tool_execution_time = time.time() - tool_start_time
+
             if not isinstance(result, ToolResult):
                 result = ToolResult.wrap(result)
-            self.tool_logger.debug(f"Tool Result: {result.to_list()}")
-            # Handle final answer
-            if tool_name == "final_answer":
-                self.final_answer = result.to_string()
 
-            # Record tool history
-            self.tool_history.append(
-                {"name": tool_name, "params": params, "result": result.to_list()}
-            )
+            # Store result in cache if caching is enabled
+            if self.enable_caching and cache_key and "nocache" not in params:
+                # Don't cache errors or temporary results
+                if (
+                    not str(result.to_list()).lower().startswith("error")
+                    and tool_execution_time > 0.1
+                ):
+                    self.tool_cache[cache_key] = {
+                        "result": result.to_list(),
+                        "timestamp": time.time(),
+                    }
+                    # Limit cache size to prevent memory issues
+                    if len(self.tool_cache) > 1000:
+                        # Remove oldest entries
+                        sorted_cache = sorted(
+                            self.tool_cache.items(), key=lambda x: x[1]["timestamp"]
+                        )
+                        for old_key, _ in sorted_cache[: len(sorted_cache) // 2]:
+                            del self.tool_cache[old_key]
+
+            # Record the tool use in history
+            tool_history_entry = {
+                "name": tool_name,
+                "params": params,
+                "result": str(result.to_list())[:500]
+                + ("..." if len(str(result.to_list())) > 500 else ""),
+                "execution_time": tool_execution_time,
+            }
+            self.tool_history.append(tool_history_entry)
+
+            # Update metrics if ReactAgent instance
+            try:
+                # Only call _update_metrics if collect_metrics is True
+                if getattr(self, "collect_metrics", False):
+                    self._update_metrics("tool", tool_history_entry)
+            except Exception as metrics_error:
+                self.tool_logger.debug(
+                    f"Metrics update error (non-critical): {metrics_error}"
+                )
+
+            # Update workflow context if available
+            if self.workflow_context and self.name in self.workflow_context:
+                self.workflow_context[self.name]["last_tool_used"] = tool_name
+
+            self.tool_logger.debug(f"Tool Result: {result.to_list()}")
 
             # Generate tool summary
             tool_action_summary = (
@@ -294,10 +404,10 @@ class Agent:
             )
 
             return result.to_list()
-
         except Exception as e:
-            self.tool_logger.error(f"Tool Error: {e}")
-            return f"Tool Error: {e}"
+            error_message = f"Error using tool {tool_name}: {str(e)}"
+            self.tool_logger.error(error_message)
+            return error_message
 
     async def _run_task(self, task, tool_use: bool = True) -> dict | None:
         self.agent_logger.debug(f"MAIN TASK: {task}")
@@ -366,6 +476,41 @@ class Agent:
                     f"Reached maximum iterations ({self.max_iterations})"
                 )
 
+    async def _safe_close_mcp_client(self):
+        """Safely close the MCP client without causing cancellation issues."""
+        if not hasattr(self, "mcp_client") or not self.mcp_client:
+            return
+
+        self.agent_logger.info("Safely closing MCP client connection")
+        try:
+            # Create a new task in the same event loop to close the client
+            # This ensures the cancel scope is managed properly
+            loop = asyncio.get_running_loop()
+            close_task = loop.create_task(self.mcp_client.close())
+
+            # Wait for the close task to complete with a timeout
+            try:
+                await asyncio.wait_for(close_task, timeout=5.0)
+                self.agent_logger.info("MCP client closed successfully")
+            except asyncio.TimeoutError:
+                self.agent_logger.warning(
+                    "MCP client close timed out, client may not be fully closed"
+                )
+            except asyncio.CancelledError:
+                # If this task gets cancelled, detach the close task so it can finish
+                close_task.add_done_callback(
+                    lambda _: self.agent_logger.info(
+                        "Detached MCP client close completed"
+                    )
+                )
+                # Don't wait for it since we're being cancelled
+                raise
+        except Exception as e:
+            self.agent_logger.warning(f"Error during safe MCP client close: {str(e)}")
+        finally:
+            # Clear the reference regardless of success
+            self.mcp_client = None
+
     async def run(self, initial_task):
         try:
             self.initial_task = initial_task
@@ -384,12 +529,63 @@ class Agent:
             self.agent_logger.error(f"Agent Error: {e}")
             return None
         finally:
-            if self.mcp_client:
-                try:
-                    await self.mcp_client.close()
-                except Exception as cleanup_error:
-                    self.agent_logger.error(f"Cleanup error: {cleanup_error}")
+            # Use our safe method to close the MCP client
+            if hasattr(self, "mcp_client") and self.mcp_client:
+                await self._safe_close_mcp_client()
 
     def set_model_provider(self, provider_model: str):
         self.model_provider = ModelProviderFactory.get_model_provider(provider_model)
         self.agent_logger.info(f"Model Provider Set to: {self.model_provider.name}")
+
+    async def ask_user_confirmation(
+        self, action_description: str, action_details: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """
+        Ask for user confirmation before executing potentially impactful actions.
+
+        Args:
+            action_description: A description of the action the agent wants to perform
+            action_details: Additional details about the action (e.g. tool name, parameters)
+
+        Returns:
+            bool: True if confirmed, False otherwise
+        """
+        self.agent_logger.info(f"Requesting confirmation for: {action_description}")
+
+        if self.confirmation_callback:
+            try:
+                # Try to handle as awaitable first
+                if asyncio.iscoroutinefunction(self.confirmation_callback):
+                    return bool(
+                        await self.confirmation_callback(
+                            action_description, action_details or {}
+                        )
+                    )
+                # Handle as regular function
+                return bool(
+                    self.confirmation_callback(action_description, action_details or {})
+                )
+            except Exception as e:
+                self.agent_logger.error(f"Error in confirmation callback: {e}")
+                return False
+
+        # Default implementation always allows actions when no callback provided
+        self.agent_logger.info(
+            "No confirmation callback provided, proceeding with action"
+        )
+        return True
+
+    def _update_metrics(self, metric_type: str, data: Dict[str, Any]) -> None:
+        """
+        Base implementation of metrics tracking.
+        Subclasses like ReactAgent can override this for actual metrics tracking.
+
+        Args:
+            metric_type: The type of metric (tool, model, etc.)
+            data: The metric data to track
+        """
+        # Base implementation does nothing but log
+        self.agent_logger.debug(
+            f"Metrics update requested (not tracked in base Agent): {metric_type} - {data}"
+        )
+        return
