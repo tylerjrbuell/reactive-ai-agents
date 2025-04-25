@@ -1729,7 +1729,7 @@ class ReactAgent(Agent):
 
             # Add to memory
             self.agent_memory.session_history.append(session_entry)
-
+            self.agent_memory.reflections = self.reflections
             # Keep only the last 20 sessions
             if len(self.agent_memory.session_history) > 20:
                 self.agent_memory.session_history = self.agent_memory.session_history[
