@@ -528,9 +528,6 @@ class ReactAgent(Agent):
                 effective_score = min(score, tools_completion_ratio)
 
                 if effective_score >= self.min_completion_score:
-                    self.agent_logger.info(
-                        f"Task complete with score {effective_score}"
-                    )
                     if hasattr(self, "task_status"):
                         self.task_status = TaskStatus.COMPLETE
                     return False
@@ -556,12 +553,37 @@ class ReactAgent(Agent):
 
         if not self.reflect:
             self.agent_logger.info("⏩ Running in direct mode (no reflection)")
-            result = await self._run_task(task)
-            if result and "message" in result and "content" in result["message"]:
-                return result["message"]["content"]
-            elif result:
-                return str(result)
-            return None
+            try:
+                # Run the task directly
+                result = await self._run_task(task)
+
+                # Extract content from result
+                if result is not None and isinstance(result, dict):
+                    if "message" in result and result["message"] is not None:
+                        if "content" in result["message"]:
+                            content = result["message"]["content"]
+                            if content:
+                                # Check for final answer pattern
+                                content_lower = content.lower().strip()
+                                if content_lower.startswith(
+                                    "final answer:"
+                                ) or content_lower.startswith("answer:"):
+                                    self.final_answer = content
+                                return content
+                    # Try other common result patterns
+                    for key in ["response", "content", "output", "result"]:
+                        if key in result and result[key]:
+                            return str(result[key])
+
+                # Return string representation as fallback
+                return (
+                    str(result)
+                    if result is not None
+                    else "Task completed without result"
+                )
+            except Exception as e:
+                self.agent_logger.error(f"Error in direct mode execution: {str(e)}")
+                return f"Error during execution: {str(e)}"
 
         if not self.check_dependencies():
             self.agent_logger.warning("⚠️ Dependencies not met, cannot proceed")
@@ -886,6 +908,15 @@ class ReactAgent(Agent):
         # Create a list to track any tasks we spawn
         self._active_tasks = set()
 
+        # Initialize variables to avoid UnboundLocalError
+        result_content = None
+        summary = "No execution summary available."
+        evaluation = {
+            "adherence_score": 0.5,
+            "matches_intent": False,
+            "explanation": "No evaluation performed.",
+        }
+
         # Reset metrics for this run
         if self.collect_metrics:
             self.metrics = {
@@ -986,109 +1017,162 @@ class ReactAgent(Agent):
             if self.workflow_context and self.name in self.workflow_context:
                 self._update_workflow_context(TaskStatus.RUNNING, None)
 
-            # Main execution loop
-            while self.should_continue():
-                # Check for cancellation
-                if cancellation_event and cancellation_event.is_set():
-                    self.agent_logger.info("Task execution cancelled by user")
-                    self.task_status = TaskStatus.CANCELLED
-                    break
+            # Handle direct execution (non-reflection mode)
+            if not self.reflect:
+                self.iterations = 1  # Just one iteration in direct mode
+                self.agent_logger.info("Running task in direct mode (no reflection)")
 
                 try:
                     current_task = rescoped_task or initial_task
                     result_content = await self._run_task_iteration(current_task)
 
-                    # Store the result content, which might be the final_answer or the last result
+                    # Always record the result if available
                     if result_content:
-                        # Add to reasoning log if it's not already there
-                        if result_content not in self.reasoning_log:
-                            self.reasoning_log.append(result_content)
+                        self.reasoning_log.append(result_content)
 
-                    # Update iteration metrics
-                    if self.collect_metrics:
-                        self._update_metrics("iteration", {"count": self.iterations})
-
+                    # Set completion status
                     if self.final_answer:
                         self.task_status = TaskStatus.COMPLETE
+                    else:
+                        # If we got here with no errors, consider it complete
+                        self.task_status = TaskStatus.COMPLETE
+
+                    # Simplified summary generation in non-reflection mode
+                    if self.tool_history:
+                        summary = await self.generate_summary()
+                    else:
+                        summary = "Task completed in direct mode with no tool usage."
+
+                    # Generate a basic evaluation
+                    evaluation = await self.compare_goal_vs_result()
+
+                    # Update workflow context if available
+                    if self.workflow_context and self.name in self.workflow_context:
+                        self._update_workflow_context(
+                            self.task_status,
+                            result_content,
+                            adherence_score=evaluation.get("adherence_score", 0.5),
+                            matches_intent=evaluation.get("matches_intent", False),
+                        )
+
+                except Exception as e:
+                    self.task_status = TaskStatus.ERROR
+                    error_message = f"Error in direct execution: {str(e)}"
+                    self.agent_logger.error(error_message)
+                    self.reasoning_log.append(error_message)
+
+                    if self.workflow_context and self.name in self.workflow_context:
+                        self._update_workflow_context(TaskStatus.ERROR, error_message)
+
+                    return {"status": str(TaskStatus.ERROR), "result": error_message}
+            else:
+                # Main execution loop with reflection
+                while self.should_continue():
+                    # Check for cancellation
+                    if cancellation_event and cancellation_event.is_set():
+                        self.agent_logger.info("Task execution cancelled by user")
+                        self.task_status = TaskStatus.CANCELLED
                         break
 
-                    failure_count = 0  # Reset failure counter on successful iteration
+                    try:
+                        current_task = rescoped_task or initial_task
+                        result_content = await self._run_task_iteration(current_task)
 
-                except Exception as iter_error:
-                    failure_count += 1
-                    self.agent_logger.error(f"Iteration error: {str(iter_error)}")
+                        # Store the result content, which might be the final_answer or the last result
+                        if result_content:
+                            # Add to reasoning log if it's not already there
+                            if result_content not in self.reasoning_log:
+                                self.reasoning_log.append(result_content)
 
-                    # Add to reasoning log
-                    self.reasoning_log.append(
-                        f"Error during execution: {str(iter_error)}"
-                    )
-
-                    if failure_count >= max_failures:
-                        # Try to rescope the task if we keep failing
-                        if not rescoped_task:  # Only try rescoping once
-                            error_context = (
-                                f"Multiple failures during execution: {str(iter_error)}"
-                            )
-                            rescope_result = await self.rescope_goal(
-                                initial_task, error_context
+                        # Update iteration metrics
+                        if self.collect_metrics:
+                            self._update_metrics(
+                                "iteration", {"count": self.iterations}
                             )
 
-                            if rescope_result["rescoped_task"]:
-                                rescoped_task = rescope_result["rescoped_task"]
-                                self.agent_logger.info(
-                                    f"Task rescoped: {rescoped_task}"
-                                )
-                                failure_count = (
-                                    0  # Reset failure counter after rescoping
+                        if self.final_answer:
+                            self.task_status = TaskStatus.COMPLETE
+                            break
+
+                        failure_count = (
+                            0  # Reset failure counter on successful iteration
+                        )
+
+                    except Exception as iter_error:
+                        failure_count += 1
+                        self.agent_logger.error(f"Iteration error: {str(iter_error)}")
+
+                        # Add to reasoning log
+                        self.reasoning_log.append(
+                            f"Error during execution: {str(iter_error)}"
+                        )
+
+                        if failure_count >= max_failures:
+                            # Try to rescope the task if we keep failing
+                            if not rescoped_task:  # Only try rescoping once
+                                error_context = f"Multiple failures during execution: {str(iter_error)}"
+                                rescope_result = await self.rescope_goal(
+                                    initial_task, error_context
                                 )
 
-                                # Add to reasoning log
-                                self.reasoning_log.append(
-                                    f"Task rescoped due to failures: {rescope_result['explanation']}"
-                                )
+                                if rescope_result["rescoped_task"]:
+                                    rescoped_task = rescope_result["rescoped_task"]
+                                    self.agent_logger.info(
+                                        f"Task rescoped: {rescoped_task}"
+                                    )
+                                    failure_count = (
+                                        0  # Reset failure counter after rescoping
+                                    )
 
-                                # Update workflow context
-                                if (
-                                    self.workflow_context
-                                    and self.name in self.workflow_context
-                                ):
-                                    self.workflow_context[self.name]["rescoped"] = True
-                                    self.workflow_context[self.name][
-                                        "original_task"
-                                    ] = initial_task
-                                    self.workflow_context[self.name][
-                                        "rescoped_task"
-                                    ] = rescoped_task
-                                continue
+                                    # Add to reasoning log
+                                    self.reasoning_log.append(
+                                        f"Task rescoped due to failures: {rescope_result['explanation']}"
+                                    )
+
+                                    # Update workflow context
+                                    if (
+                                        self.workflow_context
+                                        and self.name in self.workflow_context
+                                    ):
+                                        self.workflow_context[self.name][
+                                            "rescoped"
+                                        ] = True
+                                        self.workflow_context[self.name][
+                                            "original_task"
+                                        ] = initial_task
+                                        self.workflow_context[self.name][
+                                            "rescoped_task"
+                                        ] = rescoped_task
+                                    continue
+                                else:
+                                    # Couldn't rescope, bail out
+                                    self.task_status = TaskStatus.ERROR
+                                    raise Exception(
+                                        f"Multiple execution failures and could not rescope task: {str(iter_error)}"
+                                    )
                             else:
-                                # Couldn't rescope, bail out
+                                # Already tried rescoping, bail out
                                 self.task_status = TaskStatus.ERROR
                                 raise Exception(
-                                    f"Multiple execution failures and could not rescope task: {str(iter_error)}"
+                                    f"Multiple execution failures even after rescoping: {str(iter_error)}"
                                 )
-                        else:
-                            # Already tried rescoping, bail out
-                            self.task_status = TaskStatus.ERROR
-                            raise Exception(
-                                f"Multiple execution failures even after rescoping: {str(iter_error)}"
-                            )
 
-            # Generate summary of actions taken
-            summary = await self.generate_summary()
+                # Generate summary of actions taken
+                summary = await self.generate_summary()
 
-            # Evaluate how well we met the goal
-            evaluation = await self.compare_goal_vs_result()
+                # Evaluate how well we met the goal
+                evaluation = await self.compare_goal_vs_result()
 
-            # Determine final status
-            if self.final_answer:
-                self.task_status = TaskStatus.COMPLETE
-            elif rescoped_task:
-                self.task_status = TaskStatus.RESCOPED_COMPLETE
-            elif self.max_iterations and self.iterations >= self.max_iterations:
-                self.task_status = TaskStatus.MAX_ITERATIONS
-            else:
-                # If we got here successfully but don't have a final answer, consider it complete
-                self.task_status = TaskStatus.COMPLETE
+                # Determine final status
+                if self.final_answer:
+                    self.task_status = TaskStatus.COMPLETE
+                elif rescoped_task:
+                    self.task_status = TaskStatus.RESCOPED_COMPLETE
+                elif self.max_iterations and self.iterations >= self.max_iterations:
+                    self.task_status = TaskStatus.MAX_ITERATIONS
+                else:
+                    # If we got here successfully but don't have a final answer, consider it complete
+                    self.task_status = TaskStatus.COMPLETE
 
             # If we don't have a final_answer but have a result_content, that's our result
             result_to_return = self.final_answer or result_content
