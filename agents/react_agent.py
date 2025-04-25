@@ -2051,6 +2051,20 @@ class ReactAgent(Agent):
             # Update metrics
             self._update_metrics("tool", {"name": tool_name, "time": execution_time})
 
+            # Update tool history with this tool call and result
+            if not hasattr(self, "tool_history"):
+                self.tool_history = []
+
+            self.tool_history.append(
+                {
+                    "name": tool_name,
+                    "arguments": tool_args,
+                    "result": formatted_result,
+                    "execution_time": execution_time,
+                    "timestamp": time.time(),
+                }
+            )
+
             return formatted_result
         except Exception as e:
             error_msg = f"Error executing tool '{tool_name}': {str(e)}"
@@ -2066,6 +2080,21 @@ class ReactAgent(Agent):
                     "time": 0,  # No execution time for errors
                 },
             )
+
+            # Record failed tool calls in history too
+            if not hasattr(self, "tool_history"):
+                self.tool_history = []
+
+            self.tool_history.append(
+                {
+                    "name": tool_name,
+                    "arguments": tool_args,
+                    "result": error_msg,
+                    "error": True,
+                    "timestamp": time.time(),
+                }
+            )
+
             return error_msg
 
     def get_tool(self, tool_name: str) -> Optional[ToolProtocol]:
@@ -2089,6 +2118,10 @@ class ReactAgent(Agent):
 
         # Make sure tool_calls matches actual history
         self.metrics["tool_calls"] = len(self.tool_history)
+
+        # Reset tool-specific metrics to avoid double counting
+        self.metrics["tools"] = {}
+        self.metrics["tool_errors"] = 0
 
         # Update tool-specific metrics
         for tool_call in self.tool_history:
