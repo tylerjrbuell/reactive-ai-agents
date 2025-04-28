@@ -8,6 +8,7 @@ import tracemalloc
 from typing import Dict
 from config.workflow import AgentConfig, WorkflowConfig, Workflow
 from pydantic import PydanticDeprecatedSince211
+from context.agent_context import AgentContext
 
 warnings.simplefilter("ignore", ResourceWarning)
 warnings.filterwarnings("ignore", category=PydanticDeprecatedSince211)
@@ -65,22 +66,49 @@ async def run_workflow(task: str) -> Dict[str, str]:
 
 async def main():
     task = "Find the current price of xrp using a web search, then create a table called crypto_prices (currency, price, timestamp), then insert the price of xrp into the table."
+    # task =" what day is it?"
+    agent_context = None  # Initialize context to None
+    try:
+        mcp_client = await MCPClient(
+            server_filter=["brave-search", "sqlite", "time"]
+        ).initialize()
 
-    mcp_client = await MCPClient(server_filter=["brave-search", "sqlite"]).initialize()
-    agent = ReactAgent(
-        name="Task Agent",
-        role="Task Executor",
-        provider_model="ollama:cogito:14b",
-        mcp_client=mcp_client,
-        min_completion_score=1.0,
-        instructions="Solve the given task as quickly as possible using the tools at your disposal.",
-        max_iterations=10,
-        reflect=True,
-        log_level="debug",
-    )
-    result = await agent.run(task)
-    json_result = json.dumps(result, indent=4)
-    print(json_result)
+        # Create AgentContext
+        agent_context = AgentContext(
+            agent_name="Task Agent",
+            role="Task Executor",
+            provider_model_name="ollama:cogito:14b",
+            mcp_client=mcp_client,  # Pass initialized client
+            min_completion_score=1.0,
+            instructions="Solve the given task as quickly as possible using the tools at your disposal.",
+            max_iterations=10,
+            reflect_enabled=True,
+            log_level="debug",
+            initial_task=task,
+            tool_use_enabled=True,
+            use_memory_enabled=True,
+            collect_metrics_enabled=True,
+            check_tool_feasibility=True,
+        )
+
+        # Initialize ReactAgent with the context
+        agent = ReactAgent(context=agent_context)
+
+        # Run the agent
+        result_dict = await agent.run(initial_task=task)
+
+        # Convert result dict to JSON string for printing
+        json_result = json.dumps(result_dict, indent=4, default=str)
+        print("--- Agent Run Result ---")
+        print(json_result)
+        print("------------------------")
+
+    finally:
+        # Ensure context and its resources (like MCP client) are closed
+        if agent_context:
+            print("\nClosing AgentContext...")
+            await agent_context.close()
+            print("AgentContext closed.")
 
     # OR run the example workflow
 

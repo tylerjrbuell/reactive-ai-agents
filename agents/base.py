@@ -2,590 +2,421 @@ from __future__ import annotations
 import json
 import traceback
 import asyncio
-from typing import List, Dict, Any, Optional, Union, Sequence, Callable
+from typing import List, Dict, Any, Optional, Union, Sequence, Callable, TYPE_CHECKING
+
+# Removed Logger, BaseModelProvider, MCPClient, ToolProtocol, ToolResult, MCPToolWrapper etc.
+# Removed ModelProviderFactory, prompts
+
+# Import the AgentContext
+from context.agent_context import AgentContext
+from tools.abstractions import (
+    ToolResult,
+)  # Keep ToolResult potentially for type hints if needed later
+
+# Keep for type hinting if needed
 from loggers.base import Logger
 from model_providers.base import BaseModelProvider
-from prompts.agent_prompts import (
-    TASK_PLANNING_SYSTEM_PROMPT,
-    TOOL_ACTION_SUMMARY_PROMPT,
-    AGENT_ACTION_PLAN_PROMPT,
-)
-from model_providers.factory import ModelProviderFactory
-from pydantic import BaseModel
+import time  # Keep time for metric tracking
 
-from agent_mcp.client import MCPClient
-from tools.abstractions import ToolProtocol, MCPToolWrapper, ToolResult
-import time
+# Removed time import if not used directly
+
+# Import shared types from the new location
+from common.types import TaskStatus
 
 
 class Agent:
-    def __init__(
-        self,
-        name: str,
-        provider_model: str,
-        mcp_client: Optional[MCPClient] = None,
-        instructions: str = "",
-        tools: Sequence[ToolProtocol] = (),  # Use empty tuple as default
-        tool_use: bool = True,
-        min_completion_score: float = 1.0,
-        max_iterations: Optional[int] = None,
-        log_level: str = "info",
-        workflow_context: Optional[Dict[str, Any]] = None,
-        confirmation_callback: Optional[Callable[[str, Dict[str, Any]], bool]] = None,
-        enable_caching: bool = True,
-        cache_ttl: int = 3600,  # 1 hour default TTL
-    ):
-        try:
-            ## Agent Attributes
-            self.name: str = name
-            self.model_provider: BaseModelProvider = (
-                ModelProviderFactory.get_model_provider(provider_model)
-            )
-            self.initial_task: str = ""
-            self.final_answer: Optional[str] = ""
-            self.instructions: str = instructions
-            self.mcp_client = mcp_client
-            self.tool_use: bool = tool_use
-            self.confirmation_callback = confirmation_callback
-            self.reasoning_log: List[str] = []  # For thought surfacing
+    """
+    Base class for AI agents, using AgentContext for state and component management.
+    """
 
-            # Handle tools based on whether we have an MCP client or manual tools
-            self.tools = ()  # Use empty tuple for initialization
-            self.memory: list = []
-            self.task_progress: str = ""
-            self.messages: list = [{"role": "system", "content": self.instructions}]
-            self.plan_prompt: str = ""
-            self.min_completion_score = min_completion_score
-            self.max_iterations = max_iterations
-            self.iterations: int = 0
+    context: AgentContext  # Agent now holds a context instance
 
-            # Initialize loggers
-            self.agent_logger = Logger(
-                name=name,
-                type="agent",
-                level=log_level,
-            )
-            self.tool_logger = Logger(
-                name=f"{self.name} Tool",
-                type="tool",
-                level=log_level,
-            )
-            self.result_logger = Logger(
-                name=f"{self.name} Result",
-                type="agent_response",
-                level=log_level,
-            )
+    def __init__(self, context: AgentContext):
+        """
+        Initializes the Agent with a pre-configured AgentContext.
 
-            self.tool_signatures: List[Dict[str, Any]] = []
+        Args:
+            context: The AgentContext instance holding configuration, state, and managers.
+        """
+        self.context = context
+        # Ensure logger is initialized before using it
+        if not self.context.agent_logger:
+            self.context._initialize_loggers()  # Call initialization if needed
+        assert self.context.agent_logger is not None  # Assertion for type checker
+        self.agent_logger.info(
+            f"Base Agent '{self.context.agent_name}' initialized with context."
+        )
 
-            if self.mcp_client:
-                # Import at runtime to avoid circular dependency
-                from tools.abstractions import MCPToolWrapper
+    # --- Convenience properties to access context components ---
+    @property
+    def agent_logger(self) -> Logger:
+        # Logger should be initialized by context or __init__
+        assert self.context.agent_logger is not None
+        return self.context.agent_logger
 
-                self.tools = [
-                    MCPToolWrapper(t, self.mcp_client) for t in self.mcp_client.tools
-                ]
-                self.tool_signatures = self.mcp_client.tool_signatures
-            elif tools:
-                self.tools = tools
-                self.tool_signatures = [
-                    tool.tool_definition
-                    for tool in tools
-                    if hasattr(tool, "tool_definition")
-                ]
+    @property
+    def tool_logger(self) -> Logger:
+        assert self.context.tool_logger is not None
+        return self.context.tool_logger
 
-            self.tool_history: List[Dict[str, Any]] = []
+    @property
+    def result_logger(self) -> Logger:
+        assert self.context.result_logger is not None
+        return self.context.result_logger
 
-            # Only initialize workflow context if provided
-            if workflow_context is not None:
-                self.workflow_context = workflow_context
-                # Initialize agent's own context if workflow tracking is enabled
-                if self.name:
-                    if self.name not in self.workflow_context:
-                        self.workflow_context[self.name] = {
-                            "status": "initialized",
-                            "current_progress": "",
-                            "iterations": 0,
-                            "dependencies_met": True,
-                        }
+    @property
+    def model_provider(self) -> BaseModelProvider:
+        assert self.context.model_provider is not None
+        return self.context.model_provider
 
-            self.agent_logger.info(f"{self.name} Initialized")
-            self.agent_logger.info(
-                f"Provider:Model: {self.model_provider.name}:{self.model_provider.model}"
-            )
-            if self.mcp_client:
-                self.agent_logger.info(
-                    f"Connected MCP Servers: {', '.join(list(self.mcp_client.server_tools.keys()))}"
-                )
-            self.agent_logger.info(
-                f"Available Tools: {', '.join([tool.name for tool in self.tools])}"
-            )
-
-            # Tool caching setup
-            self.enable_caching = enable_caching
-            self.cache_ttl = cache_ttl
-            self.tool_cache = {}
-            self.cache_hits = 0
-            self.cache_misses = 0
-        except Exception as e:
-            # Get the full stack trace
-            stack_trace = "".join(
-                traceback.format_exception(type(e), e, e.__traceback__)
-            )
-            self.agent_logger.error(
-                f"Initialization Error: {str(e)}\nStack trace:\n{stack_trace}"
-            )
-            raise  # Re-raise the exception after logging
+    # --- End Convenience properties ---
 
     async def _think(self, **kwargs) -> dict | None:
+        """Directly calls the model provider for a simple completion."""
+        start_time = time.time()
         try:
-            self.agent_logger.info("Thinking...")
-            return await self.model_provider.get_completion(**kwargs)
-        except Exception as e:
-            self.agent_logger.error(f"Completion Error: {e}")
-            return
+            self.agent_logger.info("Thinking (direct completion)...")
+            # Pass messages directly if provided, otherwise use context messages
+            kwargs.setdefault("messages", self.context.messages)
+            result = await self.model_provider.get_completion(**kwargs)
 
-    async def _plan(self, **kwargs) -> str | None:
-        class format(BaseModel):
-            next_step: str
-
-        try:
-            self.agent_logger.info("Planning...")
-            self.plan_prompt = """
-            <context>
-                <main-task> {task} </main-task>
-                <available-tools> {tools} </available-tools>
-                <previous-steps-performed> {steps} </previous-steps-performed>
-            </context>
-            
-            """.format(
-                task=self.initial_task,
-                tools=[
-                    f"Name: {tool['function']['name']}\nParameters: {tool['function']['parameters']}"
-                    for tool in self.tool_signatures
-                ],
-                steps="\n".join(
-                    [
-                        f"Step {index}: {step}"
-                        for index, step in enumerate(self.memory, start=1)
-                    ]
-                ),
-            )
-            result = await self.model_provider.get_completion(
-                system=AGENT_ACTION_PLAN_PROMPT,
-                prompt=self.plan_prompt,
-                format=(
-                    format.model_json_schema()
-                    if self.model_provider.name == "ollama"
-                    else "json"
-                ),
-            )
-            return result.get("response", None)
+            # Metric Tracking
+            execution_time = time.time() - start_time
+            if self.context.metrics_manager:
+                usage = result.get("usage", {}) if result else {}
+                self.context.metrics_manager.update_model_metrics(
+                    {
+                        "time": execution_time,
+                        "prompt_tokens": usage.get("prompt_tokens", 0),
+                        "completion_tokens": usage.get("completion_tokens", 0),
+                    }
+                )
+            return result
         except Exception as e:
-            self.agent_logger.error(f"Completion Error: {e}")
-            return
+            self.agent_logger.error(f"Direct Completion Error: {e}")
+            # Track error? Maybe implicitly tracked by lack of successful result.
+            return None
 
     async def _think_chain(
         self,
-        tool_use: bool = True,
         remember_messages: bool = True,
         **kwargs,
     ) -> dict | None:
+        """
+        Performs a chat completion, potentially using tools and managing message history via context.
+        """
+        start_time = time.time()
         try:
-            if self.workflow_context:
-                # Include workflow context in messages if available
-                context_message = {
-                    "role": "system",
-                    "content": f"Previous workflow steps:\n{json.dumps(self.workflow_context, indent=2)}",
-                }
-                if context_message not in self.messages:
-                    self.messages.insert(1, context_message)
+            # Use tool signatures from the ToolManager via context
+            tool_signatures = self.context.get_tool_signatures()
+            use_tools = self.context.tool_use_enabled and bool(tool_signatures)
 
-            kwargs.setdefault("messages", self.messages)
-            self.agent_logger.info(f"Thinking...")
+            # Default to context messages
+            kwargs.setdefault("messages", self.context.messages)
+            self.agent_logger.debug(
+                f"Thinking (chat completion, tool_use={use_tools})..."
+            )
 
             result = await self.model_provider.get_chat_completion(
-                tools=self.tool_signatures if tool_use else [],
+                tools=tool_signatures if use_tools else [],
                 **kwargs,
             )
-            if not result:
+
+            # Metric Tracking (always track call, even if it fails below)
+            execution_time = time.time() - start_time
+            if self.context.metrics_manager:
+                usage = result.get("usage", {}) if result else {}
+                self.context.metrics_manager.update_model_metrics(
+                    {
+                        "time": execution_time,
+                        "prompt_tokens": usage.get("prompt_tokens", 0),
+                        "completion_tokens": usage.get("completion_tokens", 0),
+                    }
+                )
+
+            if not result or "message" not in result:
+                self.agent_logger.warning(
+                    "Chat completion did not return a valid message structure."
+                )
                 return None
-            message_content = result["message"].get("content")
-            tool_calls = result["message"].get("tool_calls")
+
+            message = result["message"]
+            message_content = message.get("content")
+            tool_calls = message.get("tool_calls")
+
             if message_content and remember_messages:
+                # Add assistant response to context's message history
+                self.context.messages.append(
+                    {"role": "assistant", "content": message_content}
+                )
+                self.agent_logger.debug(
+                    f"Added assistant message to context: {message_content[:100]}..."
+                )
 
-                self.messages.append({"role": "assistant", "content": message_content})
-            elif tool_calls:
+            elif tool_calls and use_tools:
+                self.agent_logger.info(f"Received {len(tool_calls)} tool calls.")
+                # Add the assistant message with tool calls before processing results
+                if remember_messages:
+                    self.context.messages.append(
+                        message
+                    )  # Store the message with tool_calls
+                    self.agent_logger.debug(
+                        "Added assistant tool call message to context."
+                    )
+
+                # Process tools using ToolManager via context
                 await self._process_tool_calls(tool_calls=tool_calls)
-                return await self._think_chain(tool_use=False, **kwargs)
 
+                # Recursive call to let the model respond to tool results
+                # Pass remember_messages=False for the recursive call if we only want the *final* assistant message
+                return await self._think_chain(
+                    remember_messages=remember_messages, **kwargs
+                )
+
+            # Return the result which might contain content or tool_calls
             return result
+
         except Exception as e:
-            self.agent_logger.error(f"Chat Completion Error: {e}")
+            # Capture detailed traceback
+            tb_str = traceback.format_exc()
+            self.agent_logger.error(f"Chat Completion Error: {e}\n{tb_str}")
+            return None
+
+    async def _process_tool_calls(self, tool_calls: List[Dict[str, Any]]) -> None:
+        """
+        Processes tool calls using the ToolManager from the context and appends results to context messages.
+        """
+        if not self.context.tool_manager:
+            self.agent_logger.error(
+                "Tool processing requested but ToolManager is not available in context."
+            )
             return
 
-    async def _process_tool_calls(self, tool_calls) -> None:
-        processed_tool_calls = []
+        # Could potentially run in parallel if ToolManager supports it and tools are independent
+        # For now, process sequentially
+        processed_tool_call_ids = set()  # Track by ID if available
+
         for tool_call in tool_calls:
-            if str(tool_call) in processed_tool_calls:
-                self.tool_logger.info(
-                    f"Tool Call Already Processed: {tool_call['function']['name']}"
+            tool_call_id = tool_call.get("id")
+            # Simple check to avoid reprocessing identical calls in the same batch (if IDs aren't present)
+            # A more robust check might involve hashing the call details
+            call_repr = str(tool_call)  # Simple representation for de-duplication
+            if tool_call_id and tool_call_id in processed_tool_call_ids:
+                self.tool_logger.debug(
+                    f"Tool call ID {tool_call_id} already processed in this batch."
+                )
+                continue
+            elif not tool_call_id and call_repr in processed_tool_call_ids:
+                self.tool_logger.debug(
+                    f"Duplicate tool call signature processed in this batch: {tool_call.get('function', {}).get('name')}"
                 )
                 continue
 
-            tool_result = await self._use_tool(tool_call=tool_call)
+            # Use the ToolManager to execute the tool
+            tool_result = await self.context.tool_manager.use_tool(tool_call=tool_call)
+
+            # Append result to context message list
             if tool_result is not None:
-                self.messages.append(
-                    {
-                        **(
-                            {"tool_call_id": tool_call["id"]}
-                            if tool_call.get("id")
-                            else {}
-                        ),
-                        "role": "tool",
-                        "name": tool_call["function"]["name"],
-                        "content": f"{tool_result}",
-                    }
-                )
-                processed_tool_calls.append(str(tool_call))
+                # Result should be formatted as string for the model
+                result_content = str(tool_result)
 
-    async def _use_tool(self, tool_call) -> Union[str, List[str], None]:
-        tool_name = tool_call["function"]["name"]
-        params = (
-            tool_call["function"]["arguments"]
-            if type(tool_call["function"]["arguments"]) is dict
-            else json.loads(tool_call["function"]["arguments"])
-        )
-
-        try:
-            # Find the tool in our unified tool sequence
-            tool = next((t for t in self.tools if t.name == tool_name), None)
-            if not tool:
-                available_tools = [t.name for t in self.tools]
-                error_message = f"Tool '{tool_name}' not found. Available tools: {', '.join(available_tools)}"
-                self.tool_logger.error(error_message)
-                return error_message
-
-            # Add reasoning to the log if present in params
-            if "reasoning" in params:
-                self.reasoning_log.append(params["reasoning"])
-
-            # Check if caching is enabled and result is in cache
-            cache_key = None
-            if self.enable_caching:
-                # Generate a stable cache key from the tool name and params
-                cache_key = f"{tool_name}:{json.dumps(params, sort_keys=True)}"
-                if cache_key in self.tool_cache:
-                    cache_entry = self.tool_cache[cache_key]
-                    # Check if cache entry is still valid based on TTL
-                    if time.time() - cache_entry["timestamp"] < self.cache_ttl:
-                        self.tool_logger.info(f"Cache hit for tool: {tool_name}")
-                        self.cache_hits += 1
-
-                        # Record the tool usage but note it came from cache
-                        self.tool_history.append(
-                            {
-                                "name": tool_name,
-                                "params": params,
-                                "result": cache_entry["result"][:500]
-                                + ("..." if len(cache_entry["result"]) > 500 else ""),
-                                "cached": True,
-                            }
-                        )
-
-                        # Handle final answer case
-                        if tool_name == "final_answer":
-                            self.final_answer = cache_entry["result"]
-
-                        return cache_entry["result"]
-                # Record cache miss if we get here
-                self.cache_misses += 1
-
-            # Request confirmation for potentially sensitive operations
-            sensitive_actions = [
-                "delete",
-                "remove",
-                "send",
-                "email",
-                "subscribe",
-                "unsubscribe",
-                "cancel",
-                "payment",
-            ]
-            requires_confirmation = any(
-                action in tool_name.lower() for action in sensitive_actions
-            )
-
-            if requires_confirmation:
-                # Create a user-friendly description of the action
-                action_description = f"Use tool '{tool_name}' with parameters: {json.dumps(params, indent=2)}"
-                # Request confirmation from the user
-                confirmed = await self.ask_user_confirmation(
-                    action_description, {"tool": tool_name, "params": params}
-                )
-                if not confirmed:
-                    return f"Action cancelled by user: {tool_name}"
-
-            # Use the tool and get standardized result
-            tool_start_time = time.time()
-            self.tool_logger.info(f"Using tool: {tool_name} with {params}")
-            result = await tool.use(params)
-            tool_execution_time = time.time() - tool_start_time
-
-            if not isinstance(result, ToolResult):
-                result = ToolResult.wrap(result)
-
-            # Store result in cache if caching is enabled
-            if self.enable_caching and cache_key and "nocache" not in params:
-                # Don't cache errors or temporary results
-                if (
-                    not str(result.to_list()).lower().startswith("error")
-                    and tool_execution_time > 0.1
-                ):
-                    self.tool_cache[cache_key] = {
-                        "result": result.to_list(),
-                        "timestamp": time.time(),
-                    }
-                    # Limit cache size to prevent memory issues
-                    if len(self.tool_cache) > 1000:
-                        # Remove oldest entries
-                        sorted_cache = sorted(
-                            self.tool_cache.items(), key=lambda x: x[1]["timestamp"]
-                        )
-                        for old_key, _ in sorted_cache[: len(sorted_cache) // 2]:
-                            del self.tool_cache[old_key]
-
-            # Record the tool use in history
-            tool_history_entry = {
-                "name": tool_name,
-                "params": params,
-                "result": str(result.to_list())[:500]
-                + ("..." if len(str(result.to_list())) > 500 else ""),
-                "execution_time": tool_execution_time,
-            }
-            self.tool_history.append(tool_history_entry)
-
-            # Update metrics if ReactAgent instance
-            try:
-                # Only call _update_metrics if collect_metrics is True
-                if getattr(self, "collect_metrics", False):
-                    self._update_metrics("tool", tool_history_entry)
-            except Exception as metrics_error:
-                self.tool_logger.debug(
-                    f"Metrics update error (non-critical): {metrics_error}"
+                tool_result_message = {
+                    "role": "tool",
+                    "name": tool_call.get("function", {}).get("name", "unknown_tool"),
+                    "content": result_content,
+                    **({"tool_call_id": tool_call_id} if tool_call_id else {}),
+                }
+                self.context.messages.append(tool_result_message)
+                self.agent_logger.debug(
+                    f"Added tool result message to context for {tool_result_message['name']}."
                 )
 
-            # Update workflow context if available
-            if self.workflow_context and self.name in self.workflow_context:
-                self.workflow_context[self.name]["last_tool_used"] = tool_name
-
-            self.tool_logger.debug(f"Tool Result: {result.to_list()}")
-
-            # Generate tool summary
-            tool_action_summary = (
-                await self.model_provider.get_completion(
-                    system=TOOL_ACTION_SUMMARY_PROMPT,
-                    prompt=f"""
-                <context>
-                    <tool_call>Tool Name: '{tool_name}' with parameters '{params}'</tool_call>
-                    <tool_call_result>{result.to_list()}</tool_call_result>
-                </context>
-                """,
+                if tool_call_id:
+                    processed_tool_call_ids.add(tool_call_id)
+                else:
+                    processed_tool_call_ids.add(call_repr)
+            else:
+                self.tool_logger.warning(
+                    f"Tool call {tool_call.get('function', {}).get('name')} produced None result. Not adding to messages."
                 )
-            ).get("response")
 
-            self.tool_logger.debug(f"Tool Action Summary: {tool_action_summary}")
-            self.memory.append(tool_action_summary)
-            self.task_progress = "\n".join(
-                [
-                    f"Step {index}: {step}"
-                    for index, step in enumerate(self.memory, start=1)
-                ]
-            )
+    async def _run_task(self, task: str) -> dict | None:
+        """Adds the main task to the message list and initiates the thinking chain."""
+        # Ensure initial task is set in context if not already
+        if not self.context.initial_task:
+            self.context.initial_task = task
+        if not self.context.current_task:
+            self.context.current_task = task
 
-            return result.to_list()
-        except Exception as e:
-            error_message = f"Error using tool {tool_name}: {str(e)}"
-            self.tool_logger.error(error_message)
-            return error_message
-
-    async def _run_task(self, task, tool_use: bool = True) -> dict | None:
-        self.agent_logger.debug(f"MAIN TASK: {task}")
-        self.messages.append(
+        # Append the user's task message
+        self.context.messages.append(
             {
                 "role": "user",
-                "content": f"""
-                
-                MAIN TASK: {task}
-                """.strip(),
+                "content": task,  # Keep it simple, role/instructions are in system prompt
             }
         )
-        result = await self._think_chain(tool_use=tool_use)
+        # Start the thinking process
+        result = await self._think_chain(
+            remember_messages=True
+        )  # Remember intermediate steps by default
         return result
 
-    async def _run_task_iteration(self, task):
-        running_task = task
-        self.iterations = 0
+    async def _run_task_iteration(self, task: str) -> Optional[str]:
+        """
+        Runs a single iteration or loop for the task, potentially simplified in base Agent.
+        ReactAgent will override this with more complex logic (reflection, planning).
+        """
+        self.context.iterations = 0
+        max_iterations = (
+            self.context.max_iterations or 1
+        )  # Default to 1 iteration for base agent
+
+        final_result_content = None
 
         try:
-            while True:
-                if (
-                    self.max_iterations is not None
-                    and self.iterations >= self.max_iterations
-                ):
-                    self.agent_logger.info(
-                        f"Reached maximum iterations ({self.max_iterations})"
-                    )
-                    break
-
-                self.iterations += 1
-                self.agent_logger.info(f"Running Iteration: {self.iterations}")
-
-                result = await self._run_task(task=running_task)
-                print(result)
-                if not result:
-                    self.agent_logger.info(f"{self.name} Failed\n")
-                    self.agent_logger.info(f"Task: {task}\n")
-                    break
-
-                if self.final_answer:
-                    return self.final_answer
-
-                # Add continuation check
-                if self.iterations > 1 and result.get("message", {}).get(
-                    "content"
-                ) == result.get("previous_content"):
-                    self.agent_logger.info(
-                        "No progress made in this iteration, stopping"
-                    )
-                    break
-
-                result["previous_content"] = result.get("message", {}).get("content")
-
-            return result["message"]["content"] if result else None
-
-        except Exception as e:
-            self.agent_logger.error(f"Iteration error: {str(e)}")
-            return None
-        finally:
-            if (
-                self.max_iterations is not None
-                and self.iterations >= self.max_iterations
-            ):
+            self.agent_logger.info(f"Starting task: {task}")
+            while self.context.iterations < max_iterations:
+                self.context.iterations += 1
                 self.agent_logger.info(
-                    f"Reached maximum iterations ({self.max_iterations})"
+                    f"Running Iteration: {self.context.iterations}/{max_iterations}"
                 )
 
-    async def _safe_close_mcp_client(self):
-        """Safely close the MCP client without causing cancellation issues."""
-        if not hasattr(self, "mcp_client") or not self.mcp_client:
-            return
+                # In base agent, just run the task directly
+                # Use current_task from context, which might be updated by subclasses
+                result = await self._run_task(task=self.context.current_task)
 
-        self.agent_logger.info("Safely closing MCP client connection")
-        try:
-            # Create a new task in the same event loop to close the client
-            # This ensures the cancel scope is managed properly
-            loop = asyncio.get_running_loop()
-            close_task = loop.create_task(self.mcp_client.close())
-
-            # Wait for the close task to complete with a timeout
-            try:
-                await asyncio.wait_for(close_task, timeout=5.0)
-                self.agent_logger.info("MCP client closed successfully")
-            except asyncio.TimeoutError:
-                self.agent_logger.warning(
-                    "MCP client close timed out, client may not be fully closed"
-                )
-            except asyncio.CancelledError:
-                # If this task gets cancelled, detach the close task so it can finish
-                close_task.add_done_callback(
-                    lambda _: self.agent_logger.info(
-                        "Detached MCP client close completed"
+                if not result or not result.get("message"):
+                    self.agent_logger.warning(
+                        f"Iteration {self.context.iterations} failed or produced no result."
                     )
-                )
-                # Don't wait for it since we're being cancelled
-                raise
-        except Exception as e:
-            self.agent_logger.warning(f"Error during safe MCP client close: {str(e)}")
-        finally:
-            # Clear the reference regardless of success
-            self.mcp_client = None
+                    break  # Stop if an iteration fails
 
-    async def run(self, initial_task):
-        try:
-            self.initial_task = initial_task
-            self.agent_logger.info(f"Starting task: {initial_task}")
+                message = result["message"]
+                final_result_content = message.get(
+                    "content"
+                )  # Store the last content message
 
-            result = await self._run_task_iteration(task=initial_task)
+                # Base agent doesn't handle complex stopping conditions like reflections or final_answer tool
+                # It just runs for the allowed iterations. Subclasses override this.
+                if self.context.final_answer:  # Check if a tool set the final answer
+                    self.agent_logger.info("Final answer detected in context.")
+                    final_result_content = self.context.final_answer
+                    break
 
-            if result:
-                self.result_logger.info(result)
-                return result
-            else:
-                self.agent_logger.warning("Task completed without result")
-                return None
-
-        except Exception as e:
-            self.agent_logger.error(f"Agent Error: {e}")
-            return None
-        finally:
-            # Use our safe method to close the MCP client
-            if hasattr(self, "mcp_client") and self.mcp_client:
-                await self._safe_close_mcp_client()
-
-    def set_model_provider(self, provider_model: str):
-        self.model_provider = ModelProviderFactory.get_model_provider(provider_model)
-        self.agent_logger.info(f"Model Provider Set to: {self.model_provider.name}")
-
-    async def ask_user_confirmation(
-        self, action_description: str, action_details: Optional[Dict[str, Any]] = None
-    ) -> bool:
-        """
-        Ask for user confirmation before executing potentially impactful actions.
-
-        Args:
-            action_description: A description of the action the agent wants to perform
-            action_details: Additional details about the action (e.g. tool name, parameters)
-
-        Returns:
-            bool: True if confirmed, False otherwise
-        """
-        self.agent_logger.info(f"Requesting confirmation for: {action_description}")
-
-        if self.confirmation_callback:
-            try:
-                # Try to handle as awaitable first
-                if asyncio.iscoroutinefunction(self.confirmation_callback):
-                    return bool(
-                        await self.confirmation_callback(
-                            action_description, action_details or {}
+                # Simple check for no progress (if assistant repeats itself) - maybe less relevant in base agent
+                if self.context.iterations > 1 and len(self.context.messages) > 2:
+                    last_assistant_message = (
+                        self.context.messages[-1]
+                        if self.context.messages[-1]["role"] == "assistant"
+                        else None
+                    )
+                    prev_assistant_message = (
+                        self.context.messages[-3]
+                        if len(self.context.messages) > 3
+                        and self.context.messages[-3]["role"] == "assistant"
+                        else None
+                    )
+                    if (
+                        last_assistant_message
+                        and prev_assistant_message
+                        and last_assistant_message.get("content")
+                        == prev_assistant_message.get("content")
+                    ):
+                        self.agent_logger.info(
+                            "Assistant message repeated, stopping iteration."
                         )
-                    )
-                # Handle as regular function
-                return bool(
-                    self.confirmation_callback(action_description, action_details or {})
+                        break
+
+            if self.context.iterations >= max_iterations:
+                self.agent_logger.info(
+                    f"Reached maximum iterations ({max_iterations}) for base agent run."
                 )
-            except Exception as e:
-                self.agent_logger.error(f"Error in confirmation callback: {e}")
-                return False
 
-        # Default implementation always allows actions when no callback provided
+            return (
+                self.context.final_answer or final_result_content
+            )  # Return final answer if set, else last content
+
+        except Exception as e:
+            tb_str = traceback.format_exc()
+            self.agent_logger.error(f"Error during task iteration: {e}\n{tb_str}")
+            return None  # Indicate error
+
+    async def run(self, initial_task: str) -> Optional[str]:
+        """
+        Basic run method for the agent. Sets the initial task and runs the iteration loop.
+        Subclasses (like ReactAgent) should override this for more complex execution flows.
+        """
+        # Reset context state for a new run? Or assume context is fresh?
+        # Let's assume context might be reused, so reset relevant parts.
+        self.context.initial_task = initial_task
+        self.context.current_task = initial_task
+        self.context.iterations = 0
+        self.context.final_answer = None
+        # Clear messages except system prompt? Be careful if context is shared.
+        # For now, assume messages are managed externally or cleared before run if needed.
+        # self.context.messages = [msg for msg in self.context.messages if msg['role'] == 'system']
+
         self.agent_logger.info(
-            "No confirmation callback provided, proceeding with action"
+            f"Agent '{self.context.agent_name}' starting run for task: {initial_task}"
         )
-        return True
 
-    def _update_metrics(self, metric_type: str, data: Dict[str, Any]) -> None:
-        """
-        Base implementation of metrics tracking.
-        Subclasses like ReactAgent can override this for actual metrics tracking.
+        # Reset metrics if manager exists
+        if self.context.metrics_manager:
+            self.context.metrics_manager.reset()
 
-        Args:
-            metric_type: The type of metric (tool, model, etc.)
-            data: The metric data to track
-        """
-        # Base implementation does nothing but log
-        self.agent_logger.debug(
-            f"Metrics update requested (not tracked in base Agent): {metric_type} - {data}"
-        )
-        return
+        final_result = None
+        try:
+            # The base agent runs a simple iteration loop.
+            final_result = await self._run_task_iteration(task=initial_task)
+
+            if final_result:
+                self.result_logger.info(
+                    f"Task completed. Result: {str(final_result)[:500]}..."
+                )
+            else:
+                self.agent_logger.warning(
+                    "Task completed without a final string result."
+                )
+
+            # Update final metrics
+            if self.context.metrics_manager:
+                # Assume status is COMPLETE if we finished without error in base agent
+                if self.context.task_status not in [
+                    TaskStatus.ERROR
+                ]:  # Use TaskStatus from common
+                    self.context.task_status = (
+                        TaskStatus.COMPLETE
+                    )  # Use TaskStatus from common
+                self.context.metrics_manager.finalize_run_metrics()
+
+            # Save memory if enabled
+            if self.context.memory_manager:
+                # Need to construct a result dict for memory manager
+                result_dict = {
+                    "status": str(self.context.task_status),
+                    "result": final_result,
+                    "iterations": self.context.iterations,
+                    # Add other relevant info if available (evaluation, etc.)
+                }
+                self.context.memory_manager.update_session_history(result_dict)
+                self.context.memory_manager.save_memory()
+
+            return final_result
+
+        except Exception as e:
+            self.agent_logger.error(f"Agent run failed: {e}")
+            self.context.task_status = TaskStatus.ERROR  # Use TaskStatus from common
+            if self.context.metrics_manager:
+                self.context.metrics_manager.finalize_run_metrics()
+            return None
+        # finally:
+        # Context closure should be handled by the caller who created the context
+        # await self.context.close() # Don't close context here
+
+    # --- Methods removed as logic moved to Context/Managers ---
+    # _use_tool -> Now handled by ToolManager
+    # _safe_close_mcp_client -> Now handled by AgentContext.close
+    # ask_user_confirmation -> Now handled by ToolManager
+    # _update_metrics -> Now handled by MetricsManager
+    # set_model_provider -> Configuration should happen at context creation
+    # _plan -> Specific logic, likely belongs in ReactAgent or similar
