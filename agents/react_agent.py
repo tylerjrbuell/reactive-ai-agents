@@ -11,7 +11,6 @@ import random
 
 from pydantic import BaseModel, Field
 from prompts.agent_prompts import (
-    REACT_AGENT_SYSTEM_PROMPT,
     AGENT_ACTION_PLAN_PROMPT,
     MISSING_TOOLS_PROMPT,
     TOOL_FEASIBILITY_CONTEXT_PROMPT,
@@ -146,16 +145,14 @@ class ReactAgent(Agent):
             if not self._check_dependencies():
                 return self._prepare_final_result(rescoped_task)
 
-            self.context.initial_required_tools = None  # Initialize/reset for the run
+            self.context.min_required_tools = None  # Initialize/reset for the run
             if self.context.check_tool_feasibility:
                 feasibility = await self.check_tool_feasibility(initial_task)
                 # Store the initial required tools if feasibility check ran and succeeded
                 if feasibility and feasibility.get("required_tools") is not None:
-                    self.context.initial_required_tools = set(
-                        feasibility["required_tools"]
-                    )
+                    self.context.min_required_tools = set(feasibility["required_tools"])
                     self.agent_logger.debug(
-                        f"Stored initial required tools: {self.context.initial_required_tools}"
+                        f"Stored initial required tools: {self.context.min_required_tools}"
                     )
 
                 if not feasibility["feasible"]:
@@ -222,6 +219,9 @@ class ReactAgent(Agent):
                         )  # Ensure status is updated
                         break  # Exit loop immediately
 
+                    # Update system prompt if needed
+                    self.context.update_system_prompt()
+
                     # Reset failure counter on successful iteration
                     failure_count = 0
 
@@ -260,17 +260,17 @@ class ReactAgent(Agent):
                                     0  # Reset failure count for the new task
                                 )
 
-                                # <<< UPDATE initial_required_tools based on rescope >>>
+                                # <<< UPDATE min_required_tools based on rescope >>>
                                 if rescope_result.get("expected_tools") is not None:
-                                    self.context.initial_required_tools = set(
+                                    self.context.min_required_tools = set(
                                         rescope_result["expected_tools"]
                                     )
                                     self.agent_logger.debug(
-                                        f"Updated required tools for rescoped task: {self.context.initial_required_tools}"
+                                        f"Updated required tools for rescoped task: {self.context.min_required_tools}"
                                     )
                                 else:
                                     # If rescope doesn't specify tools, maybe reset or keep old? Reset seems safer.
-                                    self.context.initial_required_tools = None
+                                    self.context.min_required_tools = None
                                     self.agent_logger.debug(
                                         "Reset required tools as rescope did not specify expected tools."
                                     )
@@ -439,9 +439,9 @@ class ReactAgent(Agent):
     ) -> Dict[str, Any]:
         """Helper to construct the final return dictionary."""
         # Convert set to list for serialization if needed
-        initial_req_tools_list = (
-            list(self.context.initial_required_tools)
-            if self.context.initial_required_tools is not None
+        min_req_tools_list = (
+            list(self.context.min_required_tools)
+            if self.context.min_required_tools is not None
             else None
         )
         return {
@@ -461,7 +461,7 @@ class ReactAgent(Agent):
             "rescoped": rescoped_task is not None,
             "original_task": self.context.initial_task,
             "rescoped_task": rescoped_task,
-            "initial_required_tools": initial_req_tools_list,
+            "min_required_tools": min_req_tools_list,
             "metrics": (
                 self.context.get_metrics() if self.context.metrics_manager else None
             ),
@@ -515,24 +515,24 @@ class ReactAgent(Agent):
             if last_reflection:
                 score = last_reflection.get("completion_score", 0.0)
                 # Use initial required tools from context if available
-                initial_req_tools = self.context.initial_required_tools
+                min_req_tools = self.context.min_required_tools
                 # Get completed tools from the current reflection
                 completed_tools = set(last_reflection.get("completed_tools", []))
 
                 # Check score and tool completion
                 score_met = score >= self.context.min_completion_score
-                # Check tool completion only if initial_required_tools were set
-                if initial_req_tools is not None:
-                    tools_completed = initial_req_tools.issubset(completed_tools)
+                # Check tool completion only if min_required_tools were set
+                if min_req_tools is not None:
+                    tools_completed = min_req_tools.issubset(completed_tools)
                     self.agent_logger.info(
-                        f"required tools: {initial_req_tools}, completed tools: {completed_tools}"
+                        f"required tools: {min_req_tools}, completed tools: {completed_tools}"
                     )
                     self.agent_logger.info(
                         f"score_met: {score_met}, tools_completed: {tools_completed}"
                     )
                     if score_met and tools_completed:
                         self.agent_logger.info(
-                            f"Stopping loop: Reflection score {score:.2f} meets threshold ({self.context.min_completion_score:.2f}) AND initial required tools ({initial_req_tools}) completed."
+                            f"Stopping loop: Reflection score {score:.2f} meets threshold ({self.context.min_completion_score:.2f}) AND initial required tools ({min_req_tools}) completed."
                         )
                         self.context.task_status = TaskStatus.COMPLETE
                         return False
@@ -583,7 +583,7 @@ class ReactAgent(Agent):
             }
 
         try:
-            available_tools = {tool.name for tool in self.context.tool_manager.tools}
+            available_tools = self.context.get_available_tool_names()
             if not available_tools:
                 self.agent_logger.info("No tools available in ToolManager.")
                 return {
@@ -739,7 +739,7 @@ class ReactAgent(Agent):
             }
 
         try:
-            available_tools = [tool.name for tool in self.context.tool_manager.tools]
+            available_tools = self.context.get_available_tool_names()
 
             # Use centralized prompts
             rescope_prompt = RESCOPE_CONTEXT_PROMPT.format(
@@ -811,7 +811,7 @@ class ReactAgent(Agent):
 
     async def generate_goal_result_evaluation(self) -> Dict[str, Any]:
         """Evaluates how well the final result matches the initial task goal."""
-        self.agent_logger.info("🔎 Comparing goal vs result...")
+        self.agent_logger.info("🔎 Generating goal VS result evaluation...")
         default_eval = {
             "adherence_score": 0.0,
             "matches_intent": False,
@@ -1069,13 +1069,7 @@ class ReactAgent(Agent):
             self.agent_logger.info(" Planning...")
             plan = await self._plan()
             if plan and plan.get("next_step") and plan.get("rationale"):
-                plan_guidance = f"PLAN GUIDANCE (for next step): {plan['rationale']} Therefore: {plan['next_step']}"
-                # insert_index = -1
-                # if self.context.messages[-1]["role"] == "tool":
-                #     insert_index = -2
-                # self.context.messages.insert(
-                #     insert_index, {"role": "system", "content": plan_guidance}
-                # )
+                plan_guidance = f"{plan['rationale']}, Therefore: {plan['next_step']}"
                 self.context.current_task = plan_guidance
                 self.agent_logger.debug(
                     f"Added plan guidance to messages: {plan_guidance}"

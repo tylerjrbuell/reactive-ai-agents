@@ -68,12 +68,12 @@ class AgentContext(BaseModel):
     initial_task: str = ""
     final_answer: Optional[str] = None
     messages: List[Dict[str, Any]] = []
-    task_progress: str = ""  # Summary of steps performed
+    task_progress: str = "No progression yet"  # Summary of steps performed
     reasoning_log: List[str] = []  # For thought surfacing
     iterations: int = 0
     task_status: "TaskStatus" = TaskStatus.INITIALIZED
     current_task: str = ""  # Can be the initial task or a rescoped one
-    initial_required_tools: Optional[Set[str]] = None
+    min_required_tools: Optional[Set[str]] = None
     session: AgentSession = AgentSession()
     # --- Workflow Context and Dependencies ---
     # These are passed in or configured externally but used by WorkflowManager
@@ -248,7 +248,12 @@ class AgentContext(BaseModel):
         return self.tool_manager.tool_signatures if self.tool_manager else []
 
     def get_available_tools(self) -> Sequence[ToolProtocol]:
-        return self.tool_manager.tools if self.tool_manager else []
+        return self.tool_manager.get_available_tools() if self.tool_manager else []
+
+    def get_available_tool_names(self) -> set[str]:
+        return (
+            self.tool_manager.get_available_tool_names() if self.tool_manager else set()
+        )
 
     def get_tool_history(self) -> List[Dict[str, Any]]:
         return self.tool_manager.tool_history if self.tool_manager else []
@@ -260,6 +265,10 @@ class AgentContext(BaseModel):
         if self.metrics_manager:
             return self.metrics_manager.get_metrics()
         return {}  # Return empty if metrics disabled
+
+    def update_system_prompt(self):
+        if self.messages and self.messages[0]["role"] == "system":
+            self.messages[0]["content"] = self._get_initial_system_prompt()
 
     def save_memory_if_enabled(self):
         if self.memory_manager:

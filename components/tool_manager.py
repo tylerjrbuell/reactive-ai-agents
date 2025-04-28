@@ -156,7 +156,7 @@ class ToolManager(BaseModel):
         self._generate_tool_signatures()
 
         self.tool_logger.info(
-            f"ToolManager initialized with {len(self.tools)} total tools."
+            f"ToolManager initialized with {len(self.tools)} total tools: {', '.join([tool.name for tool in self.tools])}"
         )
 
     def get_tool(self, tool_name: str) -> Optional[ToolProtocol]:
@@ -510,3 +510,11 @@ class ToolManager(BaseModel):
         self.tool_logger.debug(
             f"Generated {len(self.tool_signatures)} tool signatures."
         )
+
+    def get_available_tools(self) -> List[ToolProtocol]:
+        """Returns a list of all available tools."""
+        return self.tools
+
+    def get_available_tool_names(self) -> set[str]:
+        """Returns a set of all available tool names."""
+        return set([tool.name for tool in self.tools])
