@@ -35,17 +35,10 @@ class ReactAgent(Agent):
     A ReAct-style agent that uses reflection and planning within an AgentContext.
     """
 
-    # --- Pydantic models moved inside the class ---
-    class ReflectionFormat(BaseModel):
-        completion_score: float = Field(..., ge=0.0, le=1.0)
-        next_step: str
-        required_tools: List[str] = []
-        completed_tools: List[str] = []
-        reason: str
+    # --- Pydantic models moved inside the class --
 
     class PlanFormat(BaseModel):
         next_step: str
-        continue_iteration: bool  # Should the loop continue based on the plan?
         rationale: str
         suggested_tools: List[str] = []
 
@@ -523,7 +516,6 @@ class ReactAgent(Agent):
 
                 # Check score and tool completion
                 score_met = score >= self.context.min_completion_score
-
                 # Check tool completion only if initial_required_tools were set
                 if initial_req_tools is not None:
                     tools_completed = initial_req_tools.issubset(completed_tools)
@@ -925,7 +917,6 @@ class ReactAgent(Agent):
             self.agent_logger.debug("Skipping plan step as reflection is disabled.")
             return {
                 "next_step": "Continue task execution.",
-                "continue_iteration": True,
                 "rationale": "Direct execution mode.",
                 "suggested_tools": [],
             }
@@ -945,7 +936,6 @@ class ReactAgent(Agent):
                     if self.context.reflection_manager
                     else None
                 ),
-                "recent_reflections": self.context.get_reflections()[-3:],
                 "current_iteration": self.context.iterations,
                 "max_iterations": self.context.max_iterations,
             }
@@ -968,7 +958,6 @@ class ReactAgent(Agent):
                 self.agent_logger.warning("Planning failed: No response from model.")
                 return {
                     "next_step": "Continue task execution (planning failed).",
-                    "continue_iteration": True,
                     "rationale": "Planning model failed.",
                     "suggested_tools": [],
                 }

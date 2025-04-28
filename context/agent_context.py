@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from loggers.base import Logger
 from model_providers.base import BaseModelProvider
 from agent_mcp.client import MCPClient
+from prompts.agent_prompts import REACT_AGENT_SYSTEM_PROMPT
 from tools.abstractions import ToolProtocol
 from common.types import TaskStatus, AgentMemory
 
@@ -190,12 +191,14 @@ class AgentContext(BaseModel):
 
     def _get_initial_system_prompt(self) -> str:
         """Constructs the initial system prompt based on role and instructions."""
-        combined_instructions = self.instructions
-        if self.role and self.role_instructions:
-            role_specific_instructions = self.role_instructions.get(self.role, "")
-            if role_specific_instructions:
-                combined_instructions = f"{self.instructions}\nRole: {self.role}\n{role_specific_instructions}"
-        return combined_instructions
+        prompt = REACT_AGENT_SYSTEM_PROMPT.format(
+            role=self.role,
+            instructions=self.instructions,
+            role_specific_instructions=self.role_instructions,
+            task=self.current_task,
+            task_progress=self.task_progress,
+        )
+        return prompt
 
     # Methods to interact with components will be added later
     # e.g., get_tools(), update_metrics(), save_memory(), get_reflection() etc.

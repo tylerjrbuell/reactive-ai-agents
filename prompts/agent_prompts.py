@@ -38,6 +38,7 @@ Constraints:
 REACT_AGENT_SYSTEM_PROMPT = """
 Role: {role}
 Instructions: {instructions}
+Role-specific instructions: {role_specific_instructions}
 Goal: Complete the assigned task: {task}
 Context: Current progress: {task_progress}
 Constraints:
@@ -48,31 +49,42 @@ Constraints:
 - Adhere to role-specific instructions and constraints
 """
 
-PERCENTAGE_COMPLETE_TASK_REFLECTION_SYSTEM_PROMPT = """
-Goal: Evaluate task completion percentage and provide tool-focused guidance
-Output Format: JSON
-{
-    "completion_score": "<0.00-1.00 float>",
-    "required_tools": ["<tool_name>", ...],
-    "completed_tools": ["<tool_name>", ...],
-    "next_step": "<specific_tool_action_with_params>",
-    "reason": "<detailed_evaluation_and_tool_tracking>"
-}
+PERCENTAGE_COMPLETE_TASK_REFLECTION_PROMPT = """
+You are a meticulous reflection assistant evaluating an AI agent's task progress.
+The agent's overall goal is: "{task}"
+The agent operates under the role: "{role}" with instructions: "{instructions}"
+
+Analyze the provided task status, the last step's result, available/used tools, and progress so far.
+Based ONLY on the provided context, determine the following in JSON format:
+
+{{
+    "completion_score": <float, 0.0 to 1.0>,
+    "reason": "<string>",
+    "next_step": "<string>",
+    "required_tools": ["<string>", ...],
+    "completed_tools": ["<string>", ...]
+}}
 
 Guidelines:
-1. Tool Tracking Focus:
-   - Identify ALL tools needed for task completion
-   - Track which tools have been successfully used
-   - Tools should be added to the completed tools list ONLY if they were used *successfully* to accomplish what it was intended to do
-   - Failed tool calls don't count as completed tools
-   - Consider a tool completed only when its output is verified and indicates it was successfully carried out in the steps taken list
-   - Ensure no required tools are missed
 
-2. Completion Score Rules:
-   - Score must reflect both task progress AND tool usage
-   - Consider tool dependencies and sequences
-   - Base score on verified outcomes
-   - Factor in quality of results
+1.  `completion_score` (float, 0.0 to 1.0): How complete is the *overall task* ("{task}")?
+    - 0.0: No progress or deviated significantly from the goal/instructions.
+    - 0.1-0.4: Minimal or preliminary progress towards the goal.
+    - 0.5-0.8: Substantial progress, key steps taken according to the goal/instructions.
+    - 0.9-0.99: Almost complete, only minor verification or formatting needed *to satisfy the original goal*.
+    - 1.0: **ONLY** if the *entire core task* ("{task}") is verifiably finished based on the context and adheres to the agent's instructions. Do NOT assign 1.0 if further action or verification is needed.
+2.  `reason` (string): Briefly explain the *reasoning* behind your `completion_score`, referencing specific evidence from the context (last result, tools used, progress summary) in relation to the *original goal*. Justify *why* the task is or isn't complete. Mention any discrepancies or failures encountered in the last step.
+3.  `next_step` (string): Describe the *single, immediate, concrete* next action the agent should take to progress *towards the original goal* ("{task}"), adhering to its role and instructions.
+    - If the task is fully complete (score 1.0), this MUST be "None".
+    - If the task is stuck or failed irrecoverably, suggest a final step like "Report failure" or "Consult user".
+    - Be specific (e.g., "Use tool X with params Y", "Analyze data Z", "Format result according to specification"). Avoid vague steps like "continue".
+4.  `required_tools` (list[string]): List tool names likely needed for the *remaining* steps of the task (can be empty).
+5.  `completed_tools` (list[string]): List tool names from `tools_used_successfully` (if provided in context) that represent *meaningful completed sub-steps* towards the final goal.
+
+CRITICAL: Base your assessment *strictly* on the provided context and the agent's defined goal/role/instructions. Do not assume external knowledge or actions not explicitly mentioned. Be objective.
+
+Context:
+{{context}}
 """
 
 BOOLEAN_COMPLETE_TASK_REFLECTION_SYSTEM_PROMPT = """
@@ -111,12 +123,11 @@ Context: Previous steps and available tools will be provided
 Output Format: JSON
 {
     "next_step": "<specific_tool_action_with_params>",
-    "continue_iteration": "<boolean>",
     "rationale": "<reasoning_for_action_choice>"
 }
 
 Guidelines:
-1. Review task context and available tools
+1. Review last task reflection and steps taken
 2. Consider dependencies and sequences
 3. Choose most effective next action
 4. Explain reasoning clearly
@@ -152,8 +163,7 @@ Based ONLY on the provided context, determine the following:
     - If the task is fully complete (score 1.0), this MUST be "None".
     - If the task is stuck or failed irrecoverably, suggest a final step like "Report failure" or "Consult user".
     - Be specific (e.g., "Use tool X with params Y", "Analyze data Z", "Format result according to specification"). Avoid vague steps like "continue".
-4.  `required_tools` (list[string]): List tool names likely needed for the *remaining* steps of the task (can be empty).
-5.  `completed_tools` (list[string]): List tool names from `tools_used_successfully` that represent *meaningful completed sub-steps* towards the final goal.
+4.  `completed_tools` (list[string]): List tool names from `tools_used_successfully` that represent *meaningful completed sub-steps* towards the final goal.
 
 CRITICAL: Base your assessment *strictly* on the provided context. Do not assume external knowledge or actions not explicitly mentioned. Be objective.
 """

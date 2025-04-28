@@ -154,15 +154,14 @@ class ReflectionManager(BaseModel):
             }
 
             # --- Call Model using centralized prompts ---
-            reflection_prompt = REFLECTION_CONTEXT_PROMPT.format(
+            reflection_context = REFLECTION_CONTEXT_PROMPT.format(
                 reflection_input_context_json=json.dumps(
                     reflection_input_context, indent=2, default=str
                 )
             )
-
             model_response = await self.model_provider.get_completion(
                 system=REFLECTION_SYSTEM_PROMPT,  # Use imported constant
-                prompt=reflection_prompt,
+                prompt=reflection_context,
                 format=(
                     ReflectionFormat.model_json_schema()
                     if self.model_provider.name == "ollama"
