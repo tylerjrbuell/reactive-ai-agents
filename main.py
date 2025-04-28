@@ -5,7 +5,7 @@ import asyncio
 import dotenv
 import warnings
 import tracemalloc
-from typing import Dict
+from typing import Any, Dict
 from config.workflow import AgentConfig, WorkflowConfig, Workflow
 from pydantic import PydanticDeprecatedSince211
 from context.agent_context import AgentContext
@@ -73,6 +73,9 @@ async def main():
             server_filter=["brave-search", "sqlite", "time"]
         ).initialize()
 
+        async def confirmation_callback(tool_name: str, params: Dict[str, Any]) -> bool:
+            return input("Continue with this tool? (y/n)") == "y"
+
         # Create AgentContext
         agent_context = AgentContext(
             agent_name="Task Agent",
@@ -89,6 +92,8 @@ async def main():
             use_memory_enabled=True,
             collect_metrics_enabled=True,
             check_tool_feasibility=True,
+            enable_caching=False,
+            confirmation_callback=confirmation_callback,
         )
 
         # Initialize ReactAgent with the context
