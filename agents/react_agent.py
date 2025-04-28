@@ -199,7 +199,7 @@ class ReactAgent(Agent):
                         self.context.task_status
                     )
 
-                current_task_for_iteration = rescoped_task or self.context.initial_task
+                current_task_for_iteration = rescoped_task or self.context.current_task
 
                 try:
                     # --- Run the full React iteration (Think/Act -> Reflect -> Plan) ---
@@ -348,8 +348,10 @@ class ReactAgent(Agent):
                 final_result_content = "Task cancelled by user."
 
             # 6. --- Post-run Processing (Summary, Evaluation) ---
-            summary = await self.generate_summary()
-            evaluation = await self.compare_goal_vs_result()
+            self.context.session.summary = await self.generate_summary()
+            self.context.session.evaluation = (
+                await self.generate_goal_result_evaluation()
+            )
 
         except Exception as run_error:
             tb_str = traceback.format_exc()
@@ -358,8 +360,7 @@ class ReactAgent(Agent):
             )
             self.context.task_status = TaskStatus.ERROR
             final_result_content = f"Critical error during agent run: {run_error}"
-            summary = "Run failed due to critical error."
-            evaluation = {
+            self.context.session.evaluation = {
                 "adherence_score": 0.0,
                 "matches_intent": False,
                 "explanation": "Critical error.",
@@ -387,8 +388,8 @@ class ReactAgent(Agent):
             final_result_package = self._prepare_final_result(
                 rescoped_task=rescoped_task,
                 result_content=result_to_return,
-                summary=summary,
-                evaluation=evaluation,
+                summary=self.context.session.summary,
+                evaluation=self.context.session.evaluation,
             )
 
             # Update workflow context with final status
@@ -396,8 +397,12 @@ class ReactAgent(Agent):
                 self.context.workflow_manager.update_context(
                     self.context.task_status,
                     result_to_return,
-                    adherence_score=evaluation.get("adherence_score"),
-                    matches_intent=evaluation.get("matches_intent"),
+                    adherence_score=self.context.session.evaluation.get(
+                        "adherence_score"
+                    ),
+                    matches_intent=self.context.session.evaluation.get(
+                        "matches_intent"
+                    ),
                     rescoped=(rescoped_task is not None),
                     error=(
                         last_error
@@ -519,6 +524,12 @@ class ReactAgent(Agent):
                 # Check tool completion only if initial_required_tools were set
                 if initial_req_tools is not None:
                     tools_completed = initial_req_tools.issubset(completed_tools)
+                    self.agent_logger.info(
+                        f"required tools: {initial_req_tools}, completed tools: {completed_tools}"
+                    )
+                    self.agent_logger.info(
+                        f"score_met: {score_met}, tools_completed: {tools_completed}"
+                    )
                     if score_met and tools_completed:
                         self.agent_logger.info(
                             f"Stopping loop: Reflection score {score:.2f} meets threshold ({self.context.min_completion_score:.2f}) AND initial required tools ({initial_req_tools}) completed."
@@ -798,7 +809,7 @@ class ReactAgent(Agent):
                 "original_task": original_task,
             }
 
-    async def compare_goal_vs_result(self) -> Dict[str, Any]:
+    async def generate_goal_result_evaluation(self) -> Dict[str, Any]:
         """Evaluates how well the final result matches the initial task goal."""
         self.agent_logger.info("🔎 Comparing goal vs result...")
         default_eval = {
@@ -842,7 +853,7 @@ class ReactAgent(Agent):
                 ),
                 "final_status": str(self.context.task_status),
                 "tools_used": tool_names_used,
-                "action_summary": await self.generate_summary(),  # Reuse summary
+                "action_summary": self.context.session.summary,  # Reuse summary
                 "reasoning_log": self.context.reasoning_log[-5:],
             }
 
@@ -1059,12 +1070,13 @@ class ReactAgent(Agent):
             plan = await self._plan()
             if plan and plan.get("next_step") and plan.get("rationale"):
                 plan_guidance = f"PLAN GUIDANCE (for next step): {plan['rationale']} Therefore: {plan['next_step']}"
-                insert_index = -1
-                if self.context.messages[-1]["role"] == "tool":
-                    insert_index = -2
-                self.context.messages.insert(
-                    insert_index, {"role": "system", "content": plan_guidance}
-                )
+                # insert_index = -1
+                # if self.context.messages[-1]["role"] == "tool":
+                #     insert_index = -2
+                # self.context.messages.insert(
+                #     insert_index, {"role": "system", "content": plan_guidance}
+                # )
+                self.context.current_task = plan_guidance
                 self.agent_logger.debug(
                     f"Added plan guidance to messages: {plan_guidance}"
                 )

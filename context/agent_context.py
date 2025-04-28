@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import List, Dict, Any, Optional, Callable, Sequence, Set
 import asyncio
+import uuid
 
 from pydantic import BaseModel, Field
 
@@ -36,6 +37,23 @@ from components.tool_manager import ToolManager
 # --- End Import Manager Classes ---
 
 
+class AgentSession(BaseModel):
+    """Represents a single session of an agent run."""
+
+    session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    start_time: float = Field(default_factory=time.time)
+    end_time: Optional[float] = None
+    final_result: str = ""
+    total_tokens: int = 0
+    total_cost: float = 0.0
+    summary: str = ""
+    evaluation: Dict[str, Any] = {}
+    feasibility: str = ""
+    result: str = ""
+    error: Optional[str] = None
+    status: str = ""
+
+
 class AgentContext(BaseModel):
     """Centralized context holding state and components for an agent run."""
 
@@ -56,7 +74,7 @@ class AgentContext(BaseModel):
     task_status: "TaskStatus" = TaskStatus.INITIALIZED
     current_task: str = ""  # Can be the initial task or a rescoped one
     initial_required_tools: Optional[Set[str]] = None
-
+    session: AgentSession = AgentSession()
     # --- Workflow Context and Dependencies ---
     # These are passed in or configured externally but used by WorkflowManager
     workflow_context_shared: Optional[Dict[str, Any]] = None  # The shared dict itself
