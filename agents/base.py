@@ -100,6 +100,7 @@ class Agent:
     async def _think_chain(
         self,
         remember_messages: bool = True,
+        use_tools: bool = True,
         **kwargs,
     ) -> dict | None:
         """
@@ -109,7 +110,9 @@ class Agent:
         try:
             # Use tool signatures from the ToolManager via context
             tool_signatures = self.context.get_tool_signatures()
-            use_tools = self.context.tool_use_enabled and bool(tool_signatures)
+            use_tools = (
+                self.context.tool_use_enabled and bool(tool_signatures) and use_tools
+            )
 
             # Default to context messages
             kwargs.setdefault("messages", self.context.messages)
@@ -170,7 +173,7 @@ class Agent:
                 # Recursive call to let the model respond to tool results
                 # Pass remember_messages=False for the recursive call if we only want the *final* assistant message
                 return await self._think_chain(
-                    remember_messages=remember_messages, **kwargs
+                    remember_messages=remember_messages, use_tools=False, **kwargs
                 )
 
             # Return the result which might contain content or tool_calls
@@ -252,7 +255,10 @@ class Agent:
         self.context.messages.append(
             {
                 "role": "user",
-                "content": task,  # Keep it simple, role/instructions are in system prompt
+                "content": f"""
+                {task}
+                {"\n".join(self.context.task_nudges)}
+                """,
             }
         )
         # Start the thinking process

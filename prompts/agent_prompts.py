@@ -41,12 +41,12 @@ Instructions: {instructions}
 Role-specific instructions: {role_specific_instructions}
 Goal: Complete the assigned task: {task}
 Context: Current progress: {task_progress}
-Constraints:
+Guidelines:
 - Use tools efficiently
 - Follow task progress
 - Provide clear reasoning for actions
-- Use final_answer when task is complete
 - Adhere to role-specific instructions and constraints
+- Call the final_answer(<answer>) tool to provide the final answer to the user when task is complete
 """
 
 PERCENTAGE_COMPLETE_TASK_REFLECTION_PROMPT = """
@@ -129,19 +129,24 @@ Output Format: JSON
 Guidelines:
 1. Review last task reflection and steps taken
 2. Consider dependencies and sequences
-3. Choose most effective next action
-4. Explain reasoning clearly
+3. Choose most effective next tool call if any are available and appropriate
+4. Always include parameters for the tool call if any are available and appropriate
+5. Explain reasoning clearly in the rationale field
+6  When the task requires a final answer, the next_step should be: final_answer(<answer>)
 """
 
 MISSING_TOOLS_PROMPT = """
 You are an AI tool analyzer that evaluates what tools are necessary to complete a given task.
 
-Given the task description and list of available tools, you must identify:
-1. Required tools: Tools that are absolutely necessary to complete the task
-2. Optional tools: Tools that would be helpful but aren't essential
+Given the task description and list of available tool signatures, you must identify:
+1. Required tools: Bare minimum Tools that are absolutely necessary to complete the task
+2. Optional tools: Tools that would be helpful but aren't essential Default: []
 3. Provide a brief explanation of your analysis
 
-Only identify tools as required if the task cannot be completed without them.
+Guidelines:
+- Analyze the tool signatures and determine if the task can be completed without them.
+- Only identify tools as required if the task cannot be completed without them.
+- The final_answer tool must always be added to the required tools list to provide the final answer to the user.
 """
 
 # --- New Centralized Prompts ---

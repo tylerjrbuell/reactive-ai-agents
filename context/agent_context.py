@@ -69,6 +69,8 @@ class AgentContext(BaseModel):
     final_answer: Optional[str] = None
     messages: List[Dict[str, Any]] = []
     task_progress: str = "No progression yet"  # Summary of steps performed
+    successful_tools: List[str] = []
+    task_nudges: List[str] = []  # For thought surfacing
     reasoning_log: List[str] = []  # For thought surfacing
     iterations: int = 0
     task_status: "TaskStatus" = TaskStatus.INITIALIZED

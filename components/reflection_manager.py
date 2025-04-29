@@ -125,13 +125,6 @@ class ReflectionManager(BaseModel):
 
             # Get tool info from ToolManager
             available_tool_names = [tool.name for tool in self.tool_manager.tools]
-            used_tool_names = [
-                entry.get("name")
-                for entry in self.tool_manager.tool_history
-                if entry.get("name")
-                and not entry.get("error")
-                and not entry.get("cancelled")
-            ]
 
             reflection_input_context = {
                 "task": self.context.current_task,  # Use current (possibly rescoped) task
@@ -142,7 +135,7 @@ class ReflectionManager(BaseModel):
                 ),  # Limit result size
                 "tools_available": available_tool_names,
                 "tools_used_successfully": list(
-                    set(used_tool_names)
+                    set(self.context.successful_tools)
                 ),  # Unique successful tools
                 "completion_criteria_score": self.context.min_completion_score,
                 "current_iteration": self.context.iterations,
@@ -152,7 +145,9 @@ class ReflectionManager(BaseModel):
                     -1000:
                 ],  # Summary of actions so far
             }
-
+            self.agent_logger.debug(
+                f"Reflection Tool Use context: {reflection_input_context['tools_used_successfully']}"
+            )
             # --- Call Model using centralized prompts ---
             reflection_context = REFLECTION_CONTEXT_PROMPT.format(
                 reflection_input_context_json=json.dumps(
@@ -186,7 +181,10 @@ class ReflectionManager(BaseModel):
 
                 # Validate with Pydantic model
                 validated_reflection = ReflectionFormat(**reflection_data).dict()
-
+                if validated_reflection.get("next_step"):
+                    self.context.task_nudges.append(
+                        validated_reflection.get("next_step", "")
+                    )
                 # Add timestamp?
                 validated_reflection["timestamp"] = datetime.now().isoformat()
 

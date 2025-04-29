@@ -4,7 +4,7 @@ import time
 import asyncio
 from typing import List, Dict, Any, Optional, Sequence, Callable, TYPE_CHECKING, Union
 
-from mcp import Tool
+from tools.base import Tool
 from pydantic import BaseModel, Field
 
 from loggers.base import Logger
@@ -19,52 +19,44 @@ from prompts.agent_prompts import (
 if TYPE_CHECKING:
     from context.agent_context import AgentContext  # Keep import here
 
-# --- Define the internal final_answer tool ---
-FINAL_ANSWER_TOOL_SCHEMA = {
-    "name": "final_answer",
-    "description": "Provides the final answer to the user's query and concludes the task.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "answer": {
-                "type": "string",
-                "description": "The final textual answer to the user's query.",
-            }
-        },
-        "required": ["answer"],
-    },
-}
 
-
-async def _execute_final_answer(context: "AgentContext", answer: str) -> str:
-    """Sets the final answer in the context."""
-    assert context.agent_logger is not None
-    context.final_answer = answer
-    context.agent_logger.info(f"Final answer set via tool: {answer[:100]}...")
-    # Setting final_answer should cause the loop to stop via _should_continue
-    return "Final answer has been recorded and the task will conclude."
-
-
-class FinalAnswerTool:
+class FinalAnswerTool(Tool):
     """Wrapper class to make the final_answer function ToolProtocol compatible."""
 
     name = "final_answer"
     description = (
         "Provides the final answer to the user's query and concludes the task."
     )
-    schema = FINAL_ANSWER_TOOL_SCHEMA
+    tool_definition = {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "answer": {
+                        "type": "string",
+                        "description": "The final textual answer to the user's query as a complete response to the original task.",
+                    }
+                },
+                "required": ["answer"],
+            },
+        },
+    }
 
     def __init__(self, context: "AgentContext"):
         self.context = context
 
-    async def __call__(self, **kwargs) -> str:
-        answer = kwargs.get("answer")
+    async def use(self, params: Dict[str, Any]) -> ToolResult:
+        """Executes the final answer tool with the provided parameters."""
+        answer = params.get("answer")
         if answer is None:
-            return "Error: Missing required parameter 'answer'."
-        return await _execute_final_answer(self.context, answer)
+            return ToolResult("Error: Missing required parameter 'answer'.")
 
-
-# --- End final_answer tool definition ---
+        # Set the final answer in the context
+        self.context.final_answer = answer
+        return ToolResult(f"Final answer has been recorded: {answer}")
 
 
 class ToolManager(BaseModel):
@@ -80,7 +72,7 @@ class ToolManager(BaseModel):
     ] = None
 
     # State
-    tools: List[Any] = Field(default_factory=list)
+    tools: List[Tool] = Field(default_factory=list)
     tool_signatures: List[Dict[str, Any]] = Field(default_factory=list)
     tool_history: List[Dict[str, Any]] = Field(default_factory=list)
     tool_cache: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
@@ -336,12 +328,6 @@ class ToolManager(BaseModel):
                 tool_name, params, result_list, execution_time=tool_execution_time
             )
 
-            # Handle final answer
-            if tool_name == "final_answer":
-                self.context.final_answer = (
-                    result_str  # Store the string representation
-                )
-
             # Add to cache if enabled and successful
             if self.enable_caching and cache_key and "nocache" not in params:
                 # Don't cache errors, very short results, or if tool failed
@@ -418,6 +404,9 @@ class ToolManager(BaseModel):
                 {"execution_time": execution_time} if execution_time is not None else {}
             ),
         }
+        if not error and not cancelled:
+            self.context.successful_tools.append(tool_name)
+
         self.tool_history.append(entry)
 
         # Optionally update metrics (delegated)
@@ -490,12 +479,9 @@ class ToolManager(BaseModel):
         self.tool_signatures = []
         for tool in self.tools:
             try:
-                # Assuming tools have a .schema attribute matching the required format
-                # or a method to generate it.
-                if hasattr(tool, "schema") and isinstance(tool.schema, dict):
-                    self.tool_signatures.append(tool.schema)
+
                 # Handle MCPToolWrapper specifically if needed
-                elif hasattr(tool, "tool_definition") and isinstance(
+                if hasattr(tool, "tool_definition") and isinstance(
                     tool.tool_definition, dict
                 ):
                     self.tool_signatures.append(tool.tool_definition)
@@ -511,7 +497,7 @@ class ToolManager(BaseModel):
             f"Generated {len(self.tool_signatures)} tool signatures."
         )
 
-    def get_available_tools(self) -> List[ToolProtocol]:
+    def get_available_tools(self) -> List[Tool]:
         """Returns a list of all available tools."""
         return self.tools
 

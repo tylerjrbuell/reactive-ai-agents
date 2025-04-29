@@ -1,6 +1,7 @@
 from typing import Any, Awaitable, Dict, List, Protocol
 from mcp import Tool as MCPTool
 from mcp.types import TextContent
+from tools.base import Tool
 from agent_mcp.client import MCPClient
 
 
@@ -41,7 +42,7 @@ class ToolResult:
         return cls(result)
 
 
-class MCPToolWrapper:
+class MCPToolWrapper(Tool):
     """Wrapper to adapt MCP tools to match our ToolProtocol interface"""
 
     def __init__(self, mcp_tool: MCPTool, client: MCPClient):

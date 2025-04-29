@@ -201,9 +201,13 @@ class ReactAgent(Agent):
                 try:
                     # --- Run the full React iteration (Think/Act -> Reflect -> Plan) ---
                     # This method now handles internal logic and returns final content for the iter, or None
+                    self.agent_logger.info(
+                        f"🔄 Iteration {self.context.iterations} current task: {current_task_for_iteration}"
+                    )
                     iteration_content = await self._run_task_iteration(
                         task=current_task_for_iteration
                     )
+                    self.agent_logger.info(f"🔄 Content Preview: {iteration_content}")
 
                     # Update final_result_content if the iteration produced text
                     if iteration_content:
@@ -518,6 +522,7 @@ class ReactAgent(Agent):
                 min_req_tools = self.context.min_required_tools
                 # Get completed tools from the current reflection
                 completed_tools = set(last_reflection.get("completed_tools", []))
+                # completed_tools = set(self.context.successful_tools)
 
                 # Check score and tool completion
                 score_met = score >= self.context.min_completion_score
@@ -530,18 +535,18 @@ class ReactAgent(Agent):
                     self.agent_logger.info(
                         f"score_met: {score_met}, tools_completed: {tools_completed}"
                     )
-                    if score_met and tools_completed:
-                        self.agent_logger.info(
-                            f"Stopping loop: Reflection score {score:.2f} meets threshold ({self.context.min_completion_score:.2f}) AND initial required tools ({min_req_tools}) completed."
+                    if not tools_completed:
+                        self.context.task_nudges.append(
+                            f"**These Tools are required: {min_req_tools - completed_tools} but have not been completed yet**"
                         )
+                    if score_met and tools_completed and self.context.final_answer:
                         self.context.task_status = TaskStatus.COMPLETE
                         return False
-                elif score_met:
-                    # If initial tools weren't set (e.g., feasibility check off/failed),
-                    # fall back to stopping based on score alone.
-                    self.agent_logger.info(
-                        f"Stopping loop: Reflection score {score:.2f} meets threshold ({self.context.min_completion_score:.2f}). (Initial required tools not available for check)."
-                    )
+                    if score_met and tools_completed and not self.context.final_answer:
+                        self.context.task_nudges.append(
+                            "**You must use the final_answer(<answer>) tool to provide the final answer to the user.**"
+                        )
+                elif score_met and self.context.final_answer:
                     self.context.task_status = TaskStatus.COMPLETE
                     return False
 
@@ -584,6 +589,7 @@ class ReactAgent(Agent):
 
         try:
             available_tools = self.context.get_available_tool_names()
+            tool_signatures = self.context.get_tool_signatures()
             if not available_tools:
                 self.agent_logger.info("No tools available in ToolManager.")
                 return {
@@ -595,7 +601,7 @@ class ReactAgent(Agent):
             # Use centralized prompts
             system_prompt = MISSING_TOOLS_PROMPT
             prompt = TOOL_FEASIBILITY_CONTEXT_PROMPT.format(
-                task=task, available_tools=list(available_tools)
+                task=task, available_tools=json.dumps(tool_signatures, indent=2)
             )
 
             response = await self.model_provider.get_completion(
@@ -937,7 +943,7 @@ class ReactAgent(Agent):
         try:
             # ... (build plan_context dict) ...
             plan_context = {
-                "task": self.context.current_task,
+                "main_task": self.context.initial_task,
                 "available_tools": [
                     tool.name for tool in self.context.get_available_tools()
                 ],
@@ -1069,10 +1075,11 @@ class ReactAgent(Agent):
             self.agent_logger.info(" Planning...")
             plan = await self._plan()
             if plan and plan.get("next_step") and plan.get("rationale"):
-                plan_guidance = f"{plan['rationale']}, Therefore: {plan['next_step']}"
-                self.context.current_task = plan_guidance
+                self.context.current_task = plan.get(
+                    "next_step", self.context.initial_task
+                )
                 self.agent_logger.debug(
-                    f"Added plan guidance to messages: {plan_guidance}"
+                    f"Added plan guidance to messages: {plan.get('next_step', '')}"
                 )
 
         return self.context.final_answer or last_content
