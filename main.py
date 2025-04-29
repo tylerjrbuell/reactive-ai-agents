@@ -1,14 +1,12 @@
 import json
 from agent_mcp.client import MCPClient
-from agents.react_agent import ReactAgent
+from agents.react_agent import ReactAgent, ReactAgentConfig
 import asyncio
 import dotenv
 import warnings
 import tracemalloc
-from typing import Any, Dict
-from config.workflow import AgentConfig, WorkflowConfig, Workflow
+from typing import Any, Dict, Awaitable, Callable
 from pydantic import PydanticDeprecatedSince211
-from context.agent_context import AgentContext
 
 warnings.simplefilter("ignore", ResourceWarning)
 warnings.filterwarnings("ignore", category=PydanticDeprecatedSince211)
@@ -16,112 +14,62 @@ tracemalloc.start()
 dotenv.load_dotenv()
 
 
-async def create_example_workflow() -> Workflow:
-    workflow_config = WorkflowConfig()
-
-    # Create a planner agent
-    planner = AgentConfig(
-        role="planner",
-        model="ollama:cogito:14b",
-        min_score=0.7,
-        instructions="""You are a planning specialist. Your job is to break down a task into steps for the executor agent to follow and set them up for success to execute.
-        Consider the following constraints:
-        - Your deliverable is not to solve the task but rather to make a step by step plan for the executor agent.
-        - You may use your tools to help give the executor agent the information it needs to complete the task.
-        - You can only use tools that are available to you.
-        - Assume the executor doesn't have research ability only execution ability.
-        - If you have done some of the work exclude it from the plan to prevent the executor agent from repeating it.
-        
-        Here is the task you need to create a plan for: {task}
-        """,
-        max_iterations=3,
-        instructions_as_task=True,
-        reflect=True,
-        mcp_servers=["brave-search", "time"],
-    )
-
-    # Create an executor agent
-    executor = AgentConfig(
-        role="executor",
-        model="ollama:cogito:14b",
-        mcp_servers=["filesystem", "sqlite"],
-        min_score=1.0,
-        instructions="You are an execution specialist. Implement solutions using available tools and planning steps provided by the planner",
-        dependencies=["planner"],
-        max_iterations=10,
-        reflect=True,
-    )
-
-    # Add agents to workflow
-    workflow_config.add_agent(planner)
-    workflow_config.add_agent(executor)
-
-    return Workflow(workflow_config)
-
-
-async def run_workflow(task: str) -> Dict[str, str]:
-    workflow = await create_example_workflow()
-    return await workflow.run(task)
-
-
 async def main():
-    task = "Find the current price of xrp using a web search, then create a table called crypto_prices (currency, price, timestamp), then insert the price of xrp into the table."
-    # task =" what day is it?"
-    agent_context = None  # Initialize context to None
+    agent = None
     try:
+        task = "Research the death of Chris Farley and add it to a table called celebrities_deaths(name, cause, date)."
         mcp_client = await MCPClient(
             server_filter=["brave-search", "sqlite", "time"]
         ).initialize()
 
         async def confirmation_callback(tool_name: str, params: Dict[str, Any]) -> bool:
-            return input("Continue with this tool? (y/n)") == "y"
+            print(f"\n--- Tool Confirmation Request ---")
+            print(f"Tool: {tool_name}")
+            print(f"Parameters: {json.dumps(params, indent=2)}")
+            user_input = (
+                input("Proceed with this tool execution? (y/n) [y]: ").lower().strip()
+            )
+            return user_input == "y" or user_input == ""
 
-        # Create AgentContext
-        agent_context = AgentContext(
+        agent_config = ReactAgentConfig(
             agent_name="Task Agent",
             role="Task Executor",
             provider_model_name="ollama:cogito:14b",
-            mcp_client=mcp_client,  # Pass initialized client
+            mcp_client=mcp_client,
             min_completion_score=1.0,
             instructions="Solve the given task as quickly as possible using the tools at your disposal.",
             max_iterations=10,
             reflect_enabled=True,
             log_level="debug",
-            initial_task=task,
+            initial_task=None,
             tool_use_enabled=True,
             use_memory_enabled=True,
             collect_metrics_enabled=True,
             check_tool_feasibility=True,
-            enable_caching=False,
+            enable_caching=True,
             confirmation_callback=confirmation_callback,
+            kwargs={},
         )
 
-        # Initialize ReactAgent with the context
-        agent = ReactAgent(context=agent_context)
+        agent = ReactAgent(config=agent_config)
 
-        # Run the agent
         result_dict = await agent.run(initial_task=task)
 
-        # Convert result dict to JSON string for printing
         json_result = json.dumps(result_dict, indent=4, default=str)
-        print("--- Agent Run Result ---")
+        print("\n--- Agent Run Result ---")
         print(json_result)
         print("------------------------")
 
+    except Exception as e:
+        print(f"\nAn error occurred: {e}")
+        import traceback
+
+        traceback.print_exc()
     finally:
-        # Ensure context and its resources (like MCP client) are closed
-        if agent_context:
-            print("\nClosing AgentContext...")
-            await agent_context.close()
-            print("AgentContext closed.")
-
-    # OR run the example workflow
-
-    # results = await run_workflow(task)
-    # print("\nWorkflow Results:")
-    # for role, result in results.items():
-    #     print(f"\n{role.upper()} Result:")
-    #     print(result)
+        if agent:
+            print("\nClosing Agent...")
+            await agent.close()
+            print("Agent closed.")
 
 
 if __name__ == "__main__":

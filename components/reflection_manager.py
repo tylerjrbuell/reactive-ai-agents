@@ -17,11 +17,13 @@ from prompts.agent_prompts import (
 
 # Assuming ReflectionFormat is defined here or imported
 class ReflectionFormat(BaseModel):
-    completion_score: float = Field(..., ge=0.0, le=1.0)
-    next_step: str
-    required_tools: List[str] = []  # Default to empty list
-    completed_tools: List[str] = []  # Default to empty list
-    reason: str
+    # completion_score: float = Field(..., ge=0.0, le=1.0) # Removed
+    next_step: str  # What is the single next concrete action?
+    reason: str  # Why is this the next step? Mention errors if any.
+    # required_tools: List[str] = []  # Removed - let planning handle this maybe?
+    completed_tools: List[str] = Field(
+        ..., description="MUST exactly match the tools_used_successfully input."
+    )
 
 
 if TYPE_CHECKING:
@@ -125,19 +127,23 @@ class ReflectionManager(BaseModel):
 
             # Get tool info from ToolManager
             available_tool_names = [tool.name for tool in self.tool_manager.tools]
+            successfully_used_tools = list(set(self.context.successful_tools))
 
             reflection_input_context = {
                 "task": self.context.current_task,  # Use current (possibly rescoped) task
+                "min_required_tools": (
+                    list(self.context.min_required_tools)
+                    if self.context.min_required_tools
+                    else []
+                ),
                 "last_result": (
                     result_content[:3000] + "..."
                     if len(result_content) > 3000
                     else result_content
                 ),  # Limit result size
-                "tools_available": available_tool_names,
-                "tools_used_successfully": list(
-                    set(self.context.successful_tools)
-                ),  # Unique successful tools
-                "completion_criteria_score": self.context.min_completion_score,
+                "tools_available": available_tool_names,  # Keep for potential future use
+                "tools_used_successfully": successfully_used_tools,
+                # Removed completion_criteria_score
                 "current_iteration": self.context.iterations,
                 "max_iterations": self.context.max_iterations,
                 "previous_reflections": self.reflections[-3:],  # Provide recent context
@@ -149,14 +155,25 @@ class ReflectionManager(BaseModel):
                 f"Reflection Tool Use context: {reflection_input_context['tools_used_successfully']}"
             )
             # --- Call Model using centralized prompts ---
-            reflection_context = REFLECTION_CONTEXT_PROMPT.format(
+            # Double-curly braces {{}} are used for escaping in f-strings if needed, but not required here
+            # Format the system prompt directly (assuming no nested f-string issues)
+            system_prompt_formatted = REFLECTION_SYSTEM_PROMPT.format(
+                task=reflection_input_context["task"],
+                min_required_tools=reflection_input_context["min_required_tools"],
+                tools_used_successfully=reflection_input_context[
+                    "tools_used_successfully"
+                ],
+                last_result=reflection_input_context["last_result"],
+            )
+
+            reflection_context_prompt = REFLECTION_CONTEXT_PROMPT.format(
                 reflection_input_context_json=json.dumps(
                     reflection_input_context, indent=2, default=str
                 )
             )
             model_response = await self.model_provider.get_completion(
-                system=REFLECTION_SYSTEM_PROMPT,  # Use imported constant
-                prompt=reflection_context,
+                system=system_prompt_formatted,  # Use the directly formatted system prompt
+                prompt=reflection_context_prompt,  # Pass the rest via context prompt
                 format=(
                     ReflectionFormat.model_json_schema()
                     if self.model_provider.name == "ollama"
@@ -179,25 +196,34 @@ class ReflectionManager(BaseModel):
                     else response_data
                 )
 
-                # Validate with Pydantic model
+                # Validate with Pydantic model (now simpler)
                 validated_reflection = ReflectionFormat(**reflection_data).dict()
-                if validated_reflection.get("next_step"):
-                    self.context.task_nudges.append(
-                        validated_reflection.get("next_step", "")
-                    )
-                # Add timestamp?
-                validated_reflection["timestamp"] = datetime.now().isoformat()
 
+                # Ensure completed_tools from LLM exactly matches input
+                if set(validated_reflection.get("completed_tools", [])) != set(
+                    successfully_used_tools
+                ):
+                    self.agent_logger.warning(
+                        f"Reflection LLM modified completed_tools! Input: {successfully_used_tools}, "
+                        f"Output: {validated_reflection.get('completed_tools')}. Forcing match."
+                    )
+                    validated_reflection["completed_tools"] = successfully_used_tools
+
+                # Add next_step to nudges if it exists
+                if (
+                    validated_reflection.get("next_step")
+                    and validated_reflection["next_step"].lower() != "none"
+                ):
+                    self.context.task_nudges.append(
+                        f"Reflection Suggestion: {validated_reflection['next_step']}"
+                    )
+
+                validated_reflection["timestamp"] = datetime.now().isoformat()
                 self.reflections.append(validated_reflection)
                 self.agent_logger.info(
-                    f"Reflection generated. Score: {validated_reflection['completion_score']:.2f}"
+                    f"Reflection generated. Next Step: {validated_reflection['next_step']}"
                 )
                 self.agent_logger.debug(f"Reflection details: {validated_reflection}")
-
-                # Sync with memory manager if needed (optional, could be done periodically)
-                # if self.context.memory_manager and self.context.memory_manager.agent_memory:
-                #     self.context.memory_manager.agent_memory.reflections = self.reflections
-                #     self.context.memory_manager.save_memory() # Save immediately?
 
                 return validated_reflection
 

@@ -6,10 +6,11 @@ import os
 from datetime import datetime
 from enum import Enum, auto
 from typing import List, Any, Optional, Dict, Set, Union, Tuple, Callable
+from collections.abc import Awaitable
 import time
 import random
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from prompts.agent_prompts import (
     AGENT_ACTION_PLAN_PROMPT,
     MISSING_TOOLS_PROMPT,
@@ -24,17 +25,85 @@ from prompts.agent_prompts import (
 )
 from agents.base import Agent
 from context.agent_context import AgentContext
+from agent_mcp.client import MCPClient
 
 # Import shared types from the new location
-from common.types import TaskStatus, AgentMemory
+from common.types import TaskStatus
+
+
+# --- Agent Configuration Model ---
+class ReactAgentConfig(BaseModel):
+    agent_name: str = Field("ReactAgent", description="Name of the agent.")
+    role: str = Field("Task Executor", description="Role of the agent.")
+    provider_model_name: str = Field(
+        "ollama:qwen2:7b", description="Name of the LLM provider and model."
+    )
+    mcp_client: Optional[MCPClient] = Field(
+        None, description="An initialized MCPClient instance."
+    )
+    min_completion_score: float = Field(
+        1.0, ge=0.0, le=1.0, description="Minimum score for task completion evaluation."
+    )
+    instructions: str = Field(
+        "Solve the given task.", description="High-level instructions for the agent."
+    )
+    max_iterations: Optional[int] = Field(
+        10, description="Maximum number of iterations allowed."
+    )
+    reflect_enabled: bool = Field(
+        True, description="Whether reflection mechanism is enabled."
+    )
+    log_level: str = Field(
+        "info", description="Logging level ('debug', 'info', 'warning', 'error')."
+    )
+    initial_task: Optional[str] = Field(
+        None, description="The initial task description (can also be passed to run)."
+    )
+    tool_use_enabled: bool = Field(True, description="Whether the agent can use tools.")
+    use_memory_enabled: bool = Field(
+        True, description="Whether the agent uses long-term memory."
+    )
+    collect_metrics_enabled: bool = Field(
+        True, description="Whether to collect performance metrics."
+    )
+    check_tool_feasibility: bool = Field(
+        True, description="Whether to check tool feasibility before starting."
+    )
+    enable_caching: bool = Field(
+        True, description="Whether to enable LLM response caching."
+    )
+    confirmation_callback: Optional[
+        Callable[[str, Dict[str, Any]], Awaitable[bool]]
+    ] = Field(None, description="Async callback for confirming tool use.")
+    # Store extra kwargs passed, e.g. for specific context managers
+    kwargs: Dict[str, Any] = Field(
+        {}, description="Additional keyword arguments passed to AgentContext."
+    )
+
+    class Config:
+        arbitrary_types_allowed = True  # Allow MCPClient etc.
+
+    @model_validator(mode="before")
+    def capture_extra_kwargs(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        known_fields = {f for f in cls.model_fields if f != "kwargs"}
+        extra_kwargs = {}
+        processed_values = {}
+        for key, value in values.items():
+            if key in known_fields:
+                processed_values[key] = value
+            else:
+                extra_kwargs[key] = value
+        processed_values["kwargs"] = extra_kwargs
+        return processed_values
+
+
+# --- End Agent Configuration Model ---
 
 
 class ReactAgent(Agent):
     """
     A ReAct-style agent that uses reflection and planning within an AgentContext.
     """
-
-    # --- Pydantic models moved inside the class --
 
     class PlanFormat(BaseModel):
         next_step: str
@@ -85,34 +154,68 @@ class ReactAgent(Agent):
 
     # --- End Pydantic models in class ---
 
-    def __init__(self, context: AgentContext):
+    def __init__(
+        self,
+        config: ReactAgentConfig,
+    ):
         """
-        Initializes the ReactAgent with a pre-configured AgentContext.
-        React-specific configurations should be set within the context instance before passing it here.
+        Initializes the ReactAgent using a configuration object.
 
         Args:
-            context: The AgentContext instance holding all configuration, state, and managers.
+            config: The ReactAgentConfig object containing all settings.
         """
+        context = AgentContext(
+            agent_name=config.agent_name,
+            role=config.role,
+            provider_model_name=config.provider_model_name,
+            mcp_client=config.mcp_client,
+            min_completion_score=config.min_completion_score,
+            instructions=config.instructions,
+            max_iterations=config.max_iterations,
+            reflect_enabled=config.reflect_enabled,
+            log_level=config.log_level,
+            initial_task=config.initial_task or "",
+            tool_use_enabled=config.tool_use_enabled,
+            use_memory_enabled=config.use_memory_enabled,
+            collect_metrics_enabled=config.collect_metrics_enabled,
+            check_tool_feasibility=config.check_tool_feasibility,
+            enable_caching=config.enable_caching,
+            confirmation_callback=config.confirmation_callback,
+            **config.kwargs,
+        )
         super().__init__(context)
-        self.agent_logger.info(f"ReactAgent '{self.context.agent_name}' initialized.")
+        # Store the config for potential reference, though context holds the state
+        self.config = config
+        self.agent_logger.info(
+            f"ReactAgent '{self.context.agent_name}' initialized with internal context via config."
+        )
 
     async def run(
-        self, initial_task: str, cancellation_event: Optional[asyncio.Event] = None
+        self,
+        initial_task: Optional[str] = None,
+        cancellation_event: Optional[asyncio.Event] = None,
     ) -> Dict[str, Any]:
         """
         Run the ReAct agent loop for the given task.
 
         Args:
-            initial_task: The task description.
+            initial_task: The task description. If None, uses the initial_task passed during initialization.
             cancellation_event: An optional asyncio.Event to signal cancellation.
 
         Returns:
             A dictionary containing the final status, result, and other execution details.
         """
+        # --- Use initial_task from run() if provided, otherwise from context init ---
+        current_initial_task = initial_task or self.context.initial_task
+        if not current_initial_task:
+            raise ValueError(
+                "An initial task must be provided either during initialization or when calling run()."
+            )
+
         # 1. --- Initialization and Context Setup ---
         self.context.start_time = time.time()
-        self.context.initial_task = initial_task
-        self.context.current_task = initial_task
+        self.context.initial_task = current_initial_task  # Use the determined task
+        self.context.current_task = current_initial_task  # Use the determined task
         self.context.iterations = 0
         self.context.final_answer = None
         self.context.task_progress = ""
@@ -129,7 +232,9 @@ class ReactAgent(Agent):
             # We might want to load relevant reflections *after* reset if needed
             # E.g., self.context.reflection_manager.load_relevant_reflections(initial_task)
 
-        self.agent_logger.info(f"ReactAgent run starting for task: {initial_task}")
+        self.agent_logger.info(
+            f"ReactAgent run starting for task: {self.context.initial_task}"
+        )  # Log correct task
 
         # Local state for run management
         last_error: Optional[str] = None
@@ -147,7 +252,9 @@ class ReactAgent(Agent):
 
             self.context.min_required_tools = None  # Initialize/reset for the run
             if self.context.check_tool_feasibility:
-                feasibility = await self.check_tool_feasibility(initial_task)
+                feasibility = await self.check_tool_feasibility(
+                    self.context.initial_task
+                )  # Use context's initial_task
                 # Store the initial required tools if feasibility check ran and succeeded
                 if feasibility and feasibility.get("required_tools") is not None:
                     self.context.min_required_tools = set(feasibility["required_tools"])
@@ -178,6 +285,9 @@ class ReactAgent(Agent):
             if self.context.workflow_manager:
                 self.context.workflow_manager.update_context(TaskStatus.RUNNING)
 
+            # Initialize last_plan outside the loop
+            last_plan = None
+
             # 4. --- Execution Loop ---
             while self._should_continue():
                 # Check for cancellation
@@ -196,18 +306,37 @@ class ReactAgent(Agent):
                         self.context.task_status
                     )
 
+                # Inject guidance from the previous iteration's plan
+                if (
+                    last_plan
+                    and last_plan.get("next_step")
+                    and last_plan.get("rationale")
+                ):
+                    guidance_message = {
+                        "role": "user",
+                        "content": f"Based on the previous plan, the next concrete step to take is: {last_plan['next_step']}. Rationale: {last_plan['rationale']}. Please proceed with this action.",
+                    }
+                    self.context.messages.append(guidance_message)
+                    self.agent_logger.debug(
+                        f"Injecting plan guidance: {guidance_message['content']}"
+                    )
+
                 current_task_for_iteration = rescoped_task or self.context.current_task
 
                 try:
                     # --- Run the full React iteration (Think/Act -> Reflect -> Plan) ---
-                    # This method now handles internal logic and returns final content for the iter, or None
+                    # This method now handles internal logic and returns (content, plan)
                     self.agent_logger.info(
                         f"🔄 Iteration {self.context.iterations} current task: {current_task_for_iteration}"
                     )
-                    iteration_content = await self._run_task_iteration(
+                    # Capture both content and the new plan for the *next* iteration
+                    iteration_content, new_plan = await self._run_task_iteration(
                         task=current_task_for_iteration
                     )
                     self.agent_logger.info(f"🔄 Content Preview: {iteration_content}")
+
+                    # Update last_plan for the next iteration
+                    last_plan = new_plan
 
                     # Update final_result_content if the iteration produced text
                     if iteration_content:
@@ -433,6 +562,14 @@ class ReactAgent(Agent):
 
         return final_result_package
 
+    async def close(self):
+        """Closes the agent's context and associated resources."""
+        self.agent_logger.info(
+            f"Closing context for agent '{self.context.agent_name}'..."
+        )
+        await self.context.close()
+        self.agent_logger.info(f"Context closed for agent '{self.context.agent_name}'.")
+
     def _prepare_final_result(
         self,
         rescoped_task: Optional[str],
@@ -515,40 +652,66 @@ class ReactAgent(Agent):
             return False
 
         if self.context.reflect_enabled and self.context.reflection_manager:
-            last_reflection = self.context.reflection_manager.get_last_reflection()
-            if last_reflection:
-                score = last_reflection.get("completion_score", 0.0)
-                # Use initial required tools from context if available
-                min_req_tools = self.context.min_required_tools
-                # Get completed tools from the current reflection
-                completed_tools = set(last_reflection.get("completed_tools", []))
-                # completed_tools = set(self.context.successful_tools)
+            # We still need reflection to potentially suggest next steps or identify loops,
+            # but completion decision is now based purely on tools and final_answer.
+            pass  # Placeholder, maybe add check for infinite loops based on reflection?
 
-                # Check score and tool completion
-                score_met = score >= self.context.min_completion_score
-                # Check tool completion only if min_required_tools were set
-                if min_req_tools is not None:
-                    tools_completed = min_req_tools.issubset(completed_tools)
-                    self.agent_logger.info(
-                        f"required tools: {min_req_tools}, completed tools: {completed_tools}"
-                    )
-                    self.agent_logger.info(
-                        f"score_met: {score_met}, tools_completed: {tools_completed}"
-                    )
-                    if not tools_completed:
-                        self.context.task_nudges.append(
-                            f"**These Tools are required: {min_req_tools - completed_tools} but have not been completed yet**"
-                        )
-                    if score_met and tools_completed and self.context.final_answer:
-                        self.context.task_status = TaskStatus.COMPLETE
-                        return False
-                    if score_met and tools_completed and not self.context.final_answer:
-                        self.context.task_nudges.append(
-                            "**You must use the final_answer(<answer>) tool to provide the final answer to the user.**"
-                        )
-                elif score_met and self.context.final_answer:
-                    self.context.task_status = TaskStatus.COMPLETE
-                    return False
+        # Check required tools completion against actual successful tools context
+        tools_completed = False
+        deterministic_score = 0.0
+        if (
+            self.context.min_required_tools is not None
+            and len(self.context.min_required_tools) > 0
+        ):
+            successful_tools_set = set(self.context.successful_tools)
+            successful_intersection = self.context.min_required_tools.intersection(
+                successful_tools_set
+            )
+            deterministic_score = len(successful_intersection) / len(
+                self.context.min_required_tools
+            )
+            tools_completed = self.context.min_required_tools.issubset(
+                successful_tools_set
+            )
+            self.agent_logger.info(
+                f"Required tools check: Required={self.context.min_required_tools}, "
+                f"Successful={successful_tools_set}, Completed={tools_completed}, Score={deterministic_score:.2f}"
+            )
+            if not tools_completed:
+                missing_tools = self.context.min_required_tools - successful_tools_set
+                # Avoid adding duplicate nudges
+                nudge = f"**Task requires completion of these tools: {missing_tools}**"
+                if nudge not in self.context.task_nudges:
+                    self.context.task_nudges.append(nudge)
+        else:
+            # If no minimum required tools were identified, consider task complete from tool perspective
+            tools_completed = True
+            deterministic_score = 1.0  # Score is 1.0 if no tools required
+            self.agent_logger.info(
+                "No minimum required tools set. Score=1.0, Tools Completed=True."
+            )
+
+        # Check if completion score threshold is met
+        score_met = deterministic_score >= self.context.min_completion_score
+
+        # Check if ALL conditions are met: Score Threshold Met, All Required Tools Used, AND Final Answer Provided
+        if score_met and tools_completed and self.context.final_answer is not None:
+            self.agent_logger.info(
+                f"Stopping loop: Score threshold met ({deterministic_score:.2f} >= {self.context.min_completion_score}), "
+                f"all required tools used, and final answer provided."
+            )
+            self.context.task_status = TaskStatus.COMPLETE  # Ensure status is COMPLETE
+            return False
+        elif tools_completed and self.context.final_answer is None:
+            # Add nudge if tools are done, but answer missing (score doesn't matter here)
+            nudge = "**All required tools used, but requires final_answer(<answer>) tool call.**"
+            if nudge not in self.context.task_nudges:
+                self.context.task_nudges.append(nudge)
+        elif score_met and not tools_completed:
+            # Add nudge if score threshold met, but tools still missing (relevant if score < 1.0)
+            nudge = f"**Score threshold ({self.context.min_completion_score}) met, but required tools still missing.**"
+            if nudge not in self.context.task_nudges:
+                self.context.task_nudges.append(nudge)
 
         if self.context.iterations > 1 and len(self.context.messages) > 3:
             if (
@@ -1012,10 +1175,13 @@ class ReactAgent(Agent):
             self.agent_logger.error(f"Error during planning: {e}\n{tb_str}")
             return None
 
-    async def _run_task_iteration(self, task: str) -> Optional[str]:
+    async def _run_task_iteration(
+        self, task: str
+    ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
         """
         Executes one iteration of the ReAct loop: Think/Act -> Reflect -> Plan.
         Overrides the base Agent method.
+        Returns a tuple: (last_content, plan)
         """
 
         # --- 1. Think/Act Step ---
@@ -1044,11 +1210,13 @@ class ReactAgent(Agent):
 
         if self.context.final_answer is not None:
             self.agent_logger.info("Final answer set during Think/Act step.")
-            return self.context.final_answer
+            # Ensure plan is None if final answer is set here
+            return self.context.final_answer, None
 
         if think_act_result_dict is None:
             self.agent_logger.warning("Think/Act step failed to produce a result.")
-            return None
+            # Ensure plan is None if think/act failed
+            return None, None
 
         # --- 2. Reflect Step ---
         last_reflection = None
@@ -1060,7 +1228,7 @@ class ReactAgent(Agent):
                 if reflection:
                     last_reflection = reflection
                     self.context.reasoning_log.append(
-                        f"Reflection: Score={reflection['completion_score']:.2f}, Reason={reflection['reason']}"
+                        f"Reflection:  Reason={reflection['reason']}"
                     )
                 else:
                     self.agent_logger.warning("Reflection step failed.")
@@ -1069,17 +1237,43 @@ class ReactAgent(Agent):
                     "Reflection enabled but ReflectionManager missing."
                 )
 
-        # --- 3. Plan Step ---
+        # --- 3. Plan Step (Use Reflection's Next Step) ---
         plan = None
-        if self.context.reflect_enabled:
-            self.agent_logger.info(" Planning...")
-            plan = await self._plan()
-            if plan and plan.get("next_step") and plan.get("rationale"):
-                self.context.current_task = plan.get(
-                    "next_step", self.context.initial_task
-                )
-                self.agent_logger.debug(
-                    f"Added plan guidance to messages: {plan.get('next_step', '')}"
-                )
+        if (
+            last_reflection
+            and last_reflection.get("next_step")
+            and last_reflection["next_step"].lower() != "none"
+        ):
+            next_step_from_reflection = last_reflection["next_step"]
+            self.agent_logger.info(
+                f"Using next step from reflection: {next_step_from_reflection}"
+            )
+            # Construct a plan dictionary compatible with the rest of the logic
+            plan = {
+                "next_step": next_step_from_reflection,
+                "rationale": f"Based on reflection: {last_reflection.get('reason', 'Proceed as per reflection.')}",
+                "suggested_tools": last_reflection.get("required_tools", []),
+            }
+            # Log it in reasoning log as well
+            self.context.reasoning_log.append(
+                f"Plan (from Reflection): {plan['rationale']} -> {plan['next_step']}"
+            )
+        elif not self.context.reflect_enabled:
+            # Handle case where reflection is disabled
+            self.agent_logger.debug("Reflection disabled, using default plan.")
+            plan = {  # Default plan if reflection disabled
+                "next_step": "Continue direct task execution.",  # Changed default step
+                "rationale": "Direct execution mode, reflection disabled.",
+                "suggested_tools": [],
+            }
+            self.context.reasoning_log.append(
+                f"Plan (Default): {plan['rationale']} -> {plan['next_step']}"
+            )
+        else:
+            self.agent_logger.info(
+                "Reflection suggested 'None' or failed, no further plan generated."
+            )
+            # Plan remains None
 
-        return self.context.final_answer or last_content
+        # Return both the last content generated during think/act and the derived plan
+        return self.context.final_answer or last_content, plan

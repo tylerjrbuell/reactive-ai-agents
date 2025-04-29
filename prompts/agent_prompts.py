@@ -128,11 +128,12 @@ Output Format: JSON
 
 Guidelines:
 1. Review last task reflection and steps taken
-2. Consider dependencies and sequences
-3. Choose most effective next tool call if any are available and appropriate
-4. Always include parameters for the tool call if any are available and appropriate
-5. Explain reasoning clearly in the rationale field
-6  When the task requires a final answer, the next_step should be: final_answer(<answer>)
+2. Compare the `last_reflection` and `previous_steps_summary` against the `main_task`. Identify any parts of the `main_task` that have not yet been completed and prioritize actions to address those remaining parts.
+3. Consider dependencies and sequences
+4. Choose most effective next tool call if any are available and appropriate
+5. Always include parameters for the tool call if any are available and appropriate
+6. Explain reasoning clearly in the rationale field
+7. When the task requires a final answer, the next_step should be: final_answer(<answer>)
 """
 
 MISSING_TOOLS_PROMPT = """
@@ -153,24 +154,29 @@ Guidelines:
 
 # --- Reflection ---
 REFLECTION_SYSTEM_PROMPT = """
-You are a meticulous reflection assistant evaluating an AI agent's task progress.
-Analyze the provided task, the last step's result, available/used tools, and progress so far.
-Based ONLY on the provided context, determine the following:
+You are a meticulous reflection assistant evaluating an AI agent's progress on its *original goal*.
+Your task is to determine the single, concrete next action needed to move towards the original goal.
 
-1.  `completion_score` (float, 0.0 to 1.0): How complete is the *overall task*?
-    - 0.0: No progress or deviated significantly.
-    - 0.1-0.4: Minimal or preliminary progress.
-    - 0.5-0.8: Substantial progress, key steps taken.
-    - 0.9-0.99: Almost complete, only minor verification or formatting needed.
-    - 1.0: **ONLY** if the *entire core task* as described in the original goal is verifiably finished based on the context. Do NOT assign 1.0 if further action or verification is needed.
-2.  `reason` (string): Briefly explain the *reasoning* behind your `completion_score`. Justify *why* the task is or isn't complete, referencing specific evidence from the context (last result, tools used, progress summary). Mention any discrepancies or failures encountered in the last step.
-3.  `next_step` (string): Describe the *single, immediate, concrete* next action the agent should take to progress *towards the original goal*.
-    - If the task is fully complete (score 1.0), this MUST be "None".
-    - If the task is stuck or failed irrecoverably, suggest a final step like "Report failure" or "Consult user".
-    - Be specific (e.g., "Use tool X with params Y", "Analyze data Z", "Format result according to specification"). Avoid vague steps like "continue".
-4.  `completed_tools` (list[string]): List tool names from `tools_used_successfully` that represent *meaningful completed sub-steps* towards the final goal.
+Original Goal: {{{{task}}}}
+Minimum Required Tools for Goal: {{{{min_required_tools}}}}
+Tools Successfully Executed So Far: {{{{tools_used_successfully}}}}
+Last Action's Result/Error: {{{{last_result}}}}
 
-CRITICAL: Base your assessment *strictly* on the provided context. Do not assume external knowledge or actions not explicitly mentioned. Be objective.
+Based *strictly* on comparing the original goal and required tools against the tools successfully executed, determine the following in JSON format:
+
+{{
+    "next_step": "<string>",
+    "reason": "<string>",
+    "completed_tools": ["<string>", ...]
+}}
+
+Guidelines:
+
+1.  `next_step` (string): Describe the *single, immediate, concrete* tool call (e.g., "Use tool 'create_table' with params X") that is needed *next* to progress towards the original goal. Consider the required tools that haven't been successfully executed yet. If the last action resulted in an error (check `last_result`), suggest a step to fix it (e.g., "Use 'create_table' because the previous 'write_query' failed with 'no such table'"). If all required tools have been successfully executed AND the `final_answer` tool is listed as required but not yet used, the next step MUST be "Use the 'final_answer' tool to provide the result.". If all required tools *including* `final_answer` (if required) ARE in `tools_used_successfully`, this MUST be "None". Avoid vague steps like "continue" or "reflect".
+2.  `reason` (string): Briefly explain *why* the `next_step` is necessary. Reference the original goal, the required tools list, and the successfully executed tools list. Mention any specific error from `last_result` if it influenced the `next_step`.
+3.  `completed_tools` (list[string]): **CRITICAL: This MUST be an exact copy of the list provided in the `tools_used_successfully` input field.** Do NOT add or remove any tools.
+
+CRITICAL: Base your assessment *strictly* on the provided context. Do not evaluate overall completion percentage. Focus only on the immediate next logical action based on the difference between required and completed tools, and any errors.
 """
 
 REFLECTION_CONTEXT_PROMPT = """
