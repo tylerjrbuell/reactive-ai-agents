@@ -220,17 +220,17 @@ class ToolManager(BaseModel):
                         self.tool_logger.info(f"Cache hit for tool: {tool_name}")
                         self.cache_hits += 1
                         cached_result = cache_entry["result"]
+                        summary = await self._generate_and_log_summary(
+                            tool_name, params, cached_result
+                        )
                         self._add_to_history(
-                            tool_name, params, cached_result, cached=True
+                            tool_name, params, cached_result, summary, cached=True
                         )
                         # Handle final answer from cache
                         if tool_name == "final_answer":
                             self.context.session.final_answer = str(
                                 cached_result
                             )  # Ensure string
-                        await self._generate_and_log_summary(
-                            tool_name, params, cached_result
-                        )
                         return cached_result
                 self.cache_misses += 1
             except TypeError as e:
@@ -326,9 +326,18 @@ class ToolManager(BaseModel):
             else:
                 self.tool_logger.debug(f"Result: {result_str}")
 
+            # Generate and log summary
+            summary = await self._generate_and_log_summary(
+                tool_name, params, result_list
+            )
+
             # Add to history BEFORE caching
             self._add_to_history(
-                tool_name, params, result_list, execution_time=tool_execution_time
+                tool_name,
+                params,
+                result_list,
+                summary,
+                execution_time=tool_execution_time,
             )
 
             # Add to cache if enabled and successful
@@ -343,9 +352,6 @@ class ToolManager(BaseModel):
                         "timestamp": time.time(),
                     }
                     self._limit_cache_size()  # Prune cache if needed
-
-            # Generate and log summary
-            await self._generate_and_log_summary(tool_name, params, result_list)
 
             # Log success before returning
             if tool_name != "final_answer":  # Don't track final_answer as successful?
@@ -388,6 +394,7 @@ class ToolManager(BaseModel):
         tool_name,
         params,
         result,
+        summary=None,
         execution_time=None,
         cached=False,
         cancelled=False,
@@ -403,6 +410,7 @@ class ToolManager(BaseModel):
             "name": tool_name,
             "params": params,  # Consider masking sensitive params here
             "result": result_repr,
+            "summary": summary,
             "timestamp": time.time(),
             "cached": cached,
             "cancelled": cancelled,
@@ -444,7 +452,7 @@ class ToolManager(BaseModel):
 
     async def _generate_and_log_summary(
         self, tool_name: str, params: dict, result: Any
-    ):
+    ) -> str:
         """Generates a summary of the tool action and adds it to context memory/progress."""
         try:
             result_str = str(result)
@@ -472,6 +480,7 @@ class ToolManager(BaseModel):
             # Add summary to context's reasoning log and update task progress
             self.context.session.reasoning_log.append(tool_action_summary)
             self.context.session.task_progress += f"\n- {tool_action_summary}"
+            return tool_action_summary
 
         except Exception as e:
             self.tool_logger.error(
@@ -480,6 +489,7 @@ class ToolManager(BaseModel):
             fallback_summary = f"Successfully executed tool '{tool_name}'."
             self.context.session.reasoning_log.append(fallback_summary)
             self.context.session.task_progress += f"\n- {fallback_summary}"
+            return fallback_summary
 
     def _generate_tool_signatures(self):
         """Generates tool signatures from the schemas of available tools."""
@@ -511,3 +521,7 @@ class ToolManager(BaseModel):
     def get_available_tool_names(self) -> set[str]:
         """Returns a set of all available tool names."""
         return set([tool.name for tool in self.tools])
+
+    def get_last_tool_action(self) -> Optional[Dict[str, Any]]:
+        """Returns the most recent entry from the tool history, if any."""
+        return self.tool_history[-1] if self.tool_history else None

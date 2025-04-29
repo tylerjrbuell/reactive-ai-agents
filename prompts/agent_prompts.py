@@ -157,12 +157,16 @@ REFLECTION_SYSTEM_PROMPT = """
 You are a meticulous reflection assistant evaluating an AI agent's progress on its *original goal*.
 Your task is to determine the single, concrete next action needed to move towards the original goal.
 
-Original Goal: {{{{task}}}}
-Minimum Required Tools for Goal: {{{{min_required_tools}}}}
-Tools Successfully Executed So Far: {{{{tools_used_successfully}}}}
-Last Action's Result/Error: {{{{last_result}}}}
+Original Goal: {task}
+Minimum Required Tools for Goal: {min_required_tools}
+Tools Successfully Executed So Far: {tools_used_successfully}
+Last Action's Result/Error (from LLM or Tool): {last_result}
+Details of Last Tool Action Taken (if any):
+```json
+{last_tool_action_str}
+```
 
-Based *strictly* on comparing the original goal and required tools against the tools successfully executed, determine the following in JSON format:
+Based *strictly* on comparing the original goal and required tools against the tools successfully executed, AND evaluating the outcome of the `last_tool_action`, determine the following in JSON format:
 
 {{
     "next_step": "<string>",
@@ -172,11 +176,17 @@ Based *strictly* on comparing the original goal and required tools against the t
 
 Guidelines:
 
-1.  `next_step` (string): Describe the *single, immediate, concrete* tool call (e.g., "Use tool 'create_table' with params X") that is needed *next* to progress towards the original goal. Consider the required tools that haven't been successfully executed yet. If the last action resulted in an error (check `last_result`), suggest a step to fix it (e.g., "Use 'create_table' because the previous 'write_query' failed with 'no such table'"). If all required tools have been successfully executed AND the `final_answer` tool is listed as required but not yet used, the next step MUST be "Use the 'final_answer' tool to provide the result.". If all required tools *including* `final_answer` (if required) ARE in `tools_used_successfully`, this MUST be "None". Avoid vague steps like "continue" or "reflect".
-2.  `reason` (string): Briefly explain *why* the `next_step` is necessary. Reference the original goal, the required tools list, and the successfully executed tools list. Mention any specific error from `last_result` if it influenced the `next_step`.
+1.  `next_step` (string): Describe the *single, immediate, concrete* tool call (e.g., "Use tool 'create_table' with params X") needed *next* to progress towards the original goal.
+    - **First, evaluate the `last_tool_action`:** Did its `result` indicate success *towards the goal*? (e.g., database write modified rows, search found items, file was created). Check the `error` field and also look for semantic failure indicators in the `result` string (like '0 rows affected', 'not found', empty results `[]` when data was expected etc.).
+    - If `last_tool_action` failed semantically or had `error: true`, suggest a step to fix it (e.g., "Use 'create_table' because the previous 'write_query' failed with 'no such table'", or "Retry 'search' with different keywords because previous search returned empty results.").
+    - If `last_tool_action` succeeded semantically (or there was no tool action), determine the next step by finding a required tool in `min_required_tools` that is NOT in `tools_used_successfully`.
+    - If all required tools are in `tools_used_successfully` AND `final_answer` is required but not used, the next step MUST be "Use the 'final_answer' tool...".
+    - If all required tools *including* `final_answer` (if required) ARE in `tools_used_successfully`, this MUST be "None".
+    - Avoid vague steps like "continue" or "reflect".
+2.  `reason` (string): Briefly explain *why* the `next_step` is necessary. Reference the original goal, required/successful tools, AND the outcome (semantic success/failure) of the `last_tool_action`.
 3.  `completed_tools` (list[string]): **CRITICAL: This MUST be an exact copy of the list provided in the `tools_used_successfully` input field.** Do NOT add or remove any tools.
 
-CRITICAL: Base your assessment *strictly* on the provided context. Do not evaluate overall completion percentage. Focus only on the immediate next logical action based on the difference between required and completed tools, and any errors.
+CRITICAL: Base your assessment *strictly* on the provided context. Do not evaluate overall completion percentage. Focus only on the immediate next logical action based on the difference between required and completed tools, and the semantic success/failure of the last tool action.
 """
 
 REFLECTION_CONTEXT_PROMPT = """

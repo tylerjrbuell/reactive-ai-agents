@@ -129,6 +129,13 @@ class ReflectionManager(BaseModel):
             available_tool_names = [tool.name for tool in self.tool_manager.tools]
             successfully_used_tools = list(set(self.context.session.successful_tools))
 
+            # Get the last tool history entry
+            last_tool_action = (
+                self.context.tool_manager.get_last_tool_action()
+                if self.context.tool_manager
+                else None
+            )
+
             reflection_input_context = {
                 "task": self.context.session.current_task,
                 "min_required_tools": (
@@ -147,6 +154,7 @@ class ReflectionManager(BaseModel):
                 "max_iterations": self.context.max_iterations,
                 "previous_reflections": self.reflections[-3:],
                 "task_progress_summary": self.context.session.task_progress[-1000:],
+                "last_tool_action": last_tool_action,
             }
             self.agent_logger.debug(
                 f"Reflection Tool Use context: {reflection_input_context['tools_used_successfully']}"
@@ -161,6 +169,9 @@ class ReflectionManager(BaseModel):
                     "tools_used_successfully"
                 ],
                 last_result=reflection_input_context["last_result"],
+                last_tool_action_str=json.dumps(
+                    reflection_input_context["last_tool_action"], indent=2, default=str
+                ),
             )
 
             reflection_context_prompt = REFLECTION_CONTEXT_PROMPT.format(

@@ -37,11 +37,6 @@ from components.tool_manager import ToolManager
 # --- Import AgentSession from its new location ---
 from .session import AgentSession
 
-# --- End Import Manager Classes ---
-
-
-# --- AgentSession Definition REMOVED ---
-
 
 # Now define AgentContext
 class AgentContext(BaseModel):
