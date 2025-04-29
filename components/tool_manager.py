@@ -55,7 +55,7 @@ class FinalAnswerTool(Tool):
             return ToolResult("Error: Missing required parameter 'answer'.")
 
         # Set the final answer in the context
-        self.context.final_answer = answer
+        self.context.session.final_answer = answer
         return ToolResult(f"Final answer has been recorded: {answer}")
 
 
@@ -89,7 +89,10 @@ class ToolManager(BaseModel):
         # Set config from context
         self.enable_caching = self.context.enable_caching
         self.cache_ttl = self.context.cache_ttl
-        self.confirmation_callback = self.context.confirmation_callback
+        # Avoid direct assignment to confirmation_callback
+        object.__setattr__(
+            self, "confirmation_callback", self.context.confirmation_callback
+        )
 
     @property
     def agent_logger(self) -> Logger:
@@ -200,7 +203,7 @@ class ToolManager(BaseModel):
 
         # Add reasoning to the main context log
         if "reasoning" in params:
-            self.context.reasoning_log.append(params["reasoning"])
+            self.context.session.reasoning_log.append(params["reasoning"])
             # Optionally remove reasoning from params sent to tool if not part of schema
             # tool_schema = tool.tool_definition.get("function", {}).get("parameters", {}).get("properties", {})
             # if "reasoning" not in tool_schema:
@@ -222,7 +225,7 @@ class ToolManager(BaseModel):
                         )
                         # Handle final answer from cache
                         if tool_name == "final_answer":
-                            self.context.final_answer = str(
+                            self.context.session.final_answer = str(
                                 cached_result
                             )  # Ensure string
                         await self._generate_and_log_summary(
@@ -344,6 +347,10 @@ class ToolManager(BaseModel):
             # Generate and log summary
             await self._generate_and_log_summary(tool_name, params, result_list)
 
+            # Log success before returning
+            if tool_name != "final_answer":  # Don't track final_answer as successful?
+                # Append to session successful_tools
+                self.context.session.successful_tools.append(tool_name)
             return result_list  # Return the structured result
 
         except Exception as e:
@@ -405,7 +412,7 @@ class ToolManager(BaseModel):
             ),
         }
         if not error and not cancelled:
-            self.context.successful_tools.append(tool_name)
+            self.context.session.successful_tools.append(tool_name)
 
         self.tool_history.append(entry)
 
@@ -463,16 +470,16 @@ class ToolManager(BaseModel):
             self.tool_logger.debug(f"Tool Action Summary: {tool_action_summary}")
 
             # Add summary to context's reasoning log and update task progress
-            self.context.reasoning_log.append(tool_action_summary)
-            self.context.task_progress += f"\n- {tool_action_summary}"
+            self.context.session.reasoning_log.append(tool_action_summary)
+            self.context.session.task_progress += f"\n- {tool_action_summary}"
 
         except Exception as e:
             self.tool_logger.error(
                 f"Failed to generate tool action summary for {tool_name}: {e}"
             )
             fallback_summary = f"Successfully executed tool '{tool_name}'."
-            self.context.reasoning_log.append(fallback_summary)
-            self.context.task_progress += f"\n- {fallback_summary}"
+            self.context.session.reasoning_log.append(fallback_summary)
+            self.context.session.task_progress += f"\n- {fallback_summary}"
 
     def _generate_tool_signatures(self):
         """Generates tool signatures from the schemas of available tools."""

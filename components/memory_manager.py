@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 # Import shared types from the new location
 from common.types import AgentMemory, TaskStatus
+from context.session import AgentSession
 
 # Need to import AgentMemory from its original location or move it
 # Assuming AgentMemory is defined in react_agent for now
@@ -162,17 +163,26 @@ class MemoryManager(BaseModel):
         except Exception as e:
             self.agent_logger.error(f"Unexpected error saving memory: {e}")
 
-    def update_session_history(self, final_result_dict: Dict[str, Any]):
+    def update_session_history(self, session_data: AgentSession):
         """Adds a summary of the completed agent run to the session history."""
         if not self.memory_enabled or not self.agent_memory:
             return
 
         try:
-            # Extract relevant info from the final result dictionary
-            status_str = final_result_dict.get("status", str(self.context.task_status))
-            iterations = final_result_dict.get("iterations", self.context.iterations)
-            evaluation = final_result_dict.get("evaluation", {})
+            # Extract relevant info directly from the session object
+            status_str = str(session_data.task_status)
+            iterations = session_data.iterations
+            evaluation = session_data.evaluation
             adherence_score = evaluation.get("adherence_score")
+            initial_task = session_data.initial_task
+            final_result_summary = (
+                str(session_data.final_answer)[:200] + "..."
+                if session_data.final_answer
+                else None
+            )
+            rescoped = (
+                initial_task != session_data.current_task
+            )  # Simple check if task changed
 
             # Determine success based on status
             success_statuses = [
@@ -181,32 +191,20 @@ class MemoryManager(BaseModel):
             ]
             is_success = status_str in success_statuses
 
-            # Get tools used from ToolManager history
-            tools_used_names = []
-            if self.context.tool_manager:
-                tools_used_names = list(
-                    set(
-                        t.get("name", "unknown")
-                        for t in self.context.tool_manager.tool_history
-                        if t.get("name")
-                    )
-                )
+            # Get tools used from session object
+            tools_used_names = list(set(session_data.successful_tools))
 
             session_entry = {
+                "session_id": session_data.session_id,  # Log session ID
                 "timestamp": datetime.now().isoformat(),
-                "task": self.context.initial_task,  # Log the original task
+                "task": initial_task,
                 "status": status_str,
                 "success": is_success,
                 "iterations": iterations,
                 "tools_used": tools_used_names,
                 "adherence_score": adherence_score,
-                # Could add final_result summary, rescoped info etc. if needed
-                "rescoped": final_result_dict.get("rescoped", False),
-                "final_result_summary": (
-                    str(final_result_dict.get("result", ""))[:200] + "..."
-                    if final_result_dict.get("result")
-                    else None
-                ),
+                "rescoped": rescoped,
+                "final_result_summary": final_result_summary,
             }
 
             self.agent_memory.session_history.append(session_entry)

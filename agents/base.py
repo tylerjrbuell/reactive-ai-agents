@@ -77,7 +77,7 @@ class Agent:
         try:
             self.agent_logger.info("Thinking (direct completion)...")
             # Pass messages directly if provided, otherwise use context messages
-            kwargs.setdefault("messages", self.context.messages)
+            kwargs.setdefault("messages", self.context.session.messages)
             result = await self.model_provider.get_completion(**kwargs)
 
             # Metric Tracking
@@ -115,7 +115,7 @@ class Agent:
             )
 
             # Default to context messages
-            kwargs.setdefault("messages", self.context.messages)
+            kwargs.setdefault("messages", self.context.session.messages)
             self.agent_logger.debug(
                 f"Thinking (chat completion, tool_use={use_tools})..."
             )
@@ -149,7 +149,7 @@ class Agent:
 
             if message_content and remember_messages:
                 # Add assistant response to context's message history
-                self.context.messages.append(
+                self.context.session.messages.append(
                     {"role": "assistant", "content": message_content}
                 )
                 self.agent_logger.debug(
@@ -160,7 +160,7 @@ class Agent:
                 self.agent_logger.info(f"Received {len(tool_calls)} tool calls.")
                 # Add the assistant message with tool calls before processing results
                 if remember_messages:
-                    self.context.messages.append(
+                    self.context.session.messages.append(
                         message
                     )  # Store the message with tool_calls
                     self.agent_logger.debug(
@@ -229,7 +229,7 @@ class Agent:
                     "content": result_content,
                     **({"tool_call_id": tool_call_id} if tool_call_id else {}),
                 }
-                self.context.messages.append(tool_result_message)
+                self.context.session.messages.append(tool_result_message)
                 self.agent_logger.debug(
                     f"Added tool result message to context for {tool_result_message['name']}."
                 )
@@ -246,18 +246,18 @@ class Agent:
     async def _run_task(self, task: str) -> dict | None:
         """Adds the main task to the message list and initiates the thinking chain."""
         # Ensure initial task is set in context if not already
-        if not self.context.initial_task:
-            self.context.initial_task = task
-        if not self.context.current_task:
-            self.context.current_task = task
+        if not self.context.session.initial_task:
+            self.context.session.initial_task = task
+        if not self.context.session.current_task:
+            self.context.session.current_task = task
 
         # Append the user's task message
-        self.context.messages.append(
+        self.context.session.messages.append(
             {
                 "role": "user",
                 "content": f"""
                 {task}
-                {"\n".join(self.context.task_nudges)}
+                {"\n".join(self.context.session.task_nudges)}
                 """,
             }
         )
@@ -272,7 +272,7 @@ class Agent:
         Runs a single iteration or loop for the task, potentially simplified in base Agent.
         ReactAgent will override this with more complex logic (reflection, planning).
         """
-        self.context.iterations = 0
+        self.context.session.iterations = 0
         max_iterations = (
             self.context.max_iterations or 1
         )  # Default to 1 iteration for base agent
@@ -281,19 +281,19 @@ class Agent:
 
         try:
             self.agent_logger.info(f"Starting task: {task}")
-            while self.context.iterations < max_iterations:
-                self.context.iterations += 1
+            while self.context.session.iterations < max_iterations:
+                self.context.session.iterations += 1
                 self.agent_logger.info(
-                    f"Running Iteration: {self.context.iterations}/{max_iterations}"
+                    f"Running Iteration: {self.context.session.iterations}/{max_iterations}"
                 )
 
                 # In base agent, just run the task directly
                 # Use current_task from context, which might be updated by subclasses
-                result = await self._run_task(task=self.context.current_task)
+                result = await self._run_task(task=self.context.session.current_task)
 
                 if not result or not result.get("message"):
                     self.agent_logger.warning(
-                        f"Iteration {self.context.iterations} failed or produced no result."
+                        f"Iteration {self.context.session.iterations} failed or produced no result."
                     )
                     break  # Stop if an iteration fails
 
@@ -304,22 +304,27 @@ class Agent:
 
                 # Base agent doesn't handle complex stopping conditions like reflections or final_answer tool
                 # It just runs for the allowed iterations. Subclasses override this.
-                if self.context.final_answer:  # Check if a tool set the final answer
+                if (
+                    self.context.session.final_answer
+                ):  # Check if a tool set the final answer
                     self.agent_logger.info("Final answer detected in context.")
-                    final_result_content = self.context.final_answer
+                    final_result_content = self.context.session.final_answer
                     break
 
                 # Simple check for no progress (if assistant repeats itself) - maybe less relevant in base agent
-                if self.context.iterations > 1 and len(self.context.messages) > 2:
+                if (
+                    self.context.session.iterations > 1
+                    and len(self.context.session.messages) > 2
+                ):
                     last_assistant_message = (
-                        self.context.messages[-1]
-                        if self.context.messages[-1]["role"] == "assistant"
+                        self.context.session.messages[-1]
+                        if self.context.session.messages[-1]["role"] == "assistant"
                         else None
                     )
                     prev_assistant_message = (
-                        self.context.messages[-3]
-                        if len(self.context.messages) > 3
-                        and self.context.messages[-3]["role"] == "assistant"
+                        self.context.session.messages[-3]
+                        if len(self.context.session.messages) > 3
+                        and self.context.session.messages[-3]["role"] == "assistant"
                         else None
                     )
                     if (
@@ -333,13 +338,13 @@ class Agent:
                         )
                         break
 
-            if self.context.iterations >= max_iterations:
+            if self.context.session.iterations >= max_iterations:
                 self.agent_logger.info(
                     f"Reached maximum iterations ({max_iterations}) for base agent run."
                 )
 
             return (
-                self.context.final_answer or final_result_content
+                self.context.session.final_answer or final_result_content
             )  # Return final answer if set, else last content
 
         except Exception as e:
@@ -354,10 +359,10 @@ class Agent:
         """
         # Reset context state for a new run? Or assume context is fresh?
         # Let's assume context might be reused, so reset relevant parts.
-        self.context.initial_task = initial_task
-        self.context.current_task = initial_task
-        self.context.iterations = 0
-        self.context.final_answer = None
+        self.context.session.initial_task = initial_task
+        self.context.session.current_task = initial_task
+        self.context.session.iterations = 0
+        self.context.session.final_answer = None
         # Clear messages except system prompt? Be careful if context is shared.
         # For now, assume messages are managed externally or cleared before run if needed.
         # self.context.messages = [msg for msg in self.context.messages if msg['role'] == 'system']
@@ -387,10 +392,10 @@ class Agent:
             # Update final metrics
             if self.context.metrics_manager:
                 # Assume status is COMPLETE if we finished without error in base agent
-                if self.context.task_status not in [
+                if self.context.session.task_status not in [
                     TaskStatus.ERROR
                 ]:  # Use TaskStatus from common
-                    self.context.task_status = (
+                    self.context.session.task_status = (
                         TaskStatus.COMPLETE
                     )  # Use TaskStatus from common
                 self.context.metrics_manager.finalize_run_metrics()
@@ -398,20 +403,16 @@ class Agent:
             # Save memory if enabled
             if self.context.memory_manager:
                 # Need to construct a result dict for memory manager
-                result_dict = {
-                    "status": str(self.context.task_status),
-                    "result": final_result,
-                    "iterations": self.context.iterations,
-                    # Add other relevant info if available (evaluation, etc.)
-                }
-                self.context.memory_manager.update_session_history(result_dict)
+                self.context.memory_manager.update_session_history(self.context.session)
                 self.context.memory_manager.save_memory()
 
             return final_result
 
         except Exception as e:
             self.agent_logger.error(f"Agent run failed: {e}")
-            self.context.task_status = TaskStatus.ERROR  # Use TaskStatus from common
+            self.context.session.task_status = (
+                TaskStatus.ERROR
+            )  # Use TaskStatus from common
             if self.context.metrics_manager:
                 self.context.metrics_manager.finalize_run_metrics()
             return None

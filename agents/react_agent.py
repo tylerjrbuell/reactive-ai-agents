@@ -2,17 +2,12 @@ from __future__ import annotations
 import json
 import traceback
 import asyncio
-import os
-from datetime import datetime
-from enum import Enum, auto
-from typing import List, Any, Optional, Dict, Set, Union, Tuple, Callable
+from typing import List, Any, Optional, Dict, Set, Tuple, Callable
 from collections.abc import Awaitable
 import time
-import random
 
 from pydantic import BaseModel, Field, model_validator
 from prompts.agent_prompts import (
-    AGENT_ACTION_PLAN_PROMPT,
     MISSING_TOOLS_PROMPT,
     TOOL_FEASIBILITY_CONTEXT_PROMPT,
     SUMMARY_SYSTEM_PROMPT,
@@ -21,10 +16,9 @@ from prompts.agent_prompts import (
     RESCOPE_CONTEXT_PROMPT,
     EVALUATION_SYSTEM_PROMPT,
     EVALUATION_CONTEXT_PROMPT,
-    PLANNING_CONTEXT_PROMPT,
 )
 from agents.base import Agent
-from context.agent_context import AgentContext
+from context.agent_context import AgentContext, AgentSession
 from agent_mcp.client import MCPClient
 
 # Import shared types from the new location
@@ -205,105 +199,105 @@ class ReactAgent(Agent):
         Returns:
             A dictionary containing the final status, result, and other execution details.
         """
-        # --- Use initial_task from run() if provided, otherwise from context init ---
-        current_initial_task = initial_task or self.context.initial_task
+        # --- Use initial_task from run() if provided, otherwise context cannot provide it anymore ---
+        # Config might hold an initial task if provided at agent init, but run() arg takes precedence.
+        current_initial_task = initial_task
         if not current_initial_task:
+            # Maybe fetch from config if stored there? For now, raise error.
+            # config_initial_task = getattr(self.config, 'initial_task', None)
+            # current_initial_task = config_initial_task
+            # if not current_initial_task:
             raise ValueError(
-                "An initial task must be provided either during initialization or when calling run()."
+                # "An initial task must be provided either during agent config or when calling run()."
+                "An initial task must be provided when calling run()."
             )
 
         # 1. --- Initialization and Context Setup ---
-        self.context.start_time = time.time()
-        self.context.initial_task = current_initial_task  # Use the determined task
-        self.context.current_task = current_initial_task  # Use the determined task
-        self.context.iterations = 0
-        self.context.final_answer = None
-        self.context.task_progress = ""
-        self.context.reasoning_log = []
-        self.context.task_status = TaskStatus.INITIALIZED
-
-        # Reset metrics
+        # Create a new session for this run
+        self.context.session = AgentSession(
+            initial_task=current_initial_task,
+            current_task=current_initial_task,
+            start_time=time.time(),  # Override default start time
+        )
+        # Reset metrics manager if it exists
         if self.context.metrics_manager:
             self.context.metrics_manager.reset()
-
-        # Reset reflections for the new run
+        # Reset reflection manager if it exists
         if self.context.reflection_manager:
+            # Reset internal state if needed, reflections might be loaded from memory later
             self.context.reflection_manager.reset()
-            # We might want to load relevant reflections *after* reset if needed
-            # E.g., self.context.reflection_manager.load_relevant_reflections(initial_task)
 
+        # Log the correct initial task from the session
         self.agent_logger.info(
-            f"ReactAgent run starting for task: {self.context.initial_task}"
-        )  # Log correct task
+            f"ReactAgent run starting for task: {self.context.session.initial_task}"
+        )
 
-        # Local state for run management
+        # Local state for run management (some might move to session later if needed)
         last_error: Optional[str] = None
-        rescoped_task: Optional[str] = None
-        final_result_content: Optional[str] = None
+        rescoped_task: Optional[str] = None  # Keep local? Or move to session?
+        final_result_content: Optional[str] = None  # Keep local to build final result
         max_failures = self.context.max_task_retries
         failure_count = 0
-        # Use a set to track active asyncio tasks spawned by the agent during the run
         active_tasks: Set[asyncio.Task] = set()
+        last_plan = None  # Keep local for loop guidance injection
 
         try:
             # 2. --- Pre-run Checks (Dependencies, Tool Feasibility) ---
             if not self._check_dependencies():
-                return self._prepare_final_result(rescoped_task)
+                # Prepare result using session status (rescoped_task is None here)
+                return self._prepare_final_result(rescoped_task=None)
 
-            self.context.min_required_tools = None  # Initialize/reset for the run
+            # Use session's initial_task for feasibility check
             if self.context.check_tool_feasibility:
                 feasibility = await self.check_tool_feasibility(
-                    self.context.initial_task
-                )  # Use context's initial_task
-                # Store the initial required tools if feasibility check ran and succeeded
+                    self.context.session.initial_task
+                )
                 if feasibility and feasibility.get("required_tools") is not None:
-                    self.context.min_required_tools = set(feasibility["required_tools"])
+                    self.context.session.min_required_tools = set(
+                        feasibility["required_tools"]
+                    )
                     self.agent_logger.debug(
-                        f"Stored initial required tools: {self.context.min_required_tools}"
+                        f"Stored initial required tools in session: {self.context.session.min_required_tools}"
                     )
 
                 if not feasibility["feasible"]:
                     self.agent_logger.warning(
                         f"Missing required tools: {feasibility['missing_tools']}"
                     )
-                    self.context.reasoning_log.append(
+                    self.context.session.task_status = TaskStatus.MISSING_TOOLS
+                    self.context.session.reasoning_log.append(
                         f"Cannot complete task: Missing Tools - {feasibility.get('explanation', '')}"
                     )
-                    self.context.task_status = TaskStatus.MISSING_TOOLS
                     if self.context.workflow_manager:
                         self.context.workflow_manager.update_context(
                             TaskStatus.MISSING_TOOLS,
                             missing_tools=feasibility["missing_tools"],
                             explanation=feasibility["explanation"],
                         )
+                    # Prepare result using session status (rescoped_task is None)
                     return self._prepare_final_result(
-                        rescoped_task, feasibility=feasibility
+                        rescoped_task=None, feasibility=feasibility
                     )
 
             # 3. --- Set Status to Running ---
-            self.context.task_status = TaskStatus.RUNNING
+            self.context.session.task_status = TaskStatus.RUNNING
             if self.context.workflow_manager:
                 self.context.workflow_manager.update_context(TaskStatus.RUNNING)
 
-            # Initialize last_plan outside the loop
-            last_plan = None
-
             # 4. --- Execution Loop ---
             while self._should_continue():
-                # Check for cancellation
                 if cancellation_event and cancellation_event.is_set():
                     self.agent_logger.info("Task execution cancelled by user.")
-                    self.context.task_status = TaskStatus.CANCELLED
+                    self.context.session.task_status = TaskStatus.CANCELLED
                     break
 
-                self.context.iterations += 1
+                self.context.session.iterations += 1
                 self.agent_logger.info(
-                    f"🔄 ITERATION {self.context.iterations}/{self.context.max_iterations or 'unlimited'}"
+                    f"🔄 ITERATION {self.context.session.iterations}/{self.context.max_iterations or 'unlimited'}"
                 )
-                # Update workflow context iteration count
                 if self.context.workflow_manager:
                     self.context.workflow_manager.update_context(
-                        self.context.task_status
+                        self.context.session.task_status
                     )
 
                 # Inject guidance from the previous iteration's plan
@@ -316,46 +310,36 @@ class ReactAgent(Agent):
                         "role": "user",
                         "content": f"Based on the previous plan, the next concrete step to take is: {last_plan['next_step']}. Rationale: {last_plan['rationale']}. Please proceed with this action.",
                     }
-                    self.context.messages.append(guidance_message)
+                    self.context.session.messages.append(guidance_message)
                     self.agent_logger.debug(
                         f"Injecting plan guidance: {guidance_message['content']}"
                     )
 
-                current_task_for_iteration = rescoped_task or self.context.current_task
+                current_task_for_iteration = (
+                    rescoped_task or self.context.session.current_task
+                )
 
+                # --- Inner try/except for iteration-specific errors ---
                 try:
-                    # --- Run the full React iteration (Think/Act -> Reflect -> Plan) ---
-                    # This method now handles internal logic and returns (content, plan)
                     self.agent_logger.info(
-                        f"🔄 Iteration {self.context.iterations} current task: {current_task_for_iteration}"
+                        f"🔄 Iteration {self.context.session.iterations} current task: {current_task_for_iteration}"
                     )
-                    # Capture both content and the new plan for the *next* iteration
                     iteration_content, new_plan = await self._run_task_iteration(
                         task=current_task_for_iteration
                     )
                     self.agent_logger.info(f"🔄 Content Preview: {iteration_content}")
-
-                    # Update last_plan for the next iteration
                     last_plan = new_plan
-
-                    # Update final_result_content if the iteration produced text
                     if iteration_content:
                         final_result_content = iteration_content
 
-                    # Check if a tool inside the iteration set the final answer
-                    if self.context.final_answer:
+                    if self.context.session.final_answer:
                         self.agent_logger.info(
                             "✅ Final answer received during task execution."
                         )
-                        self.context.task_status = (
-                            TaskStatus.COMPLETE
-                        )  # Ensure status is updated
-                        break  # Exit loop immediately
+                        self.context.session.task_status = TaskStatus.COMPLETE
+                        break
 
-                    # Update system prompt if needed
                     self.context.update_system_prompt()
-
-                    # Reset failure counter on successful iteration
                     failure_count = 0
 
                 except Exception as iter_error:
@@ -363,10 +347,10 @@ class ReactAgent(Agent):
                     last_error = str(iter_error)
                     tb_str = traceback.format_exc()
                     self.agent_logger.error(
-                        f"❌ Iteration {self.context.iterations} Error: {last_error}\n{tb_str}"
+                        f"❌ Iteration {self.context.session.iterations} Error: {last_error}\n{tb_str}"
                     )
-                    self.context.reasoning_log.append(
-                        f"ERROR in iteration {self.context.iterations}: {last_error}"
+                    self.context.session.reasoning_log.append(
+                        f"ERROR in iteration {self.context.session.iterations}: {last_error}"
                     )
 
                     if failure_count >= max_failures:
@@ -375,109 +359,100 @@ class ReactAgent(Agent):
                         )
                         error_context = f"Multiple ({failure_count}) failures during execution. Last error: {last_error}"
                         rescope_result = await self.rescope_goal(
-                            self.context.initial_task, error_context
+                            self.context.session.initial_task, error_context
                         )
 
                         if rescope_result["rescoped_task"]:
-                            rescoped_task = rescope_result["rescoped_task"]
-                            # Check type before assignment to satisfy linter
-                            if isinstance(rescoped_task, str):
-                                self.context.current_task = rescoped_task
+                            potential_rescope = rescope_result["rescoped_task"]
+                            if isinstance(potential_rescope, str):
+                                rescoped_task = potential_rescope  # Update local var
+                                self.context.session.current_task = rescoped_task
                                 self.agent_logger.info(
                                     f"Task rescoped to: {rescoped_task}"
                                 )
-                                self.context.reasoning_log.append(
+                                self.context.session.reasoning_log.append(
                                     f"Task rescoped: {rescope_result['explanation']}"
                                 )
-                                failure_count = (
-                                    0  # Reset failure count for the new task
-                                )
-
-                                # <<< UPDATE min_required_tools based on rescope >>>
+                                failure_count = 0
                                 if rescope_result.get("expected_tools") is not None:
-                                    self.context.min_required_tools = set(
+                                    self.context.session.min_required_tools = set(
                                         rescope_result["expected_tools"]
                                     )
                                     self.agent_logger.debug(
-                                        f"Updated required tools for rescoped task: {self.context.min_required_tools}"
+                                        f"Updated required tools for rescoped task in session: {self.context.session.min_required_tools}"
                                     )
                                 else:
-                                    # If rescope doesn't specify tools, maybe reset or keep old? Reset seems safer.
-                                    self.context.min_required_tools = None
+                                    self.context.session.min_required_tools = None
                                     self.agent_logger.debug(
-                                        "Reset required tools as rescope did not specify expected tools."
+                                        "Reset required tools in session as rescope did not specify expected tools."
                                     )
-                                # <<< END UPDATE >>>
-
                                 if self.context.workflow_manager:
                                     self.context.workflow_manager.update_context(
-                                        self.context.task_status,
+                                        self.context.session.task_status,
                                         rescoped=True,
-                                        original_task=self.context.initial_task,
+                                        original_task=self.context.session.initial_task,
                                         rescoped_task=rescoped_task,
                                     )
-                                # Only continue if task was successfully rescoped and assigned
-                                continue
+                                continue  # Continue loop with rescoped task
                             else:
-                                # This case should ideally not happen if rescope_result["rescoped_task"] is truthy
                                 self.agent_logger.error(
                                     "Rescoping failed unexpectedly: rescoped_task was not a string."
                                 )
-                                self.context.task_status = TaskStatus.ERROR
-                                break  # Exit loop on error
-
-                        # If rescoping failed or wasn't possible
+                                self.context.session.task_status = TaskStatus.ERROR
+                                break  # Exit loop
+                        # Rescoping failed or not possible
                         self.agent_logger.error(
                             "Could not rescope task after multiple failures."
                         )
-                        self.context.task_status = TaskStatus.ERROR
-                        self.context.reasoning_log.append(
+                        self.context.session.task_status = TaskStatus.ERROR
+                        self.context.session.reasoning_log.append(
                             "Failed to rescope task after multiple errors."
                         )
-                        break
+                        break  # Exit loop
+                # --- End Inner try/except ---
+            # --- End While Loop ---
 
-            # 5. --- Loop End: Determine Final Status ---
-            self.agent_logger.info(
-                f"🏁 React loop finished after {self.context.iterations} iterations."
-            )
-            if self.context.task_status not in [TaskStatus.ERROR, TaskStatus.CANCELLED]:
-                if self.context.final_answer:
-                    self.context.task_status = TaskStatus.COMPLETE
-                elif rescoped_task:
-                    last_reflection = (
-                        self.context.reflection_manager.get_last_reflection()
-                        if self.context.reflection_manager
-                        else None
-                    )
-                    if (
-                        last_reflection
-                        and last_reflection.get("completion_score", 0)
-                        >= self.context.min_completion_score
-                    ):
-                        self.context.task_status = TaskStatus.RESCOPED_COMPLETE
-                    else:
-                        self.context.task_status = (
-                            TaskStatus.MAX_ITERATIONS
-                            if self.context.iterations
-                            >= (self.context.max_iterations or float("inf"))
-                            else TaskStatus.ERROR
-                        )
-                        if not final_result_content and last_error:
-                            final_result_content = f"Error: {last_error}"
-                elif self.context.iterations >= (
+            # 5. --- Determine Final Status After Loop ---
+            # Status should be set if loop ended via break (COMPLETE, CANCELLED, ERROR)
+            # If loop ended because _should_continue returned false, check conditions:
+            if (
+                self.context.session.task_status == TaskStatus.RUNNING
+            ):  # Only update if still running
+                if self.context.session.iterations >= (
                     self.context.max_iterations or float("inf")
                 ):
-                    self.context.task_status = TaskStatus.MAX_ITERATIONS
+                    self.context.session.task_status = TaskStatus.MAX_ITERATIONS
+                elif not self.context.session.final_answer:
+                    # If loop ended normally but no final answer, likely MAX_ITERATIONS or logic error
+                    self.agent_logger.warning(
+                        "Loop ended via _should_continue but final_answer is not set. Setting status to MAX_ITERATIONS or ERROR."
+                    )
+                    self.context.session.task_status = (
+                        TaskStatus.MAX_ITERATIONS
+                        if self.context.session.iterations
+                        >= (self.context.max_iterations or float("inf"))
+                        else TaskStatus.ERROR
+                    )
+                    if (
+                        self.context.session.task_status == TaskStatus.ERROR
+                        and not last_error
+                    ):
+                        last_error = "Loop ended unexpectedly without final answer."
                 else:
-                    self.context.task_status = TaskStatus.COMPLETE
+                    # Should not happen if _should_continue logic is correct
+                    self.agent_logger.warning(
+                        "Loop ended unexpectedly, assuming completion."
+                    )
+                    self.context.session.task_status = TaskStatus.COMPLETE
 
-            if (
-                self.context.task_status == TaskStatus.ERROR
-                and not final_result_content
-                and last_error
-            ):
+            self.agent_logger.info(
+                f"🏁 Determined final status: {self.context.session.task_status}"
+            )
+
+            # Set error message if status is ERROR and last_error has content
+            if self.context.session.task_status == TaskStatus.ERROR and last_error:
                 final_result_content = f"Error: {last_error}"
-            elif self.context.task_status == TaskStatus.CANCELLED:
+            elif self.context.session.task_status == TaskStatus.CANCELLED:
                 final_result_content = "Task cancelled by user."
 
             # 6. --- Post-run Processing (Summary, Evaluation) ---
@@ -486,22 +461,66 @@ class ReactAgent(Agent):
                 await self.generate_goal_result_evaluation()
             )
 
+        # --- Outer Exception Handler for broader errors ---
         except Exception as run_error:
             tb_str = traceback.format_exc()
             self.agent_logger.error(
                 f"Unhandled error during agent run: {run_error}\n{tb_str}"
             )
-            self.context.task_status = TaskStatus.ERROR
+            # Ensure session exists before modifying
+            if hasattr(self.context, "session") and self.context.session:
+                self.context.session.task_status = TaskStatus.ERROR
+                self.context.session.evaluation = {
+                    "adherence_score": 0.0,
+                    "matches_intent": False,
+                    "explanation": f"Critical error: {run_error}",
+                    "strengths": [],
+                    "weaknesses": ["Agent run failed critically."],
+                }
+            # Set local vars for finally block
+            last_error = str(run_error)
             final_result_content = f"Critical error during agent run: {run_error}"
-            self.context.session.evaluation = {
-                "adherence_score": 0.0,
-                "matches_intent": False,
-                "explanation": "Critical error.",
-            }
 
+        # --- Finally block executes regardless of exceptions ---
         finally:
             # 7. --- Cleanup and Result Preparation ---
-            # Cancel any lingering tasks spawned during the run
+            current_session_status = TaskStatus.ERROR  # Default if session missing
+            session_final_answer = None
+            session_evaluation = {}
+
+            # Safely access session attributes
+            if hasattr(self.context, "session") and self.context.session:
+                current_session_status = self.context.session.task_status
+                session_final_answer = self.context.session.final_answer
+                session_evaluation = self.context.session.evaluation
+                self.context.session.end_time = time.time()
+                self.context.session.error = (
+                    last_error if current_session_status == TaskStatus.ERROR else None
+                )
+                if not self.context.session.final_answer:
+                    # Determine final result string carefully
+                    result_to_use_for_package = (
+                        final_result_content  # Content determined before/during finally
+                        or "Task completed without explicit result."
+                    )
+                    self.context.session.final_answer = result_to_use_for_package
+                else:
+                    # If final_answer was set by tool, use that for the package
+                    result_to_use_for_package = self.context.session.final_answer
+            else:
+                # Session missing, use defaults and captured error info
+                result_to_use_for_package = (
+                    final_result_content or f"Agent failed critically: {last_error}"
+                )
+                session_evaluation = {
+                    "adherence_score": 0.0,
+                    "matches_intent": False,
+                    "explanation": f"Critical error occurred before session completion: {last_error}",
+                    "strengths": [],
+                    "weaknesses": ["Agent run failed critically."],
+                }
+
+            # Cleanup tasks
             if active_tasks:
                 self.agent_logger.debug(
                     f"Cleaning up {len(active_tasks)} background tasks..."
@@ -511,54 +530,55 @@ class ReactAgent(Agent):
                         task.cancel()
                 active_tasks.clear()
 
-            result_to_return = (
-                self.context.final_answer
-                or final_result_content
-                or "Task completed without explicit result."
-            )
-
-            # Prepare the final result dictionary
+            # Prepare the final result package
             final_result_package = self._prepare_final_result(
-                rescoped_task=rescoped_task,
-                result_content=result_to_return,
-                summary=self.context.session.summary,
-                evaluation=self.context.session.evaluation,
+                rescoped_task=rescoped_task,  # Pass local rescoped_task
+                result_content=result_to_use_for_package,  # Use derived result string
+                summary=getattr(
+                    self.context.session, "summary", "Summary not generated."
+                ),  # Safely get summary
+                evaluation=session_evaluation,  # Use derived evaluation
             )
 
-            # Update workflow context with final status
+            # Update workflow context safely
             if self.context.workflow_manager:
                 self.context.workflow_manager.update_context(
-                    self.context.task_status,
-                    result_to_return,
-                    adherence_score=self.context.session.evaluation.get(
-                        "adherence_score"
-                    ),
-                    matches_intent=self.context.session.evaluation.get(
-                        "matches_intent"
-                    ),
+                    current_session_status,
+                    result=result_to_use_for_package,
+                    adherence_score=session_evaluation.get("adherence_score"),
+                    matches_intent=session_evaluation.get("matches_intent"),
                     rescoped=(rescoped_task is not None),
                     error=(
                         last_error
-                        if self.context.task_status == TaskStatus.ERROR
+                        if current_session_status == TaskStatus.ERROR
                         else None
                     ),
                 )
 
-            # Finalize metrics
+            # Finalize metrics and add to package/session
             if self.context.metrics_manager:
                 self.context.metrics_manager.finalize_run_metrics()
-                final_result_package["metrics"] = (
-                    self.context.metrics_manager.get_metrics()
-                )
+                metrics_data = self.context.metrics_manager.get_metrics()
+                final_result_package["metrics"] = metrics_data
+                if hasattr(self.context, "session") and self.context.session:
+                    self.context.session.metrics = metrics_data
 
-            # Save memory
+            # Save memory (using session safely)
             if self.context.memory_manager:
-                self.context.memory_manager.update_session_history(final_result_package)
-                self.context.memory_manager.save_memory()
+                if hasattr(self.context, "session") and self.context.session:
+                    self.context.memory_manager.update_session_history(
+                        self.context.session
+                    )
+                    self.context.memory_manager.save_memory()
+                else:
+                    self.agent_logger.warning(
+                        "Cannot save memory, session object missing."
+                    )
 
             self.agent_logger.info(
-                f"ReactAgent run finished with status: {self.context.task_status}"
+                f"ReactAgent run finished with status: {current_session_status}"
             )
+        # --- End Finally Block ---
 
         return final_result_package
 
@@ -579,34 +599,34 @@ class ReactAgent(Agent):
         feasibility: Optional[Dict] = None,
     ) -> Dict[str, Any]:
         """Helper to construct the final return dictionary."""
-        # Convert set to list for serialization if needed
+        # Fetch data from the session
         min_req_tools_list = (
-            list(self.context.min_required_tools)
-            if self.context.min_required_tools is not None
+            list(self.context.session.min_required_tools)
+            if self.context.session.min_required_tools is not None
             else None
         )
         return {
-            "status": str(self.context.task_status),
-            "result": result_content
-            or self.context.final_answer
+            "status": str(self.context.session.task_status),  # Use session status
+            "result": result_content  # Use explicitly passed result content
+            or self.context.session.final_answer  # Fallback to session final_answer
             or "No textual result produced.",
-            "iterations": self.context.iterations,
-            "summary": summary or "Summary not generated.",
-            "reasoning_log": self.context.reasoning_log,
-            "evaluation": evaluation
+            "iterations": self.context.session.iterations,  # Use session iterations
+            "summary": summary or "Summary not generated.",  # Passed in
+            "reasoning_log": self.context.session.reasoning_log,  # Use session log
+            "evaluation": evaluation  # Passed in
             or {
-                "adherence_score": 0.0,
+                "adherence_score": self.context.session.completion_score,  # Use session score as fallback default
                 "matches_intent": False,
                 "explanation": "Evaluation not performed.",
+                "strengths": [],
+                "weaknesses": [],
             },
-            "rescoped": rescoped_task is not None,
-            "original_task": self.context.initial_task,
-            "rescoped_task": rescoped_task,
-            "min_required_tools": min_req_tools_list,
-            "metrics": (
-                self.context.get_metrics() if self.context.metrics_manager else None
-            ),
-            **(feasibility if feasibility else {}),
+            "rescoped": rescoped_task is not None,  # Passed in
+            "original_task": self.context.session.initial_task,  # Use session initial_task
+            "rescoped_task": rescoped_task,  # Passed in
+            "min_required_tools": min_req_tools_list,  # Use locally derived list
+            "metrics": self.context.session.metrics,  # Use session metrics
+            **(feasibility if feasibility else {}),  # Passed in
         }
 
     def _check_dependencies(self) -> bool:
@@ -618,7 +638,8 @@ class ReactAgent(Agent):
 
     def _should_continue(self) -> bool:
         """Determines if the ReAct loop should continue."""
-        if self.context.task_status in [
+        # Use session status
+        if self.context.session.task_status in [
             TaskStatus.COMPLETE,
             TaskStatus.ERROR,
             TaskStatus.CANCELLED,
@@ -627,104 +648,123 @@ class ReactAgent(Agent):
             TaskStatus.MISSING_TOOLS,
         ]:
             self.agent_logger.debug(
-                f"Stopping loop: Terminal status {self.context.task_status}."
+                f"Stopping loop: Terminal status {self.context.session.task_status}."
             )
             return False
 
+        # Use session iterations
         if (
             self.context.max_iterations is not None
-            and self.context.iterations >= self.context.max_iterations
+            and self.context.session.iterations >= self.context.max_iterations
         ):
             self.agent_logger.info(
                 f"Stopping loop: Max iterations ({self.context.max_iterations}) reached."
             )
-            self.context.task_status = TaskStatus.MAX_ITERATIONS
+            self.context.session.task_status = (
+                TaskStatus.MAX_ITERATIONS
+            )  # Update session status
             return False
 
-        if self.context.final_answer is not None:
+        # Use session final_answer
+        if self.context.session.final_answer is not None:
             self.agent_logger.info("Stopping loop: Final answer set.")
-            if self.context.task_status == TaskStatus.RUNNING:
-                self.context.task_status = TaskStatus.COMPLETE
-            return False
+            # Let the main check handle final_answer + tools
+            pass
 
         if not self._check_dependencies():
             self.agent_logger.info("Stopping loop: Dependencies not met.")
             return False
 
         if self.context.reflect_enabled and self.context.reflection_manager:
-            # We still need reflection to potentially suggest next steps or identify loops,
-            # but completion decision is now based purely on tools and final_answer.
-            pass  # Placeholder, maybe add check for infinite loops based on reflection?
+            pass  # Reflection no longer determines completion score directly
 
         # Check required tools completion against actual successful tools context
         tools_completed = False
         deterministic_score = 0.0
+        # Use session min_required_tools
         if (
-            self.context.min_required_tools is not None
-            and len(self.context.min_required_tools) > 0
+            self.context.session.min_required_tools is not None
+            and len(self.context.session.min_required_tools) > 0
         ):
-            successful_tools_set = set(self.context.successful_tools)
-            successful_intersection = self.context.min_required_tools.intersection(
-                successful_tools_set
+            # Use session successful_tools
+            successful_tools_set = set(self.context.session.successful_tools)
+            successful_intersection = (
+                self.context.session.min_required_tools.intersection(
+                    successful_tools_set
+                )
             )
             deterministic_score = len(successful_intersection) / len(
-                self.context.min_required_tools
+                self.context.session.min_required_tools
             )
-            tools_completed = self.context.min_required_tools.issubset(
+            tools_completed = self.context.session.min_required_tools.issubset(
                 successful_tools_set
             )
             self.agent_logger.info(
-                f"Required tools check: Required={self.context.min_required_tools}, "
+                f"Required tools check: Required={self.context.session.min_required_tools}, "
                 f"Successful={successful_tools_set}, Completed={tools_completed}, Score={deterministic_score:.2f}"
             )
             if not tools_completed:
-                missing_tools = self.context.min_required_tools - successful_tools_set
-                # Avoid adding duplicate nudges
+                missing_tools = (
+                    self.context.session.min_required_tools - successful_tools_set
+                )
                 nudge = f"**Task requires completion of these tools: {missing_tools}**"
-                if nudge not in self.context.task_nudges:
-                    self.context.task_nudges.append(nudge)
+                # Use session task_nudges
+                if nudge not in self.context.session.task_nudges:
+                    self.context.session.task_nudges.append(nudge)
         else:
-            # If no minimum required tools were identified, consider task complete from tool perspective
             tools_completed = True
-            deterministic_score = 1.0  # Score is 1.0 if no tools required
+            deterministic_score = 1.0
             self.agent_logger.info(
                 "No minimum required tools set. Score=1.0, Tools Completed=True."
             )
 
-        # Check if completion score threshold is met
+        # Store the calculated score in session
+        self.context.session.completion_score = deterministic_score
+
         score_met = deterministic_score >= self.context.min_completion_score
 
         # Check if ALL conditions are met: Score Threshold Met, All Required Tools Used, AND Final Answer Provided
-        if score_met and tools_completed and self.context.final_answer is not None:
+        # Use session final_answer
+        if (
+            score_met
+            and tools_completed
+            and self.context.session.final_answer is not None
+        ):
             self.agent_logger.info(
                 f"Stopping loop: Score threshold met ({deterministic_score:.2f} >= {self.context.min_completion_score}), "
                 f"all required tools used, and final answer provided."
             )
-            self.context.task_status = TaskStatus.COMPLETE  # Ensure status is COMPLETE
+            self.context.session.task_status = (
+                TaskStatus.COMPLETE
+            )  # Update session status
             return False
-        elif tools_completed and self.context.final_answer is None:
-            # Add nudge if tools are done, but answer missing (score doesn't matter here)
+        # Use session final_answer and task_nudges
+        elif tools_completed and self.context.session.final_answer is None:
             nudge = "**All required tools used, but requires final_answer(<answer>) tool call.**"
-            if nudge not in self.context.task_nudges:
-                self.context.task_nudges.append(nudge)
+            if nudge not in self.context.session.task_nudges:
+                self.context.session.task_nudges.append(nudge)
+        # Use session task_nudges
         elif score_met and not tools_completed:
-            # Add nudge if score threshold met, but tools still missing (relevant if score < 1.0)
             nudge = f"**Score threshold ({self.context.min_completion_score}) met, but required tools still missing.**"
-            if nudge not in self.context.task_nudges:
-                self.context.task_nudges.append(nudge)
+            if nudge not in self.context.session.task_nudges:
+                self.context.session.task_nudges.append(nudge)
 
-        if self.context.iterations > 1 and len(self.context.messages) > 3:
+        # Check for repeated assistant messages (use session messages)
+        if (
+            self.context.session.iterations > 1
+            and len(self.context.session.messages) > 3
+        ):
             if (
-                self.context.messages[-1].get("role") == "tool"
-                and self.context.messages[-2].get("role") == "assistant"
+                self.context.session.messages[-1].get("role") == "tool"
+                and self.context.session.messages[-2].get("role") == "assistant"
             ):
-                last_assistant_msg = self.context.messages[-2]
+                last_assistant_msg = self.context.session.messages[-2]
                 if (
-                    len(self.context.messages) > 4
-                    and self.context.messages[-3].get("role") == "tool"
-                    and self.context.messages[-4].get("role") == "assistant"
+                    len(self.context.session.messages) > 4
+                    and self.context.session.messages[-3].get("role") == "tool"
+                    and self.context.session.messages[-4].get("role") == "assistant"
                 ):
-                    prev_assistant_msg = self.context.messages[-4]
+                    prev_assistant_msg = self.context.session.messages[-4]
                     if last_assistant_msg.get("content") and last_assistant_msg.get(
                         "content"
                     ) == prev_assistant_msg.get("content"):
@@ -732,7 +772,9 @@ class ReactAgent(Agent):
                             self.agent_logger.warning(
                                 "Stopping loop: Assistant content repeated between iterations."
                             )
-                            self.context.task_status = TaskStatus.COMPLETE
+                            self.context.session.task_status = (
+                                TaskStatus.COMPLETE
+                            )  # Update session status
                             return False
 
         return True
@@ -860,13 +902,15 @@ class ReactAgent(Agent):
             history_for_prompt = tool_history[-10:]
 
             summary_context = {
-                "task": self.context.initial_task,
+                "task": self.context.session.initial_task,
                 "tools_used_count": len(tools_used_names),
                 "tools_used_names": tools_used_names,
                 "total_actions": len(tool_history),
                 "recent_actions": history_for_prompt,
-                "final_status": str(self.context.task_status),
-                "final_result_preview": str(self.context.final_answer or "N/A")[:200]
+                "final_status": str(self.context.session.task_status),
+                "final_result_preview": str(self.context.session.final_answer or "N/A")[
+                    :200
+                ]
                 + "...",
             }
 
@@ -884,7 +928,7 @@ class ReactAgent(Agent):
                 self.agent_logger.warning(
                     "Summary generation failed: No response from model."
                 )
-                return f"Agent completed task '{self.context.initial_task[:50]}...' with status {self.context.task_status} after {self.context.iterations} iterations, using {len(tools_used_names)} tools."
+                return f"Agent completed task '{self.context.session.initial_task[:50]}...' with status {self.context.session.task_status} after {self.context.session.iterations} iterations, using {len(tools_used_names)} tools."
 
         except Exception as e:
             self.agent_logger.error(f"Error generating summary: {e}")
@@ -994,7 +1038,7 @@ class ReactAgent(Agent):
             return default_eval
 
         tool_history = self.context.tool_manager.tool_history
-        if not tool_history and not self.context.final_answer:
+        if not tool_history and not self.context.session.final_answer:
             self.agent_logger.info("Evaluation: No actions taken, score 0.0.")
             return {
                 "adherence_score": 0.0,
@@ -1010,21 +1054,31 @@ class ReactAgent(Agent):
                 set(t.get("name", "unknown") for t in tool_history if t.get("name"))
             )
             final_result_str = (
-                self.context.final_answer
+                self.context.session.final_answer  # Use session
                 or "No explicit final textual answer provided by agent."
             )
             eval_context = {
-                "original_goal": self.context.initial_task,
+                "original_goal": self.context.session.initial_task,  # Use session
                 "final_result": (
                     final_result_str[:3000] + "..."
                     if len(final_result_str) > 3000
                     else final_result_str
                 ),
-                "final_status": str(self.context.task_status),
+                "final_status": str(self.context.session.task_status),  # Use session
                 "tools_used": tool_names_used,
-                "action_summary": self.context.session.summary,  # Reuse summary
-                "reasoning_log": self.context.reasoning_log[-5:],
+                "action_summary": self.context.session.summary,  # Use session summary
+                "reasoning_log": self.context.session.reasoning_log[
+                    -5:
+                ],  # Use session log
             }
+
+            # Get the deterministic score calculated during the run
+            deterministic_score = (
+                self.context.session.completion_score
+            )  # Use session score
+            self.agent_logger.info(
+                f"Using deterministic score for final evaluation: {deterministic_score:.2f}"
+            )
 
             # Use centralized prompts
             eval_prompt = EVALUATION_CONTEXT_PROMPT.format(
@@ -1044,18 +1098,13 @@ class ReactAgent(Agent):
                 self.agent_logger.warning(
                     "Goal evaluation failed: No response from model."
                 )
-                score = (
-                    0.7
-                    if self.context.task_status
-                    in [TaskStatus.COMPLETE, TaskStatus.RESCOPED_COMPLETE]
-                    else 0.3
-                )
+                # Fallback using deterministic score
                 return {
-                    "adherence_score": score,
-                    "matches_intent": score > 0.5,
-                    "explanation": "Basic evaluation based on final status.",
-                    "strengths": ["Task reached final status."],
-                    "weaknesses": ["LLM evaluation failed."],
+                    "adherence_score": deterministic_score,  # Use deterministic score
+                    "matches_intent": deterministic_score > 0.5,  # Simple heuristic
+                    "explanation": "Basic evaluation based on tool completion score; LLM evaluation failed.",
+                    "strengths": ["Used required tools proportionally to score."],
+                    "weaknesses": ["LLM evaluation call failed."],
                 }
 
             try:
@@ -1063,15 +1112,22 @@ class ReactAgent(Agent):
                 parsed_eval = (
                     json.loads(eval_data) if isinstance(eval_data, str) else eval_data
                 )
-                validated_eval = self.EvaluationFormat(**parsed_eval)
+                validated_eval_dict = self.EvaluationFormat(**parsed_eval).dict()
+
+                # <<< OVERRIDE LLM Score >>>
+                original_llm_score = validated_eval_dict.get("adherence_score")
+                validated_eval_dict["adherence_score"] = deterministic_score
+                # <<< End Override >>>
 
                 self.agent_logger.info(
-                    f"📄 Goal evaluation result: Score={validated_eval.adherence_score:.2f}, Matches Intent={validated_eval.matches_intent}"
+                    f"📄 Goal evaluation result: Adherence Score={deterministic_score:.2f} (overridden from LLM score: {original_llm_score:.2f}), "
+                    f"Matches Intent={validated_eval_dict.get('matches_intent')}"
                 )
-                self.context.reasoning_log.append(
-                    f"Goal Adherence Evaluation: {validated_eval.explanation}"
+                # Use session reasoning log
+                self.context.session.reasoning_log.append(
+                    f"Goal Adherence Evaluation (Score: {deterministic_score:.2f}): {validated_eval_dict.get('explanation')}"
                 )
-                return validated_eval.dict()
+                return validated_eval_dict
 
             except (json.JSONDecodeError, TypeError) as e:
                 self.agent_logger.error(
@@ -1090,90 +1146,6 @@ class ReactAgent(Agent):
             tb_str = traceback.format_exc()
             self.agent_logger.error(f"Error during goal evaluation: {e}\n{tb_str}")
             return default_eval
-
-    async def _plan(self) -> Optional[Dict[str, Any]]:
-        """Generates the next action plan based on the current context."""
-        if not self.context.reflect_enabled:
-            self.agent_logger.debug("Skipping plan step as reflection is disabled.")
-            return {
-                "next_step": "Continue task execution.",
-                "rationale": "Direct execution mode.",
-                "suggested_tools": [],
-            }
-
-        self.agent_logger.info("🤔 Planning next action...")
-
-        try:
-            # ... (build plan_context dict) ...
-            plan_context = {
-                "main_task": self.context.initial_task,
-                "available_tools": [
-                    tool.name for tool in self.context.get_available_tools()
-                ],
-                "previous_steps_summary": self.context.task_progress[-1000:],
-                "last_reflection": (
-                    self.context.reflection_manager.get_last_reflection()
-                    if self.context.reflection_manager
-                    else None
-                ),
-                "current_iteration": self.context.iterations,
-                "max_iterations": self.context.max_iterations,
-            }
-
-            # Use centralized prompts
-            plan_prompt = PLANNING_CONTEXT_PROMPT.format(
-                plan_context_json=json.dumps(plan_context, indent=2, default=str)
-            )
-            response = await self.model_provider.get_completion(
-                system=AGENT_ACTION_PLAN_PROMPT,  # Keep existing system prompt
-                prompt=plan_prompt,
-                format=(
-                    self.PlanFormat.model_json_schema()
-                    if self.model_provider.name == "ollama"
-                    else "json"
-                ),
-            )
-
-            if not response or not response.get("response"):
-                self.agent_logger.warning("Planning failed: No response from model.")
-                return {
-                    "next_step": "Continue task execution (planning failed).",
-                    "rationale": "Planning model failed.",
-                    "suggested_tools": [],
-                }
-
-            try:
-                plan_data = response["response"]
-                parsed_plan = (
-                    json.loads(plan_data) if isinstance(plan_data, str) else plan_data
-                )
-                validated_plan = self.PlanFormat(**parsed_plan)
-
-                self.agent_logger.info(
-                    f"Plan generated: Next Step = {validated_plan.next_step[:100]}..."
-                )
-                self.agent_logger.debug(f"Plan details: {validated_plan.dict()}")
-                self.context.reasoning_log.append(
-                    f"Plan: {validated_plan.rationale} -> {validated_plan.next_step}"
-                )
-
-                return validated_plan.dict()
-
-            except (json.JSONDecodeError, TypeError) as e:
-                self.agent_logger.error(
-                    f"Error parsing planning JSON: {e}\nResponse: {response.get('response')}"
-                )
-                return None
-            except Exception as e:
-                self.agent_logger.error(
-                    f"Error validating plan: {e}\nData: {parsed_plan}"
-                )
-                return None
-
-        except Exception as e:
-            tb_str = traceback.format_exc()
-            self.agent_logger.error(f"Error during planning: {e}\n{tb_str}")
-            return None
 
     async def _run_task_iteration(
         self, task: str
@@ -1197,21 +1169,27 @@ class ReactAgent(Agent):
             msg_content = msg.get("content")
             if msg_content:
                 last_content = msg_content
-                self.context.reasoning_log.append(
+                # Use session reasoning log
+                self.context.session.reasoning_log.append(
                     f"Assistant Thought/Response: {last_content[:200]}..."
                 )
             elif msg.get("tool_calls"):
-                self.context.reasoning_log.append(f"Assistant Action: Called tools.")
+                # Use session reasoning log
+                self.context.session.reasoning_log.append(
+                    f"Assistant Action: Called tools."
+                )
         elif isinstance(think_act_result_dict, str):
             last_content = think_act_result_dict
-            self.context.reasoning_log.append(
+            # Use session reasoning log
+            self.context.session.reasoning_log.append(
                 f"Step Result (non-dict): {last_content[:200]}..."
             )
 
-        if self.context.final_answer is not None:
+        # Use session final_answer
+        if self.context.session.final_answer is not None:
             self.agent_logger.info("Final answer set during Think/Act step.")
             # Ensure plan is None if final answer is set here
-            return self.context.final_answer, None
+            return self.context.session.final_answer, None
 
         if think_act_result_dict is None:
             self.agent_logger.warning("Think/Act step failed to produce a result.")
@@ -1227,7 +1205,8 @@ class ReactAgent(Agent):
                 )
                 if reflection:
                     last_reflection = reflection
-                    self.context.reasoning_log.append(
+                    # Use session reasoning log
+                    self.context.session.reasoning_log.append(
                         f"Reflection:  Reason={reflection['reason']}"
                     )
                 else:
@@ -1254,8 +1233,8 @@ class ReactAgent(Agent):
                 "rationale": f"Based on reflection: {last_reflection.get('reason', 'Proceed as per reflection.')}",
                 "suggested_tools": last_reflection.get("required_tools", []),
             }
-            # Log it in reasoning log as well
-            self.context.reasoning_log.append(
+            # Use session reasoning log
+            self.context.session.reasoning_log.append(
                 f"Plan (from Reflection): {plan['rationale']} -> {plan['next_step']}"
             )
         elif not self.context.reflect_enabled:
@@ -1266,7 +1245,8 @@ class ReactAgent(Agent):
                 "rationale": "Direct execution mode, reflection disabled.",
                 "suggested_tools": [],
             }
-            self.context.reasoning_log.append(
+            # Use session reasoning log
+            self.context.session.reasoning_log.append(
                 f"Plan (Default): {plan['rationale']} -> {plan['next_step']}"
             )
         else:
@@ -1276,4 +1256,5 @@ class ReactAgent(Agent):
             # Plan remains None
 
         # Return both the last content generated during think/act and the derived plan
-        return self.context.final_answer or last_content, plan
+        # Use session final_answer
+        return self.context.session.final_answer or last_content, plan

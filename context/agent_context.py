@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import List, Dict, Any, Optional, Callable, Sequence, Set
+from typing import List, Dict, Any, Optional, Callable, Sequence, Set, Awaitable
 import asyncio
 import uuid
 
@@ -18,7 +18,7 @@ from model_providers.base import BaseModelProvider
 from agent_mcp.client import MCPClient
 from prompts.agent_prompts import REACT_AGENT_SYSTEM_PROMPT
 from tools.abstractions import ToolProtocol
-from common.types import TaskStatus, AgentMemory
+from common.types import TaskStatus
 
 # Forward references for type hinting (No longer strictly needed with direct imports, but can keep for clarity)
 # MetricsManager = Any # Now imported
@@ -34,55 +34,31 @@ from components.reflection_manager import ReflectionManager
 from components.workflow_manager import WorkflowManager
 from components.tool_manager import ToolManager
 
+# --- Import AgentSession from its new location ---
+from .session import AgentSession
+
 # --- End Import Manager Classes ---
 
 
-class AgentSession(BaseModel):
-    """Represents a single session of an agent run."""
-
-    session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    start_time: float = Field(default_factory=time.time)
-    end_time: Optional[float] = None
-    final_result: str = ""
-    total_tokens: int = 0
-    total_cost: float = 0.0
-    summary: str = ""
-    evaluation: Dict[str, Any] = {}
-    feasibility: str = ""
-    result: str = ""
-    error: Optional[str] = None
-    status: str = ""
+# --- AgentSession Definition REMOVED ---
 
 
+# Now define AgentContext
 class AgentContext(BaseModel):
-    """Centralized context holding state and components for an agent run."""
+    """Centralized context holding configuration and components for an agent."""
 
     # Core Agent Configuration
     agent_name: str
-    provider_model_name: str  # e.g., "ollama/llama3"
+    provider_model_name: str
     instructions: str = ""
     role: str = ""
-    role_instructions: Dict[str, Any] = {}  # Role specific instructions
+    role_instructions: Dict[str, Any] = {}
 
-    # State Tracking
-    initial_task: str = ""
-    final_answer: Optional[str] = None
-    messages: List[Dict[str, Any]] = []
-    task_progress: str = "No progression yet"  # Summary of steps performed
-    successful_tools: List[str] = []
-    task_nudges: List[str] = []  # For thought surfacing
-    reasoning_log: List[str] = []  # For thought surfacing
-    iterations: int = 0
-    task_status: "TaskStatus" = TaskStatus.INITIALIZED
-    current_task: str = ""  # Can be the initial task or a rescoped one
-    min_required_tools: Optional[Set[str]] = None
-    session: AgentSession = AgentSession()
     # --- Workflow Context and Dependencies ---
-    # These are passed in or configured externally but used by WorkflowManager
-    workflow_context_shared: Optional[Dict[str, Any]] = None  # The shared dict itself
-    workflow_dependencies: List[str] = []  # Dependencies for *this* agent instance
+    workflow_context_shared: Optional[Dict[str, Any]] = None
+    workflow_dependencies: List[str] = []
 
-    # Configuration Flags & Settings
+    # Configuration Flags & Settings (Remain in Context)
     tool_use_enabled: bool = True
     reflect_enabled: bool = False
     use_memory_enabled: bool = True
@@ -104,39 +80,33 @@ class AgentContext(BaseModel):
     )
     check_tool_feasibility: bool = True
     confirmation_callback: Optional[
-        Callable[[str, Dict[str, Any]], bool | asyncio.Future[bool]]
+        Callable[[str, Dict[str, Any]], Awaitable[bool]]
     ] = None
 
-    # Core Components (lazily initialized or passed in)
+    # Core Components (Remain in Context)
     model_provider: Optional[BaseModelProvider] = None
     mcp_client: Optional[MCPClient] = None
     tools: List[Any] = Field(default_factory=list)
 
-    # Loggers
+    # Loggers (Remain in Context)
     agent_logger: Optional[Logger] = None
     tool_logger: Optional[Logger] = None
     result_logger: Optional[Logger] = None
 
-    # --- Component Managers ---
-    # Use forward references (strings) for type hints
+    # Component Managers (Remain in Context)
     metrics_manager: Optional["MetricsManager"] = None
     memory_manager: Optional["MemoryManager"] = None
     reflection_manager: Optional["ReflectionManager"] = None
     workflow_manager: Optional["WorkflowManager"] = None
     tool_manager: Optional["ToolManager"] = None
-    # --- End Component Managers ---
 
-    # Other potential attributes derived from ReactAgent/Agent
-    start_time: float = Field(default_factory=time.time)
-    # workflow_dependencies: List[str] = [] # Managed by WorkflowManager now
-    # reflections: List[Dict[str, Any]] = [] # Managed by ReflectionManager now
-    # tool_history: List[Dict[str, Any]] = [] # Managed by ToolManager now
-    # tool_signatures: List[Dict[str, Any]] = [] # Managed by ToolManager now
+    # Session State Holder (Reference to the current run's state)
+    session: AgentSession = Field(default_factory=AgentSession)
+
+    # !! REMOVED FIELDS previously here (initial_task, final_answer, messages, etc.) !!
 
     class Config:
-        arbitrary_types_allowed = (
-            True  # Allow complex types like Logger, MCPClient etc.
-        )
+        arbitrary_types_allowed = True
 
     def __init__(self, **data):
         # Call Pydantic's __init__ first to set up fields correctly
@@ -168,14 +138,14 @@ class AgentContext(BaseModel):
         # --- End Initialize Managers ---
 
         # Set initial system message
-        if not self.messages:
-            self.messages = [
+        if not self.session.messages:
+            self.session.messages = [
                 {"role": "system", "content": self._get_initial_system_prompt()}
             ]
 
         # Initialize current task
-        if not self.current_task and self.initial_task:
-            self.current_task = self.initial_task
+        if not self.session.current_task and self.session.initial_task:
+            self.session.current_task = self.session.initial_task
 
         self.agent_logger.info(
             f"AgentContext for '{self.agent_name}' initialized with managers."
@@ -215,8 +185,8 @@ class AgentContext(BaseModel):
             role=self.role,
             instructions=self.instructions,
             role_specific_instructions=self.role_instructions,
-            task=self.current_task,
-            task_progress=self.task_progress,
+            task=self.session.current_task,
+            task_progress=self.session.task_progress,
         )
         return prompt
 
@@ -269,8 +239,8 @@ class AgentContext(BaseModel):
         return {}  # Return empty if metrics disabled
 
     def update_system_prompt(self):
-        if self.messages and self.messages[0]["role"] == "system":
-            self.messages[0]["content"] = self._get_initial_system_prompt()
+        if self.session.messages and self.session.messages[0]["role"] == "system":
+            self.session.messages[0]["content"] = self._get_initial_system_prompt()
 
     def save_memory_if_enabled(self):
         if self.memory_manager:

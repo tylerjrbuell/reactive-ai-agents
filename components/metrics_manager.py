@@ -66,10 +66,10 @@ class MetricsManager(BaseModel):
             "start_time": start_time,
             "end_time": None,
             "total_time": 0,
-            "status": str(self.context.task_status),  # Use current status
+            "status": str(self.context.session.task_status),  # Use session status
             "tool_calls": 0,
             "tool_errors": 0,
-            "iterations": self.context.iterations,  # Use current iterations
+            "iterations": self.context.session.iterations,  # Use session iterations
             "tokens": {"prompt": 0, "completion": 0, "total": 0},
             "model_calls": 0,
             "tools": {},
@@ -143,9 +143,11 @@ class MetricsManager(BaseModel):
         end_time = time.time()
         self.metrics["end_time"] = end_time
         self.metrics["total_time"] = end_time - self.metrics["start_time"]
-        self.metrics["status"] = str(self.context.task_status)  # Ensure latest status
+        self.metrics["status"] = str(
+            self.context.session.task_status
+        )  # Use session status
         self.metrics["iterations"] = (
-            self.context.iterations
+            self.context.session.iterations  # Use session iterations
         )  # Ensure latest iteration count
 
         # Update cache metrics from ToolManager
@@ -173,8 +175,12 @@ class MetricsManager(BaseModel):
         # If the run hasn't officially ended, calculate current duration
         if self.metrics["end_time"] is None:
             self.metrics["total_time"] = time.time() - self.metrics["start_time"]
-            self.metrics["status"] = str(self.context.task_status)
-            self.metrics["iterations"] = self.context.iterations
+            self.metrics["status"] = str(
+                self.context.session.task_status
+            )  # Use session status
+            self.metrics["iterations"] = (
+                self.context.session.iterations
+            )  # Use session iterations
             # Update cache stats dynamically if run is ongoing
             if self.context.tool_manager:
                 self.metrics["cache"]["hits"] = self.context.tool_manager.cache_hits

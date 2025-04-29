@@ -127,29 +127,26 @@ class ReflectionManager(BaseModel):
 
             # Get tool info from ToolManager
             available_tool_names = [tool.name for tool in self.tool_manager.tools]
-            successfully_used_tools = list(set(self.context.successful_tools))
+            successfully_used_tools = list(set(self.context.session.successful_tools))
 
             reflection_input_context = {
-                "task": self.context.current_task,  # Use current (possibly rescoped) task
+                "task": self.context.session.current_task,
                 "min_required_tools": (
-                    list(self.context.min_required_tools)
-                    if self.context.min_required_tools
+                    list(self.context.session.min_required_tools)
+                    if self.context.session.min_required_tools
                     else []
                 ),
                 "last_result": (
                     result_content[:3000] + "..."
                     if len(result_content) > 3000
                     else result_content
-                ),  # Limit result size
-                "tools_available": available_tool_names,  # Keep for potential future use
+                ),
+                "tools_available": available_tool_names,
                 "tools_used_successfully": successfully_used_tools,
-                # Removed completion_criteria_score
-                "current_iteration": self.context.iterations,
+                "current_iteration": self.context.session.iterations,
                 "max_iterations": self.context.max_iterations,
-                "previous_reflections": self.reflections[-3:],  # Provide recent context
-                "task_progress_summary": self.context.task_progress[
-                    -1000:
-                ],  # Summary of actions so far
+                "previous_reflections": self.reflections[-3:],
+                "task_progress_summary": self.context.session.task_progress[-1000:],
             }
             self.agent_logger.debug(
                 f"Reflection Tool Use context: {reflection_input_context['tools_used_successfully']}"
@@ -213,8 +210,10 @@ class ReflectionManager(BaseModel):
                 if (
                     validated_reflection.get("next_step")
                     and validated_reflection["next_step"].lower() != "none"
+                    and f"Reflection Suggestion: {validated_reflection['next_step']}"
+                    not in self.context.session.task_nudges
                 ):
-                    self.context.task_nudges.append(
+                    self.context.session.task_nudges.append(
                         f"Reflection Suggestion: {validated_reflection['next_step']}"
                     )
 
