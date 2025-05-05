@@ -37,6 +37,9 @@ from components.tool_manager import ToolManager
 # --- Import AgentSession from its new location ---
 from .session import AgentSession
 
+# --- Import AgentStateObserver ---
+from .agent_observer import AgentStateObserver, AgentStateEvent
+
 
 # Now define AgentContext
 class AgentContext(BaseModel):
@@ -95,6 +98,10 @@ class AgentContext(BaseModel):
     workflow_manager: Optional["WorkflowManager"] = None
     tool_manager: Optional["ToolManager"] = None
 
+    # --- Add State Observer ---
+    state_observer: Optional[AgentStateObserver] = None
+    enable_state_observation: bool = True
+
     # Session State Holder (Reference to the current run's state)
     session: AgentSession = Field(default_factory=AgentSession)
 
@@ -130,6 +137,12 @@ class AgentContext(BaseModel):
             workflow_context=self.workflow_context_shared,
             workflow_dependencies=self.workflow_dependencies,
         )
+
+        # Initialize state observer if enabled
+        if self.enable_state_observation:
+            self.state_observer = AgentStateObserver()
+            self.agent_logger.info("State observer initialized.")
+
         # --- End Initialize Managers ---
 
         # Set initial system message
@@ -184,6 +197,51 @@ class AgentContext(BaseModel):
             task_progress=self.session.task_progress,
         )
         return prompt
+
+    # --- Observer methods ---
+    def emit_event(self, event_type: AgentStateEvent, data: Dict[str, Any]) -> None:
+        """
+        Emit an event to all registered callbacks.
+
+        Args:
+            event_type: The type of event being emitted
+            data: The data associated with the event
+        """
+        if self.state_observer and self.enable_state_observation:
+            # Include basic agent/session context with all events
+            context_data = {
+                "agent_name": self.agent_name,
+                "session_id": getattr(self.session, "session_id", None),
+                "task": getattr(self.session, "current_task", None),
+                "task_status": str(getattr(self.session, "task_status", "unknown")),
+                "iterations": getattr(self.session, "iterations", 0),
+            }
+            # Merge with event-specific data (event data takes precedence)
+            event_data = {**context_data, **data}
+            self.state_observer.emit(event_type, event_data)
+
+    async def emit_event_async(
+        self, event_type: AgentStateEvent, data: Dict[str, Any]
+    ) -> None:
+        """
+        Emit an event to all registered async callbacks.
+
+        Args:
+            event_type: The type of event being emitted
+            data: The data associated with the event
+        """
+        if self.state_observer and self.enable_state_observation:
+            # Include basic agent/session context with all events
+            context_data = {
+                "agent_name": self.agent_name,
+                "session_id": getattr(self.session, "session_id", None),
+                "task": getattr(self.session, "current_task", None),
+                "task_status": str(getattr(self.session, "task_status", "unknown")),
+                "iterations": getattr(self.session, "iterations", 0),
+            }
+            # Merge with event-specific data (event data takes precedence)
+            event_data = {**context_data, **data}
+            await self.state_observer.emit_async(event_type, event_data)
 
     # Methods to interact with components will be added later
     # e.g., get_tools(), update_metrics(), save_memory(), get_reflection() etc.

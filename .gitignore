@@ -1,2 +1,4 @@
 .env
 **/__pycache__
+memory
+agent_mcp/agent.db

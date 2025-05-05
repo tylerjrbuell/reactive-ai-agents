@@ -381,7 +381,6 @@ class ToolManager(BaseModel):
         if not self.confirmation_callback:
             return True  # Default to allow if no callback
 
-        self.agent_logger.info(f"Requesting confirmation: {description}")
         if asyncio.iscoroutinefunction(self.confirmation_callback):
             return bool(await self.confirmation_callback(description, details))
         else:

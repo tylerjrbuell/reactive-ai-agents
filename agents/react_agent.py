@@ -20,6 +20,8 @@ from prompts.agent_prompts import (
 from agents.base import Agent
 from context.agent_context import AgentContext, AgentSession
 from agent_mcp.client import MCPClient
+from context.agent_observer import AgentStateEvent
+from context.agent_events import AgentEventManager
 
 # Import shared types from the new location
 from common.types import TaskStatus
@@ -184,6 +186,9 @@ class ReactAgent(Agent):
             f"ReactAgent '{self.context.agent_name}' initialized with internal context via config."
         )
 
+        # Initialize event manager for subscription interface
+        self._event_manager = AgentEventManager(self.context.state_observer)
+
     async def run(
         self,
         initial_task: Optional[str] = None,
@@ -227,6 +232,15 @@ class ReactAgent(Agent):
             # Reset internal state if needed, reflections might be loaded from memory later
             self.context.reflection_manager.reset()
 
+        # Emit session start event
+        self.context.emit_event(
+            AgentStateEvent.SESSION_STARTED,
+            {
+                "initial_task": self.context.session.initial_task,
+                "session_id": self.context.session.session_id,
+            },
+        )
+
         # Log the correct initial task from the session
         self.agent_logger.info(
             f"ReactAgent run starting for task: {self.context.session.initial_task}"
@@ -244,6 +258,14 @@ class ReactAgent(Agent):
         try:
             # 2. --- Pre-run Checks (Dependencies, Tool Feasibility) ---
             if not self._check_dependencies():
+                # Emit error event
+                self.context.emit_event(
+                    AgentStateEvent.ERROR_OCCURRED,
+                    {
+                        "error": "Dependencies not met",
+                        "details": "Agent dependencies check failed",
+                    },
+                )
                 # Prepare result using session status (rescoped_task is None here)
                 return self._prepare_final_result(rescoped_task=None)
 
@@ -268,6 +290,17 @@ class ReactAgent(Agent):
                     self.context.session.reasoning_log.append(
                         f"Cannot complete task: Missing Tools - {feasibility.get('explanation', '')}"
                     )
+
+                    # Emit missing tools event
+                    self.context.emit_event(
+                        AgentStateEvent.ERROR_OCCURRED,
+                        {
+                            "error": "Missing required tools",
+                            "missing_tools": feasibility["missing_tools"],
+                            "explanation": feasibility.get("explanation", ""),
+                        },
+                    )
+
                     if self.context.workflow_manager:
                         self.context.workflow_manager.update_context(
                             TaskStatus.MISSING_TOOLS,
@@ -281,6 +314,13 @@ class ReactAgent(Agent):
 
             # 3. --- Set Status to Running ---
             self.context.session.task_status = TaskStatus.RUNNING
+
+            # Emit status changed event
+            self.context.emit_event(
+                AgentStateEvent.TASK_STATUS_CHANGED,
+                {"previous_status": "initialized", "new_status": "running"},
+            )
+
             if self.context.workflow_manager:
                 self.context.workflow_manager.update_context(TaskStatus.RUNNING)
 
@@ -289,12 +329,29 @@ class ReactAgent(Agent):
                 if cancellation_event and cancellation_event.is_set():
                     self.agent_logger.info("Task execution cancelled by user.")
                     self.context.session.task_status = TaskStatus.CANCELLED
+
+                    # Emit cancellation event
+                    self.context.emit_event(
+                        AgentStateEvent.TASK_STATUS_CHANGED,
+                        {"previous_status": "running", "new_status": "cancelled"},
+                    )
+
                     break
 
                 self.context.session.iterations += 1
                 self.agent_logger.info(
                     f"🔄 ITERATION {self.context.session.iterations}/{self.context.max_iterations or 'unlimited'}"
                 )
+
+                # Emit iteration started event
+                self.context.emit_event(
+                    AgentStateEvent.ITERATION_STARTED,
+                    {
+                        "iteration": self.context.session.iterations,
+                        "max_iterations": self.context.max_iterations,
+                    },
+                )
+
                 if self.context.workflow_manager:
                     self.context.workflow_manager.update_context(
                         self.context.session.task_status
@@ -332,11 +389,44 @@ class ReactAgent(Agent):
                     if iteration_content:
                         final_result_content = iteration_content
 
+                    # Emit iteration completed event
+                    self.context.emit_event(
+                        AgentStateEvent.ITERATION_COMPLETED,
+                        {
+                            "iteration": self.context.session.iterations,
+                            "has_result": iteration_content is not None,
+                            "has_plan": new_plan is not None,
+                        },
+                    )
+
+                    # Add metrics update after each completed iteration
+                    if self.context.metrics_manager:
+                        metrics = self.context.metrics_manager.get_metrics()
+                        self.context.emit_event(
+                            AgentStateEvent.METRICS_UPDATED, {"metrics": metrics}
+                        )
+
                     if self.context.session.final_answer:
                         self.agent_logger.info(
                             "✅ Final answer received during task execution."
                         )
                         self.context.session.task_status = TaskStatus.COMPLETE
+
+                        # Emit final answer event
+                        self.context.emit_event(
+                            AgentStateEvent.FINAL_ANSWER_SET,
+                            {
+                                "answer": self.context.session.final_answer,
+                                "iteration": self.context.session.iterations,
+                            },
+                        )
+
+                        # Emit status changed event
+                        self.context.emit_event(
+                            AgentStateEvent.TASK_STATUS_CHANGED,
+                            {"previous_status": "running", "new_status": "complete"},
+                        )
+
                         break
 
                     self.context.update_system_prompt()
@@ -351,6 +441,17 @@ class ReactAgent(Agent):
                     )
                     self.context.session.reasoning_log.append(
                         f"ERROR in iteration {self.context.session.iterations}: {last_error}"
+                    )
+
+                    # Emit error event
+                    self.context.emit_event(
+                        AgentStateEvent.ERROR_OCCURRED,
+                        {
+                            "error": "Iteration error",
+                            "details": last_error,
+                            "iteration": self.context.session.iterations,
+                            "failure_count": failure_count,
+                        },
                     )
 
                     if failure_count >= max_failures:
@@ -373,6 +474,21 @@ class ReactAgent(Agent):
                                 self.context.session.reasoning_log.append(
                                     f"Task rescoped: {rescope_result['explanation']}"
                                 )
+
+                                # Emit task rescope event
+                                self.context.emit_event(
+                                    AgentStateEvent.TASK_STATUS_CHANGED,
+                                    {
+                                        "previous_status": str(
+                                            self.context.session.task_status
+                                        ),
+                                        "new_status": "rescoped",
+                                        "rescoped_task": rescoped_task,
+                                        "original_task": self.context.session.initial_task,
+                                        "explanation": rescope_result["explanation"],
+                                    },
+                                )
+
                                 failure_count = 0
                                 if rescope_result.get("expected_tools") is not None:
                                     self.context.session.min_required_tools = set(
@@ -399,6 +515,25 @@ class ReactAgent(Agent):
                                     "Rescoping failed unexpectedly: rescoped_task was not a string."
                                 )
                                 self.context.session.task_status = TaskStatus.ERROR
+
+                                # Emit error event
+                                self.context.emit_event(
+                                    AgentStateEvent.ERROR_OCCURRED,
+                                    {
+                                        "error": "Rescoping failed",
+                                        "details": "Rescoped task was not a string",
+                                    },
+                                )
+
+                                # Emit status changed event
+                                self.context.emit_event(
+                                    AgentStateEvent.TASK_STATUS_CHANGED,
+                                    {
+                                        "previous_status": "running",
+                                        "new_status": "error",
+                                    },
+                                )
+
                                 break  # Exit loop
                         # Rescoping failed or not possible
                         self.agent_logger.error(
@@ -408,6 +543,22 @@ class ReactAgent(Agent):
                         self.context.session.reasoning_log.append(
                             "Failed to rescope task after multiple errors."
                         )
+
+                        # Emit error event
+                        self.context.emit_event(
+                            AgentStateEvent.ERROR_OCCURRED,
+                            {
+                                "error": "Rescoping failed",
+                                "details": "Could not rescope task after multiple failures",
+                            },
+                        )
+
+                        # Emit status changed event
+                        self.context.emit_event(
+                            AgentStateEvent.TASK_STATUS_CHANGED,
+                            {"previous_status": "running", "new_status": "error"},
+                        )
+
                         break  # Exit loop
                 # --- End Inner try/except ---
             # --- End While Loop ---
@@ -422,6 +573,16 @@ class ReactAgent(Agent):
                     self.context.max_iterations or float("inf")
                 ):
                     self.context.session.task_status = TaskStatus.MAX_ITERATIONS
+
+                    # Emit status changed event
+                    self.context.emit_event(
+                        AgentStateEvent.TASK_STATUS_CHANGED,
+                        {
+                            "previous_status": "running",
+                            "new_status": "max_iterations_reached",
+                        },
+                    )
+
                 elif not self.context.session.final_answer:
                     # If loop ended normally but no final answer, likely MAX_ITERATIONS or logic error
                     self.agent_logger.warning(
@@ -433,17 +594,38 @@ class ReactAgent(Agent):
                         >= (self.context.max_iterations or float("inf"))
                         else TaskStatus.ERROR
                     )
+
+                    # Emit status changed event
+                    previous_status = "running"
+                    new_status = str(self.context.session.task_status)
+                    self.context.emit_event(
+                        AgentStateEvent.TASK_STATUS_CHANGED,
+                        {"previous_status": previous_status, "new_status": new_status},
+                    )
+
                     if (
                         self.context.session.task_status == TaskStatus.ERROR
                         and not last_error
                     ):
                         last_error = "Loop ended unexpectedly without final answer."
+
+                        # Emit error event
+                        self.context.emit_event(
+                            AgentStateEvent.ERROR_OCCURRED,
+                            {"error": "Execution error", "details": last_error},
+                        )
                 else:
                     # Should not happen if _should_continue logic is correct
                     self.agent_logger.warning(
                         "Loop ended unexpectedly, assuming completion."
                     )
                     self.context.session.task_status = TaskStatus.COMPLETE
+
+                    # Emit status changed event
+                    self.context.emit_event(
+                        AgentStateEvent.TASK_STATUS_CHANGED,
+                        {"previous_status": "running", "new_status": "complete"},
+                    )
 
             self.agent_logger.info(
                 f"🏁 Determined final status: {self.context.session.task_status}"
@@ -461,12 +643,26 @@ class ReactAgent(Agent):
                 await self.generate_goal_result_evaluation()
             )
 
+            # Emit metrics updated event if metrics available
+            if self.context.metrics_manager:
+                metrics = self.context.metrics_manager.get_metrics()
+                self.context.emit_event(
+                    AgentStateEvent.METRICS_UPDATED, {"metrics": metrics}
+                )
+
         # --- Outer Exception Handler for broader errors ---
         except Exception as run_error:
             tb_str = traceback.format_exc()
             self.agent_logger.error(
                 f"Unhandled error during agent run: {run_error}\n{tb_str}"
             )
+
+            # Emit error event
+            self.context.emit_event(
+                AgentStateEvent.ERROR_OCCURRED,
+                {"error": "Unhandled error", "details": str(run_error)},
+            )
+
             # Ensure session exists before modifying
             if hasattr(self.context, "session") and self.context.session:
                 self.context.session.task_status = TaskStatus.ERROR
@@ -477,6 +673,16 @@ class ReactAgent(Agent):
                     "strengths": [],
                     "weaknesses": ["Agent run failed critically."],
                 }
+
+                # Emit status changed event
+                self.context.emit_event(
+                    AgentStateEvent.TASK_STATUS_CHANGED,
+                    {
+                        "previous_status": str(self.context.session.task_status),
+                        "new_status": "error",
+                    },
+                )
+
             # Set local vars for finally block
             last_error = str(run_error)
             final_result_content = f"Critical error during agent run: {run_error}"
@@ -574,6 +780,21 @@ class ReactAgent(Agent):
                     self.agent_logger.warning(
                         "Cannot save memory, session object missing."
                     )
+
+            # Emit session end event
+            elapsed_time = 0
+            if hasattr(self.context, "session") and self.context.session:
+                elapsed_time = time.time() - self.context.session.start_time
+
+            self.context.emit_event(
+                AgentStateEvent.SESSION_ENDED,
+                {
+                    "session_id": getattr(self.context.session, "session_id", None),
+                    "final_status": str(current_session_status),
+                    "elapsed_time": elapsed_time,
+                    "iterations": getattr(self.context.session, "iterations", 0),
+                },
+            )
 
             self.agent_logger.info(
                 f"ReactAgent run finished with status: {current_session_status}"
@@ -1178,6 +1399,18 @@ class ReactAgent(Agent):
                 self.context.session.reasoning_log.append(
                     f"Assistant Action: Called tools."
                 )
+
+                # Emit tool called event
+                tool_calls = msg.get("tool_calls", [])
+                for tool_call in tool_calls:
+                    self.context.emit_event(
+                        AgentStateEvent.TOOL_CALLED,
+                        {
+                            "tool_name": tool_call.get("name", "unknown"),
+                            "tool_id": tool_call.get("id", "unknown"),
+                            "parameters": tool_call.get("parameters", {}),
+                        },
+                    )
         elif isinstance(think_act_result_dict, str):
             last_content = think_act_result_dict
             # Use session reasoning log
@@ -1188,6 +1421,13 @@ class ReactAgent(Agent):
         # Use session final_answer
         if self.context.session.final_answer is not None:
             self.agent_logger.info("Final answer set during Think/Act step.")
+
+            # Emit final answer event
+            self.context.emit_event(
+                AgentStateEvent.FINAL_ANSWER_SET,
+                {"answer": self.context.session.final_answer},
+            )
+
             # Ensure plan is None if final answer is set here
             return self.context.session.final_answer, None
 
@@ -1208,6 +1448,16 @@ class ReactAgent(Agent):
                     # Use session reasoning log
                     self.context.session.reasoning_log.append(
                         f"Reflection:  Reason={reflection['reason']}"
+                    )
+
+                    # Emit reflection generated event
+                    self.context.emit_event(
+                        AgentStateEvent.REFLECTION_GENERATED,
+                        {
+                            "reason": reflection["reason"],
+                            "next_step": reflection.get("next_step", "None"),
+                            "required_tools": reflection.get("required_tools", []),
+                        },
                     )
                 else:
                     self.agent_logger.warning("Reflection step failed.")
@@ -1258,3 +1508,168 @@ class ReactAgent(Agent):
         # Return both the last content generated during think/act and the derived plan
         # Use session final_answer
         return self.context.session.final_answer or last_content, plan
+
+    # === Event Subscription Interface ===
+
+    @property
+    def events(self):
+        """Access the event subscription interface"""
+        return self._event_manager
+
+    # Shorthand methods for common event subscriptions
+
+    def on_session_started(self, callback):
+        """
+        Subscribe to session started events.
+
+        Args:
+            callback: Function to call when a session starts
+                      Receives SessionStartedEventData
+
+        Returns:
+            The event subscription for method chaining
+        """
+        return self.events.on_session_started().subscribe(callback)
+
+    def on_session_ended(self, callback):
+        """
+        Subscribe to session ended events.
+
+        Args:
+            callback: Function to call when a session ends
+                      Receives SessionEndedEventData
+
+        Returns:
+            The event subscription for method chaining
+        """
+        return self.events.on_session_ended().subscribe(callback)
+
+    def on_task_status_changed(self, callback):
+        """
+        Subscribe to task status changed events.
+
+        Args:
+            callback: Function to call when task status changes
+                      Receives TaskStatusChangedEventData
+
+        Returns:
+            The event subscription for method chaining
+        """
+        return self.events.on_task_status_changed().subscribe(callback)
+
+    def on_iteration_started(self, callback):
+        """
+        Subscribe to iteration started events.
+
+        Args:
+            callback: Function to call when an iteration starts
+                      Receives IterationStartedEventData
+
+        Returns:
+            The event subscription for method chaining
+        """
+        return self.events.on_iteration_started().subscribe(callback)
+
+    def on_iteration_completed(self, callback):
+        """
+        Subscribe to iteration completed events.
+
+        Args:
+            callback: Function to call when an iteration completes
+                      Receives IterationCompletedEventData
+
+        Returns:
+            The event subscription for method chaining
+        """
+        return self.events.on_iteration_completed().subscribe(callback)
+
+    def on_tool_called(self, callback):
+        """
+        Subscribe to tool called events.
+
+        Args:
+            callback: Function to call when a tool is called
+                      Receives ToolCalledEventData
+
+        Returns:
+            The event subscription for method chaining
+        """
+        return self.events.on_tool_called().subscribe(callback)
+
+    def on_tool_completed(self, callback):
+        """
+        Subscribe to tool completed events.
+
+        Args:
+            callback: Function to call when a tool completes
+                      Receives ToolCompletedEventData
+
+        Returns:
+            The event subscription for method chaining
+        """
+        return self.events.on_tool_completed().subscribe(callback)
+
+    def on_tool_failed(self, callback):
+        """
+        Subscribe to tool failed events.
+
+        Args:
+            callback: Function to call when a tool fails
+                      Receives ToolFailedEventData
+
+        Returns:
+            The event subscription for method chaining
+        """
+        return self.events.on_tool_failed().subscribe(callback)
+
+    def on_reflection_generated(self, callback):
+        """
+        Subscribe to reflection generated events.
+
+        Args:
+            callback: Function to call when a reflection is generated
+                      Receives ReflectionGeneratedEventData
+
+        Returns:
+            The event subscription for method chaining
+        """
+        return self.events.on_reflection_generated().subscribe(callback)
+
+    def on_final_answer_set(self, callback):
+        """
+        Subscribe to final answer set events.
+
+        Args:
+            callback: Function to call when a final answer is set
+                      Receives FinalAnswerSetEventData
+
+        Returns:
+            The event subscription for method chaining
+        """
+        return self.events.on_final_answer_set().subscribe(callback)
+
+    def on_metrics_updated(self, callback):
+        """
+        Subscribe to metrics updated events.
+
+        Args:
+            callback: Function to call when metrics are updated
+                      Receives MetricsUpdatedEventData
+
+        Returns:
+            The event subscription for method chaining
+        """
+        return self.events.on_metrics_updated().subscribe(callback)
+
+    def on_error_occurred(self, callback):
+        """
+        Subscribe to error occurred events.
+
+        Args:
+            callback: Function to call when an error occurs
+                      Receives ErrorOccurredEventData
+
+        Returns:
+            The event subscription for method chaining
+        """
+        return self.events.on_error_occurred().subscribe(callback)

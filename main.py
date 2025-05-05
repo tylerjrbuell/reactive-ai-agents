@@ -17,7 +17,7 @@ dotenv.load_dotenv()
 async def main():
     agent = None
     try:
-        task = "Research the death of Chris Farley and add it to a table called celebrities_deaths(name, cause, date)."
+        task = "Create a table called crypto_prices(name, price, date). Then research the current price of bitcoin and add it to the table. Then research the current price of ethereum and add it to the table."
         mcp_client = await MCPClient(
             server_filter=["brave-search", "sqlite", "time"]
         ).initialize()
@@ -34,13 +34,13 @@ async def main():
         agent_config = ReactAgentConfig(
             agent_name="Task Agent",
             role="Task Executor",
-            provider_model_name="ollama:cogito:14b",
+            provider_model_name="ollama:qwen3:4b",
             mcp_client=mcp_client,
             min_completion_score=1.0,
             instructions="Solve the given task as quickly as possible using the tools at your disposal.",
             max_iterations=10,
             reflect_enabled=True,
-            log_level="debug",
+            log_level="info",
             initial_task=None,
             tool_use_enabled=True,
             use_memory_enabled=True,
