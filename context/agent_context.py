@@ -1,7 +1,18 @@
 from __future__ import annotations
 
 import time
-from typing import List, Dict, Any, Optional, Callable, Sequence, Set, Awaitable
+from typing import (
+    List,
+    Dict,
+    Any,
+    Optional,
+    Callable,
+    Sequence,
+    Set,
+    Awaitable,
+    Union,
+    Tuple,
+)
 import asyncio
 import uuid
 
@@ -78,8 +89,11 @@ class AgentContext(BaseModel):
     )
     check_tool_feasibility: bool = True
     confirmation_callback: Optional[
-        Callable[[str, Dict[str, Any]], Awaitable[bool]]
+        Callable[
+            [str, Dict[str, Any]], Awaitable[Union[bool, Tuple[bool, Optional[str]]]]
+        ]
     ] = None
+    confirmation_config: Optional[Dict[str, Any]] = None
 
     # Core Components (Remain in Context)
     model_provider: Optional[BaseModelProvider] = None

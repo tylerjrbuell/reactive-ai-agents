@@ -2,7 +2,18 @@ from __future__ import annotations
 import json
 import time
 import asyncio
-from typing import List, Dict, Any, Optional, Sequence, Callable, TYPE_CHECKING, Union
+import inspect
+from typing import (
+    List,
+    Dict,
+    Any,
+    Optional,
+    Sequence,
+    Callable,
+    TYPE_CHECKING,
+    Union,
+    Tuple,
+)
 
 from tools.base import Tool
 from pydantic import BaseModel, Field
@@ -14,6 +25,11 @@ from model_providers.base import BaseModelProvider  # Needed for summary generat
 from prompts.agent_prompts import (
     TOOL_ACTION_SUMMARY_PROMPT,
     TOOL_SUMMARY_CONTEXT_PROMPT,
+)
+from common.types import (
+    ConfirmationCallbackProtocol,
+    ConfirmationConfig,
+    ConfirmationResult,
 )
 
 if TYPE_CHECKING:
@@ -67,9 +83,10 @@ class ToolManager(BaseModel):
     # Configuration (mirrored or derived from context)
     enable_caching: bool = True
     cache_ttl: int = 3600
-    confirmation_callback: Optional[
-        Callable[[str, Dict[str, Any]], bool | asyncio.Future[bool]]
-    ] = None
+    confirmation_callback: Optional[ConfirmationCallbackProtocol] = None
+
+    # Confirmation configuration
+    confirmation_config: Dict[str, Any] = Field(default_factory=dict)
 
     # State
     tools: List[Tool] = Field(default_factory=list)
@@ -93,6 +110,8 @@ class ToolManager(BaseModel):
         object.__setattr__(
             self, "confirmation_callback", self.context.confirmation_callback
         )
+        # Initialize confirmation config from context or defaults
+        self._initialize_confirmation_config()
 
     @property
     def agent_logger(self) -> Logger:
@@ -245,23 +264,7 @@ class ToolManager(BaseModel):
                 cache_key = None  # Safely skip caching on unexpected errors
 
         # --- Confirmation Logic ---
-        sensitive_actions = [
-            "delete",
-            "remove",
-            "send",
-            "email",
-            "subscribe",
-            "unsubscribe",
-            "cancel",
-            "payment",
-            "update",
-            "create",
-            "post",
-            "put",
-            "insert",
-            # Added more potentially impactful verbs
-        ]
-        # Check based on tool name OR description within the tool definition schema
+        # Get tool description for confirmation check
         description_lower = ""
         if hasattr(tool, "tool_definition") and tool.tool_definition:
             func_def = tool.tool_definition.get("function", {})
@@ -269,25 +272,42 @@ class ToolManager(BaseModel):
             if description:
                 description_lower = description.lower()
 
-        requires_confirmation = any(
-            action in tool_name.lower() for action in sensitive_actions
-        ) or any(
-            action in description_lower
-            for action in sensitive_actions
-            if description_lower
+        # Check if tool requires confirmation using the new method
+        requires_confirmation = self._tool_requires_confirmation(
+            tool_name, description_lower
         )
 
         if requires_confirmation and self.confirmation_callback:
             action_description = f"Use tool '{tool_name}' with parameters: {json.dumps(params, indent=2)}"
             try:
-                confirmed = await self._request_confirmation(
+                # The confirmation callback now can return tuple (confirmed, feedback)
+                confirmation_result = await self._request_confirmation(
                     action_description, {"tool": tool_name, "params": params}
                 )
+
+                # Handle different return types from the callback
+                if isinstance(confirmation_result, tuple):
+                    confirmed, feedback = confirmation_result
+                else:
+                    confirmed = bool(confirmation_result)
+                    feedback = None
+
                 if not confirmed:
                     cancel_msg = f"Action cancelled by user: {tool_name}"
                     self.tool_logger.info(cancel_msg)
                     self._add_to_history(tool_name, params, cancel_msg, cancelled=True)
+
+                    # If user provided feedback, inject it into the agent's context
+                    if feedback:
+                        self._inject_user_feedback(tool_name, params, feedback)
+                        cancel_msg += f" - Feedback: {feedback}"
+
                     return cancel_msg
+
+                # If confirmed but user provided feedback, still inject it
+                if feedback:
+                    self._inject_user_feedback(tool_name, params, feedback)
+
             except Exception as e:
                 self.tool_logger.error(
                     f"Error during confirmation callback for {tool_name}: {e}"
@@ -376,17 +396,108 @@ class ToolManager(BaseModel):
 
     async def _request_confirmation(
         self, description: str, details: Dict[str, Any]
-    ) -> bool:
+    ) -> Union[bool, Tuple[bool, Optional[str]]]:
         """Handles calling the confirmation callback (async or sync)."""
         if not self.confirmation_callback:
             return True  # Default to allow if no callback
 
+        result = None
         if asyncio.iscoroutinefunction(self.confirmation_callback):
-            return bool(await self.confirmation_callback(description, details))
+            result = await self.confirmation_callback(description, details)
         else:
-            # Run synchronous callback in an executor to avoid blocking?
-            # For now, assume it's quick or user handles blocking.
-            return bool(self.confirmation_callback(description, details))
+            # For synchronous callbacks
+            result = self.confirmation_callback(description, details)
+
+        # Check if result is awaitable and await it if needed
+        if inspect.isawaitable(result):
+            result = await result
+
+        # Ensure we return the expected type
+        if isinstance(result, tuple) and len(result) == 2:
+            confirmed, feedback = result
+            return (bool(confirmed), feedback)
+        else:
+            return bool(result)
+
+    def _inject_user_feedback(
+        self, tool_name: str, params: Dict[str, Any], feedback: str
+    ) -> None:
+        """Inject user feedback into the agent's context as a message."""
+        self.tool_logger.info(
+            f"Injecting user feedback for tool '{tool_name}': {feedback}"
+        )
+
+        # Create a user message with the feedback
+        feedback_message = {
+            "role": "user",
+            "content": f"Feedback for your '{tool_name}' tool call: {feedback}\nPlease adjust your approach based on this feedback.",
+        }
+
+        # Add to the session messages
+        self.context.session.messages.append(feedback_message)
+
+        # Also add to reasoning log for clarity
+        self.context.session.reasoning_log.append(
+            f"User feedback for tool '{tool_name}': {feedback}"
+        )
+
+    def _initialize_confirmation_config(self):
+        """Initialize the confirmation configuration from context or defaults."""
+        if (
+            hasattr(self.context, "confirmation_config")
+            and self.context.confirmation_config
+        ):
+            self.confirmation_config = self.context.confirmation_config
+            self.tool_logger.info("Using confirmation configuration from context.")
+        else:
+            # Default configuration
+            self.confirmation_config = {
+                "always_confirm": [],  # List of tool names that always require confirmation
+                "never_confirm": [
+                    "final_answer"
+                ],  # Tools that never require confirmation
+                "patterns": {  # Patterns to match in tool names or descriptions
+                    "write": "confirm",
+                    "delete": "confirm",
+                    "remove": "confirm",
+                    "update": "confirm",
+                    "create": "confirm",
+                    "send": "confirm",
+                    "email": "confirm",
+                    "subscribe": "confirm",
+                    "unsubscribe": "confirm",
+                    "payment": "confirm",
+                    "post": "confirm",
+                    "put": "confirm",
+                },
+                "default_action": "proceed",  # Default action if no pattern matches: "proceed" or "confirm"
+            }
+            self.tool_logger.info("Using default confirmation configuration.")
+
+    def _tool_requires_confirmation(
+        self, tool_name: str, description: str = ""
+    ) -> bool:
+        """Determine if a tool requires confirmation based on configuration."""
+        config = self.confirmation_config
+
+        # Check if tool is in the always_confirm list
+        if tool_name in config.get("always_confirm", []):
+            return True
+
+        # Check if tool is in the never_confirm list
+        if tool_name in config.get("never_confirm", []):
+            return False
+
+        # Check patterns
+        patterns = config.get("patterns", {})
+        for pattern, action in patterns.items():
+            if pattern in tool_name.lower() or (
+                description and pattern in description.lower()
+            ):
+                return action.lower() == "confirm"
+
+        # Use default action
+        return config.get("default_action", "proceed").lower() == "confirm"
 
     def _add_to_history(
         self,

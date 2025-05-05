@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/reactive-agents.svg)](https://pypi.org/project/reactive-agents/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A custom reactive AI Agent framework that allow for creating reactive agents to carry out tasks using tools. The framework provides a flexible system for creating AI agents that can use different LLM providers (Ollama, Groq) and reflect on their actions and improve iteratively.
+A custom reactive AI Agent framework that allows for creating reactive agents to carry out tasks using tools. The framework provides a flexible system for creating AI agents that can use different LLM providers (Ollama, Groq) and reflect on their actions and improve iteratively.
 
 ## Overview
 
@@ -12,9 +12,11 @@ The main purpose of this project is to create a custom AI Agent Framework that a
 
 - **Model Providers**: Currently Supports `Ollama` for open-source models (local) or `Groq` fast cloud-based models.
 - **Agent Reflection**: The agent has the ability to reflect on its previous actions, improve as it iterates, and grade itself until it arrives at a final result.
-- **Tool Integration**: Agents can take tools as ordinary Python functions and use a `@tool()` decorator to transform these functions into function definitions that the language model can understand.
+- **Tool Integration**: Agents can use both MCP client tools (server-side) and custom Python functions decorated with `@tool()`.
+- **Builder Pattern**: Easy agent creation with a fluent interface and sensible defaults using the `ReactAgentBuilder` class.
 - **Model Context Protocol (MCP)**: Supports distributed tool execution through MCP servers, allowing agents to use tools from multiple sources.
 - **Workflow Management**: Supports creating complex agent workflows with dependencies and parallel execution.
+- **Strong Type Hinting**: Uses Pydantic models for configuration to ensure type safety and better developer experience.
 
 ## Installation
 
@@ -118,32 +120,353 @@ You can customize MCP servers in two ways:
    }
    ```
 
-### Configure MCP Servers in Workflow
+## Usage Details
 
-Specify which MCP servers to use in your agent configuration:
+## Creating Agents
+
+There are several ways to create and use reactive agents:
+
+### 1. Quick Create Function (Simplest Method)
+
+For beginners or quick testing, use the `quick_create_agent` function:
+
+```python
+import asyncio
+from agents import quick_create_agent
+
+async def main():
+    # Create and run an agent in a single line
+    result = await quick_create_agent(
+        task="Research the current price of Bitcoin",
+        model="ollama:qwen3:4b",
+        tools=["brave-search", "time"],
+        interactive=True  # Set to True to confirm tool executions
+    )
+    print(f"Result: {result}")
+
+asyncio.run(main())
+```
+
+### 2. Builder Pattern (Recommended)
+
+For most use cases, use the `ReactAgentBuilder` class with its fluent interface:
+
+```python
+import asyncio
+from agents import ReactAgentBuilder
+from agents.builders import ConfirmationConfig
+
+async def main():
+    # Create a confirmation callback for interactive use
+    async def confirmation_callback(action, details):
+        print(f"Tool: {details.get('tool')}")
+        return input("Approve? (y/n) [y]: ").lower() in ("", "y")
+
+    # Create a configuration for the confirmation system
+    config = ConfirmationConfig(
+        strategy="always",
+        allowed_silent_tools=["get_current_time"]
+    )
+
+    # Build an agent with a fluent interface
+    agent = await (
+        ReactAgentBuilder()
+        .with_name("Research Agent")
+        .with_model("ollama:qwen3:4b")
+        .with_mcp_tools(["brave-search", "time"])
+        .with_instructions("Research information thoroughly.")
+        .with_max_iterations(10)
+        .with_reflection(True)
+        .with_confirmation(confirmation_callback, config)
+        .build()
+    )
+
+    try:
+        # Run the agent with a task
+        result = await agent.run("What is the current price of Bitcoin?")
+        print(f"Result: {result}")
+    finally:
+        # Always close the agent to clean up resources
+        await agent.close()
+
+asyncio.run(main())
+```
+
+### 3. Factory Methods (Preset Configurations)
+
+For common use cases, use the factory methods:
+
+```python
+import asyncio
+from agents import ReactAgentBuilder
+
+async def main():
+    # Create a specialized research agent
+    agent = await ReactAgentBuilder.research_agent(model="ollama:qwen3:4b")
+
+    try:
+        result = await agent.run("Research the history of Bitcoin")
+        print(f"Result: {result}")
+    finally:
+        await agent.close()
+
+    # Create a database-focused agent
+    db_agent = await ReactAgentBuilder.database_agent(model="ollama:llama3:8b")
+
+    try:
+        result = await db_agent.run("Create a table of cryptocurrency prices")
+        print(f"Result: {result}")
+    finally:
+        await db_agent.close()
+
+asyncio.run(main())
+```
+
+### 4. Using Custom Tools
+
+You can create and use custom tools with the `@tool()` decorator:
+
+```python
+import asyncio
+from agents import ReactAgentBuilder
+from tools.decorators import tool
+
+# Define a custom tool
+@tool(description="Get the current weather for a location")
+async def weather_tool(location: str) -> str:
+    """
+    Get weather information for a location.
+
+    Args:
+        location: The city to get weather for
+
+    Returns:
+        A string with weather information
+    """
+    # In a real app, this would call a weather API
+    return f"The weather in {location} is sunny and 72°F"
+
+async def main():
+    # Create an agent with a custom tool
+    agent = await (
+        ReactAgentBuilder()
+        .with_name("Weather Agent")
+        .with_model("ollama:qwen3:4b")
+        .with_custom_tools([weather_tool])
+        .build()
+    )
+
+    try:
+        result = await agent.run("What's the weather in New York?")
+        print(f"Result: {result}")
+    finally:
+        await agent.close()
+
+asyncio.run(main())
+```
+
+### 5. Hybrid Tool Usage
+
+You can combine MCP tools and custom tools in a single agent:
+
+```python
+import asyncio
+from agents import ReactAgentBuilder
+from tools.decorators import tool
+
+@tool(description="Get cryptocurrency price information")
+async def crypto_price(coin: str) -> str:
+    # Simulated tool
+    prices = {"bitcoin": "$41,234.56", "ethereum": "$2,345.67"}
+    return prices.get(coin.lower(), f"No price data for {coin}")
+
+async def main():
+    # Create an agent with both MCP and custom tools
+    agent = await (
+        ReactAgentBuilder()
+        .with_name("Research Agent")
+        .with_model("ollama:qwen3:4b")
+        .with_tools(
+            mcp_tools=["brave-search", "time"],
+            custom_tools=[crypto_price]
+        )
+        .build()
+    )
+
+    try:
+        result = await agent.run(
+            "What time is it now? What is Bitcoin's price?"
+        )
+        print(f"Result: {result}")
+    finally:
+        await agent.close()
+
+asyncio.run(main())
+```
+
+### 6. Adding Custom Tools to Existing Agents
+
+You can add custom tools to an agent that has already been created:
+
+```python
+import asyncio
+from agents import ReactAgentBuilder
+from tools.decorators import tool
+
+@tool(description="Get cryptocurrency price information")
+async def crypto_price(coin: str) -> str:
+    # Simulated tool
+    prices = {"bitcoin": "$41,234.56", "ethereum": "$2,345.67"}
+    return prices.get(coin.lower(), f"No price data for {coin}")
+
+async def main():
+    # Create a research agent from the factory
+    agent = await ReactAgentBuilder.research_agent()
+
+    # Add a custom tool to the existing agent
+    agent = await ReactAgentBuilder.add_custom_tools_to_agent(
+        agent, [crypto_price]
+    )
+
+    try:
+        result = await agent.run(
+            "Research Bitcoin and get its current price"
+        )
+        print(f"Result: {result}")
+    finally:
+        await agent.close()
+
+asyncio.run(main())
+```
+
+### 7. Traditional ReactAgent Creation (Legacy Method)
+
+For advanced use cases or backward compatibility:
+
+```python
+import asyncio
+from agent_mcp.client import MCPClient
+from agents import ReactAgent, ReactAgentConfig
+
+async def main():
+    # Initialize MCP client
+    mcp_client = await MCPClient(
+        server_filter=["local", "brave-search"]
+    ).initialize()
+
+    # Create the agent config
+    config = ReactAgentConfig(
+        agent_name="TaskAgent",
+        role="Task Executor",
+        provider_model_name="ollama:cogito:14b",
+        min_completion_score=1.0,
+        instructions="Complete tasks efficiently.",
+        mcp_client=mcp_client,
+        log_level="info",
+        max_iterations=5,
+        reflect_enabled=True
+    )
+
+    # Create the agent
+    agent = ReactAgent(config=config)
+
+    try:
+        result = await agent.run("Research the price of Bitcoin")
+        print(f"Result: {result}")
+    finally:
+        await agent.close()
+        await mcp_client.close()
+
+asyncio.run(main())
+```
+
+## Tool Diagnostics and Debugging
+
+The framework provides diagnostic tools to help debug tool registration issues:
+
+```python
+import asyncio
+from agents import ReactAgentBuilder
+from tools.decorators import tool
+
+@tool(description="Example custom tool")
+async def example_tool(param: str) -> str:
+    return f"Result: {param}"
+
+async def main():
+    # Create a builder with tools
+    builder = (
+        ReactAgentBuilder()
+        .with_name("Diagnostic Agent")
+        .with_mcp_tools(["brave-search"])
+        .with_custom_tools([example_tool])
+    )
+
+    # Debug tools before building
+    diagnostics = builder.debug_tools()
+    print(f"MCP tools: {diagnostics['mcp_tools']}")
+    print(f"Custom tools: {diagnostics['custom_tools']}")
+
+    # Build the agent
+    agent = await builder.build()
+
+    # Diagnose tool registration after building
+    diagnosis = await ReactAgentBuilder.diagnose_agent_tools(agent)
+    if diagnosis["has_tool_mismatch"]:
+        print("WARNING: Tool registration mismatch detected!")
+    else:
+        print("All tools properly registered")
+
+    await agent.close()
+
+asyncio.run(main())
+```
+
+## Workflow Configuration (Multi-Agent Setup)
+
+You can create multi-agent workflows:
 
 ```python
 from config.workflow import AgentConfig, WorkflowConfig, Workflow
 
-# Create an agent with specific MCP servers
-agent_config = AgentConfig(
-    role="researcher",
-    model="ollama:cogito:14b",
-    mcp_servers=["local", "brave-search", "sqlite"],  # Specify servers to use
-    min_score=0.7,
-    instructions="You are a research specialist.",
-)
+def create_workflow() -> Workflow:
+    workflow_config = WorkflowConfig()
+
+    # Add a planner agent
+    planner = AgentConfig(
+        role="planner",
+        model="ollama:cogito:14b",
+        min_score=0.9,
+        instructions="Break down tasks into steps.",
+        mcp_servers=["local", "brave-search"]
+    )
+
+    # Add an executor agent that depends on the planner
+    executor = AgentConfig(
+        role="executor",
+        model="ollama:cogito:14b",
+        min_score=1.0,
+        instructions="Execute the planned steps.",
+        dependencies=["planner"],
+        mcp_servers=["local", "filesystem", "sqlite"]
+    )
+
+    workflow_config.add_agent(planner)
+    workflow_config.add_agent(executor)
+
+    return Workflow(workflow_config)
+
+async def main():
+    workflow = create_workflow()
+    result = await workflow.run("Research Bitcoin price and store in database")
+    print(f"Workflow result: {result}")
+
+asyncio.run(main())
 ```
 
-### Custom MCP Servers
+## Custom MCP Servers
 
-Create custom MCP servers by:
-
-1. Creating a new Python server file using the MCP SDK
-2. Adding the server configuration to your custom config file
-3. Using the server in your agent configuration
-
-Example local server in [agent_mcp/servers/server.py](agent_mcp/servers/server.py):
+Create custom MCP servers:
 
 ```python
 from mcp.server.fastmcp import FastMCP
@@ -158,112 +481,6 @@ def my_custom_tool(param: str) -> str:
 mcp.run(transport="stdio")
 ```
 
-## Usage Details
-
-## Creating Agents
-
-There are two main ways to use reactive agents:
-
-1. Compose single granular agents using the `ReactAgent` class:
-
-   ```python
-   import asyncio
-   from agent_mcp.client import MCPClient
-
-   mcp_client = await MCPClient(server_filter=["local", "brave-search"]).initialize() # Filter servers if needed
-
-   agent = ReactAgent(
-       name="TaskAgent",
-       role="Task Executor",
-       provider_model="ollama:cogito:14b", # Add available provider:model combinations (currently supports ollama and groq)
-       min_completion_score=1.0, # Adjust as needed for your use case (0.0-1.0)
-       instructions="You are an AI agent. Complete the task as quickly as possible.",
-       mcp_client=mcp_client,
-       log_level="info",
-       max_iterations=5 # Adjust as needed for your use case
-       reflect=True # Set to True to enable reflection ability which allows the agent to reflect on its actions and improve as it iterates
-   )
-   asyncio.run(agent.run("Find the current price of xrp using a web search, then create a table called crypto_prices (currency, price, timestamp), then insert the price of xrp into the table."))
-   ```
-
-2. Compose multi-agent workflows using the `Workflow`, `AgentConfig`, and `WorkflowConfig` classes:
-
-   ```python
-   def create_workflow() -> Workflow:
-       workflow_config = WorkflowConfig()
-
-       # Add a planner agent
-       planner = AgentConfig(
-           role="planner",
-           model="ollama:cogito:14b",
-           min_score=0.9,
-           instructions="Break down tasks into steps.",
-           mcp_servers=["local", "brave-search"]
-       )
-
-       # Add an executor agent that depends on the planner
-       executor = AgentConfig(
-           role="executor",
-           model="ollama:cogito:14b",
-           min_score=1.0,
-           instructions="Execute the planned steps.",
-           dependencies=["planner"],
-           mcp_servers=["local", "filesystem", "sqlite"]
-       )
-
-       workflow_config.add_agent(planner)
-       workflow_config.add_agent(executor)
-
-       return Workflow(workflow_config)
-   workflow = Workflow(workflow_config)
-   asyncio.run(workflow.run("Find the current price of xrp using a web search, then create a table called crypto_prices (currency, price, timestamp), then insert the price of xrp into the table."))
-   ```
-
-3. Run the main application script to test the agents and workflows:
-
-   ```sh
-   python main.py
-   ```
-
-## Agent Configuration
-
-Agents can be configured with various parameters:
-
-- **role**: The agent's role in the workflow
-- **model**: The LLM model to use (format: "provider:model")
-- **min_score**: Minimum completion score required (0.0-1.0)
-- **instructions**: Role-specific instructions
-- **dependencies**: List of other agent roles this agent depends on
-- **max_iterations**: Maximum number of task iterations
-- **mcp_servers**: List of MCP servers to use
-- **reflect**: Enable/disable agent reflection capability (default: False) longer iteration but more accurate results
-- **instructions_as_task**: Use instructions as the task input
-
-## Tools and Decorators
-
-Create custom tools without using MCP using the `@tool()` decorator:
-
-```python
-from tools.decorators import tool
-
-@tool()
-async def my_custom_tool(param1: str, param2: int) -> str:
-    """
-    Tool description here.
-
-    Args:
-        param1 (str): Description of param1
-        param2 (int): Description of param2
-
-    Returns:
-        str: Description of return value
-    """
-    # Tool implementation
-    return result
-```
-
-Custom tools can then be added to agents using the tools parameter in the `ReactAgent` constructor or `AgentConfig`.
-
 ## Running Tests
 
 To run the tests:
@@ -271,26 +488,6 @@ To run the tests:
 ```sh
 poetry run pytest
 ```
-
-## Modules Description
-
-- **agents**: Contains the base Agent class and ReactAgent implementation for reflective task execution.
-
-- **model_providers**: Supports multiple LLM providers:
-
-  - `OllamaModelProvider`: Local model execution using Ollama
-  - `GroqModelProvider`: Cloud-based model execution using Groq
-
-- **tools**: Tool implementation and MCP integration:
-
-  - `@tool()` decorator for creating tool definitions
-  - `MCPToolWrapper` for integrating with MCP servers
-  - Built-in tools for common operations
-
-- **config**: Configuration management:
-  - `WorkflowConfig`: Defines agent workflows and dependencies
-  - `mcp_config.py`: MCP server configuration
-  - `logging.py`: Logging configuration
 
 ## License
 

@@ -2,8 +2,7 @@ from __future__ import annotations
 import json
 import traceback
 import asyncio
-from typing import List, Any, Optional, Dict, Set, Tuple, Callable
-from collections.abc import Awaitable
+from typing import List, Any, Optional, Dict, Set, Tuple
 import time
 
 from pydantic import BaseModel, Field, model_validator
@@ -23,8 +22,13 @@ from agent_mcp.client import MCPClient
 from context.agent_observer import AgentStateEvent
 from context.agent_events import AgentEventManager
 
-# Import shared types from the new location
+# Import TaskStatus directly from the original module to avoid conflicts
 from common.types import TaskStatus
+
+# Import confirmation types
+from common.types import (
+    ConfirmationCallbackProtocol,
+)
 
 
 # --- Agent Configuration Model ---
@@ -68,9 +72,14 @@ class ReactAgentConfig(BaseModel):
     enable_caching: bool = Field(
         True, description="Whether to enable LLM response caching."
     )
-    confirmation_callback: Optional[
-        Callable[[str, Dict[str, Any]], Awaitable[bool]]
-    ] = Field(None, description="Async callback for confirming tool use.")
+    confirmation_callback: Optional[ConfirmationCallbackProtocol] = Field(
+        None,
+        description="Callback for confirming tool use. Can return bool or (bool, feedback).",
+    )
+    confirmation_config: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Configuration for tool confirmation behavior. If None, defaults will be used.",
+    )
     # Store extra kwargs passed, e.g. for specific context managers
     kwargs: Dict[str, Any] = Field(
         {}, description="Additional keyword arguments passed to AgentContext."
@@ -177,6 +186,7 @@ class ReactAgent(Agent):
             check_tool_feasibility=config.check_tool_feasibility,
             enable_caching=config.enable_caching,
             confirmation_callback=config.confirmation_callback,
+            confirmation_config=config.confirmation_config,
             **config.kwargs,
         )
         super().__init__(context)
