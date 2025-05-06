@@ -30,6 +30,9 @@ packages = [
     { include = "loggers" },
     { include = "config" },
     { include = "agent_mcp" },
+    { include = "context" },
+    { include = "common" },
+    { include = "components" },
 ]
 
 [tool.poetry.dependencies]
