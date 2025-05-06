@@ -35,8 +35,11 @@ jobs:
           export SKIP_DOCKER_CHECKS=1
           # Prepare mock environment to ensure Docker isn't used
           mkdir -p ~/.local/share/mcp/tools/
-          # Run tests with a timeout and additional parameters to help with CI environment
-          poetry run pytest -v --cov=./ --cov-report=xml --timeout=60 --no-header --tb=native
+          # Create an explicit mock script to run before pytest
+          echo "import tests.ci_mock; print('CI mocks loaded successfully')" > ci_pytest_loader.py
+          # Run tests with CI-specific mock loader
+          poetry run python ci_pytest_loader.py
+          poetry run pytest -v --cov=./ --cov-report=xml --timeout=60 --no-header --tb=native -p no:docker
         timeout-minutes: 5
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v4
