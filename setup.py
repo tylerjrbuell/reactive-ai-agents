@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="reactive-agents",
-    version="0.1.0a2",
+    version="0.1.0a3",
     author="Tyler Buell",
     description="A custom reactive AI Agent framework for LLM-driven task execution",
     long_description=long_description,
