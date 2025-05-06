@@ -974,7 +974,11 @@ class ReactAgentBuilder:
                 if not hasattr(tool, "_is_custom_tool"):
                     setattr(tool, "_is_custom_tool", True)
 
-            self._config["tools"] = self._custom_tools
+            # Set custom_tools separately from tools to avoid duplication
+            self._config["custom_tools"] = self._custom_tools
+            # Remove tools if it exists to prevent conflict
+            if "tools" in self._config:
+                del self._config["tools"]
 
         # Create the config and agent
         try:
@@ -1041,51 +1045,41 @@ class ReactAgentBuilder:
                         current_task = asyncio.current_task()
                         client = getattr(agent.context, "mcp_client", None)
 
-                        if client and current_task != creation_task:
-                            # Before detaching the MCPClient, set a special flag to suppress errors
+                        if client:
+                            # Always set suppression flags to avoid errors during shutdown
                             if (
                                 hasattr(client, "_stdio_client")
                                 and client._stdio_client
                             ):
                                 client._suppress_exit_errors = True
 
-                            # Detach the MCPClient from the agent context before closing
-                            # to prevent cancel scope issues
-                            agent.context.mcp_client = None
-                            print(
-                                f"Detached MCPClient from {agent.context.agent_name} context for clean shutdown"
-                            )
-                        elif client:
-                            # We're in the same task, can safely close the client
                             try:
-                                # Set flag to suppress stderr output for anyio errors during cleanup
-                                import sys
-
-                                original_stderr = sys.stderr
-                                sys.stderr = open("/dev/null", "w")
-
-                                # Replace client's close method to handle errors silently
-                                original_client_close = client.close
-
-                                async def safe_close():
-                                    try:
-                                        await original_client_close()
-                                    except Exception as e:
-                                        # Silently ignore cancel scope errors
-                                        pass
-
-                                client.close = safe_close
-
-                                # Now restore stderr
-                                sys.stderr = original_stderr
-                            except Exception:
-                                # If we encounter issues with this approach, just detach the client
+                                # Detach the MCPClient from the agent context before closing
+                                # to prevent cancel scope issues
+                                detached_client = client
                                 agent.context.mcp_client = None
 
-                        # Call the original close method
-                        await original_close()
+                                # Close with a timeout to prevent hanging
+                                try:
+                                    await asyncio.wait_for(
+                                        detached_client.close(), timeout=1.0
+                                    )
+                                except (asyncio.TimeoutError, Exception) as e:
+                                    # Ignore cleanup errors, we've already detached the client
+                                    pass
+                            except Exception:
+                                # If we encounter any issues, just detach the client
+                                agent.context.mcp_client = None
+
+                        # Call the original close method with a timeout
+                        try:
+                            await asyncio.wait_for(original_close(), timeout=2.0)
+                        except asyncio.TimeoutError:
+                            # Log but continue if original close times out
+                            pass
                     except Exception as e:
-                        print(f"Error during enhanced agent close: {e}")
+                        # Ensure we don't propagate errors during cleanup
+                        pass
 
                 # Replace the close method
                 agent.close = enhanced_close

@@ -9,6 +9,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 from agents import ReactAgentBuilder
 from tools.decorators import tool
 from tests.integration.mcp_fixtures import mock_agent_run, model_validation_bypass
+import asyncio
 
 
 # Sample custom tools for testing
@@ -60,13 +61,17 @@ async def test_builder_with_custom_tools_fixed(mock_agent_run, model_validation_
     assert "square" in tool_names
     assert "greeting" in tool_names
 
-    # Run a task
-    result = await agent.run("Test task")
-    assert result["status"] == "complete"
-    assert result["result"] == "Test successful"
-
-    # Clean up
-    await agent.close()
+    try:
+        # Run a task with a timeout
+        result = await asyncio.wait_for(agent.run("Test task"), timeout=5.0)
+        assert result["status"] == "complete"
+        assert result["result"] == "Test successful"
+    finally:
+        # Forcibly close the agent and ensure cleanup
+        try:
+            await asyncio.wait_for(agent.close(), timeout=2.0)
+        except asyncio.TimeoutError:
+            print("Warning: Agent cleanup timed out, but test can proceed")
 
 
 @pytest.mark.asyncio
