@@ -1,21 +1,22 @@
 from .base import BaseModelProvider
 import ollama
+import os
 
-HOST = "http://localhost:11434"  # "localhost:11434"
+
 
 
 class OllamaModelProvider(BaseModelProvider):
     id = "ollama"
-
+    host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
     def __init__(self, model="llama3.2", name="ollama"):
         self.name = name
         self.model = model
-        self.client = ollama.AsyncClient(host=HOST)
+        self.client = ollama.AsyncClient(host=self.host)
         self.validate_model()
         super().__init__(model=model, name=self.name)
 
     def validate_model(self, **kwargs):
-        models = ollama.Client(host=HOST).list().models
+        models = ollama.Client(host=self.host).list().models
         model = self.model
         if ":" not in self.model:
             model = f"{self.model}:latest"
