@@ -91,6 +91,7 @@ To install and set up this project locally, follow these steps:
 
 3. Configure your environment by setting up necessary variables in `.env`:
    ```env
+   OLLAMA_HOST=http://localhost:11434
    GROQ_API_KEY=your_groq_api_key  # Required for Groq model provider
    BRAVE_API_KEY=your_brave_api_key # Required for brave-search MCP server
    MCP_CONFIG_PATH=/path/to/custom/mcp_config.json # Optional: Path to custom MCP configuration
