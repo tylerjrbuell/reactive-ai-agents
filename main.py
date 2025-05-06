@@ -9,8 +9,8 @@ from pydantic import PydanticDeprecatedSince211
 
 from agents import ReactAgent, ReactAgentBuilder
 from agents.builders import ConfirmationConfig, LogLevel
+from agents.react_agent import ReactAgentConfig
 from tools.decorators import tool
-from tools.base import Tool
 
 warnings.simplefilter("ignore", ResourceWarning)
 warnings.filterwarnings("ignore", category=PydanticDeprecatedSince211)
@@ -305,6 +305,31 @@ async def main():
         traceback.print_exc()
 
 
+async def legacy_main():
+    """
+    Example usage of the legacy way to create a ReactAgent with custom tools.
+
+    This demonstrates creating a minimal ReactAgent using ReactAgentConfig with custom tools.
+    """
+    # Create agent with required parameters and custom tools
+    agent = ReactAgent(
+        config=ReactAgentConfig(
+            agent_name="Legacy Agent",
+            provider_model_name="ollama:cogito:14b",
+            custom_tools=[custom_weather_tool, crypto_price_simulator],
+        )
+    )
+
+    # Run the agent with the task specified at runtime
+    result = await agent.run(
+        initial_task="What's the weather in Tokyo and what's the price of Bitcoin?"
+    )
+    print(result)
+
+
 if __name__ == "__main__":
     # Set a reasonable timeout and handle cleanup properly
+    # 👇 Run the basic minimal agent example
+    asyncio.run(legacy_main())
+    # 👇 Run the builder pattern examples
     asyncio.run(main())

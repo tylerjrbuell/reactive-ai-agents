@@ -16,6 +16,8 @@ from typing import (
     Union,
     TypeVar,
     Set,
+    Generic,
+    cast,
 )
 import asyncio
 import inspect
@@ -27,6 +29,25 @@ from agent_mcp.client import MCPClient
 from .react_agent import ReactAgent, ReactAgentConfig
 from tools.abstractions import ToolProtocol
 from tools.base import Tool
+from context.agent_observer import AgentStateEvent
+from context.agent_events import (
+    EventSubscription,
+    BaseEventData,
+    SessionStartedEventData,
+    SessionEndedEventData,
+    TaskStatusChangedEventData,
+    IterationStartedEventData,
+    IterationCompletedEventData,
+    ToolCalledEventData,
+    ToolCompletedEventData,
+    ToolFailedEventData,
+    ReflectionGeneratedEventData,
+    FinalAnswerSetEventData,
+    MetricsUpdatedEventData,
+    ErrorOccurredEventData,
+    EventCallback,
+    AsyncEventCallback,
+)
 
 
 # Define type variables for better type hinting
@@ -701,6 +722,224 @@ class ReactAgentBuilder:
             "has_custom_tools": hasattr(agent, "_has_custom_tools"),
         }
 
+    # Event subscription methods
+
+    def with_subscription(
+        self, event_type: AgentStateEvent, callback: EventCallback[Any]
+    ) -> "ReactAgentBuilder":
+        """
+        Register a callback function for any event type using a more generic interface.
+
+        This provides a more dynamic way to subscribe to events without using specific helper methods.
+
+        Args:
+            event_type: The type of event to observe (from AgentStateEvent enum)
+            callback: The callback function to invoke when the event occurs
+
+        Returns:
+            self for method chaining
+
+        Example:
+            ```python
+            builder = (ReactAgentBuilder()
+                .with_subscription(
+                    AgentStateEvent.TOOL_CALLED,
+                    lambda event: print(f"Tool called: {event['tool_name']}")
+                )
+                .build())
+            ```
+        """
+        return self.with_event_callback(event_type, callback)
+
+    def with_async_subscription(
+        self, event_type: AgentStateEvent, callback: AsyncEventCallback[Any]
+    ) -> "ReactAgentBuilder":
+        """
+        Register an async callback function for any event type using a more generic interface.
+
+        This provides a more dynamic way to subscribe to async events without using specific helper methods.
+
+        Args:
+            event_type: The type of event to observe (from AgentStateEvent enum)
+            callback: The async callback function to invoke when the event occurs
+
+        Returns:
+            self for method chaining
+
+        Example:
+            ```python
+            async def log_tool_call(event):
+                await db.log_event(event['tool_name'], event['parameters'])
+
+            builder = (ReactAgentBuilder()
+                .with_async_subscription(
+                    AgentStateEvent.TOOL_CALLED,
+                    log_tool_call
+                )
+                .build())
+            ```
+        """
+        return self.with_async_event_callback(event_type, callback)
+
+    def with_event_callback(
+        self, event_type: AgentStateEvent, callback: EventCallback
+    ) -> "ReactAgentBuilder":
+        """
+        Register a callback function for a specific event type.
+
+        This allows setting up event observers before the agent is built.
+
+        Args:
+            event_type: The type of event to observe
+            callback: The callback function to invoke when the event occurs
+
+        Returns:
+            self for method chaining
+
+        Example:
+            ```python
+            builder = (ReactAgentBuilder()
+                .with_event_callback(
+                    AgentStateEvent.TOOL_CALLED,
+                    lambda event: print(f"Tool called: {event['tool_name']}")
+                )
+                .build())
+            ```
+        """
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+
+        if event_type not in self._event_callbacks:
+            self._event_callbacks[event_type] = []
+
+        self._event_callbacks[event_type].append(callback)
+        return self
+
+    def with_async_event_callback(
+        self, event_type: AgentStateEvent, callback: AsyncEventCallback
+    ) -> "ReactAgentBuilder":
+        """
+        Register an async callback function for a specific event type.
+
+        This allows setting up async event observers before the agent is built.
+
+        Args:
+            event_type: The type of event to observe
+            callback: The async callback function to invoke when the event occurs
+
+        Returns:
+            self for method chaining
+
+        Example:
+            ```python
+            async def log_tool_call(event):
+                await db.log_event(event['tool_name'], event['parameters'])
+
+            builder = (ReactAgentBuilder()
+                .with_async_event_callback(
+                    AgentStateEvent.TOOL_CALLED,
+                    log_tool_call
+                )
+                .build())
+            ```
+        """
+        if not hasattr(self, "_async_event_callbacks"):
+            self._async_event_callbacks = {}
+
+        if event_type not in self._async_event_callbacks:
+            self._async_event_callbacks[event_type] = []
+
+        self._async_event_callbacks[event_type].append(callback)
+        return self
+
+    # Convenience methods for specific event types
+
+    def on_session_started(
+        self, callback: EventCallback[SessionStartedEventData]
+    ) -> "ReactAgentBuilder":
+        """Register a callback for session started events"""
+        return self.with_event_callback(AgentStateEvent.SESSION_STARTED, callback)
+
+    def on_session_ended(
+        self, callback: EventCallback[SessionEndedEventData]
+    ) -> "ReactAgentBuilder":
+        """Register a callback for session ended events"""
+        return self.with_event_callback(AgentStateEvent.SESSION_ENDED, callback)
+
+    def on_task_status_changed(
+        self, callback: EventCallback[TaskStatusChangedEventData]
+    ) -> "ReactAgentBuilder":
+        """Register a callback for task status changed events"""
+        return self.with_event_callback(AgentStateEvent.TASK_STATUS_CHANGED, callback)
+
+    def on_iteration_started(
+        self, callback: EventCallback[IterationStartedEventData]
+    ) -> "ReactAgentBuilder":
+        """Register a callback for iteration started events"""
+        return self.with_event_callback(AgentStateEvent.ITERATION_STARTED, callback)
+
+    def on_iteration_completed(
+        self, callback: EventCallback[IterationCompletedEventData]
+    ) -> "ReactAgentBuilder":
+        """Register a callback for iteration completed events"""
+        return self.with_event_callback(AgentStateEvent.ITERATION_COMPLETED, callback)
+
+    def on_tool_called(
+        self, callback: EventCallback[ToolCalledEventData]
+    ) -> "ReactAgentBuilder":
+        """Register a callback for tool called events"""
+        return self.with_event_callback(AgentStateEvent.TOOL_CALLED, callback)
+
+    def on_tool_completed(
+        self, callback: EventCallback[ToolCompletedEventData]
+    ) -> "ReactAgentBuilder":
+        """Register a callback for tool completed events"""
+        return self.with_event_callback(AgentStateEvent.TOOL_COMPLETED, callback)
+
+    def on_tool_failed(
+        self, callback: EventCallback[ToolFailedEventData]
+    ) -> "ReactAgentBuilder":
+        """Register a callback for tool failed events"""
+        return self.with_event_callback(AgentStateEvent.TOOL_FAILED, callback)
+
+    def on_reflection_generated(
+        self, callback: EventCallback[ReflectionGeneratedEventData]
+    ) -> "ReactAgentBuilder":
+        """Register a callback for reflection generated events"""
+        return self.with_event_callback(AgentStateEvent.REFLECTION_GENERATED, callback)
+
+    def on_final_answer_set(
+        self, callback: EventCallback[FinalAnswerSetEventData]
+    ) -> "ReactAgentBuilder":
+        """Register a callback for final answer set events"""
+        return self.with_event_callback(AgentStateEvent.FINAL_ANSWER_SET, callback)
+
+    def on_metrics_updated(
+        self, callback: EventCallback[MetricsUpdatedEventData]
+    ) -> "ReactAgentBuilder":
+        """Register a callback for metrics updated events"""
+        return self.with_event_callback(AgentStateEvent.METRICS_UPDATED, callback)
+
+    def on_error_occurred(
+        self, callback: EventCallback[ErrorOccurredEventData]
+    ) -> "ReactAgentBuilder":
+        """Register a callback for error occurred events"""
+        return self.with_event_callback(AgentStateEvent.ERROR_OCCURRED, callback)
+
+    # Async convenience methods
+
+    def on_session_started_async(
+        self, callback: AsyncEventCallback[SessionStartedEventData]
+    ) -> "ReactAgentBuilder":
+        """Register an async callback for session started events"""
+        return self.with_async_event_callback(AgentStateEvent.SESSION_STARTED, callback)
+
+    def on_session_ended_async(
+        self, callback: AsyncEventCallback[SessionEndedEventData]
+    ) -> "ReactAgentBuilder":
+        """Register an async callback for session ended events"""
+        return self.with_async_event_callback(AgentStateEvent.SESSION_ENDED, callback)
+
     # Build method
 
     async def build(self) -> ReactAgent:
@@ -771,6 +1010,22 @@ class ReactAgentBuilder:
                             ],
                         },
                     )
+
+            # Register all event callbacks that were set during builder configuration
+            if hasattr(self, "_event_callbacks") and agent.context.state_observer:
+                for event_type, callbacks in self._event_callbacks.items():
+                    for callback in callbacks:
+                        agent.context.state_observer.register_callback(
+                            event_type, callback
+                        )
+
+            # Register all async event callbacks
+            if hasattr(self, "_async_event_callbacks") and agent.context.state_observer:
+                for event_type, callbacks in self._async_event_callbacks.items():
+                    for callback in callbacks:
+                        agent.context.state_observer.register_async_callback(
+                            event_type, callback
+                        )
 
             # Ensure the mcp_client reference is properly shared
             if self._mcp_client is not None:

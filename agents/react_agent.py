@@ -33,56 +33,72 @@ from common.types import (
 
 # --- Agent Configuration Model ---
 class ReactAgentConfig(BaseModel):
-    agent_name: str = Field("ReactAgent", description="Name of the agent.")
-    role: str = Field("Task Executor", description="Role of the agent.")
-    provider_model_name: str = Field(
-        "ollama:qwen2:7b", description="Name of the LLM provider and model."
+    # Required parameters
+    agent_name: str = Field(description="Name of the agent.")
+    provider_model_name: str = Field(description="Name of the LLM provider and model.")
+
+    # Optional parameters
+    role: Optional[str] = Field(
+        default="Task Executor", description="Role of the agent."
     )
     mcp_client: Optional[MCPClient] = Field(
-        None, description="An initialized MCPClient instance."
+        default=None, description="An initialized MCPClient instance."
     )
-    min_completion_score: float = Field(
-        1.0, ge=0.0, le=1.0, description="Minimum score for task completion evaluation."
+    min_completion_score: Optional[float] = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Minimum score for task completion evaluation.",
     )
-    instructions: str = Field(
-        "Solve the given task.", description="High-level instructions for the agent."
+    instructions: Optional[str] = Field(
+        default="Solve the given task.",
+        description="High-level instructions for the agent.",
     )
     max_iterations: Optional[int] = Field(
-        10, description="Maximum number of iterations allowed."
+        default=10, description="Maximum number of iterations allowed."
     )
-    reflect_enabled: bool = Field(
-        True, description="Whether reflection mechanism is enabled."
+    reflect_enabled: Optional[bool] = Field(
+        default=True, description="Whether reflection mechanism is enabled."
     )
-    log_level: str = Field(
-        "info", description="Logging level ('debug', 'info', 'warning', 'error')."
+    log_level: Optional[str] = Field(
+        default="info",
+        description="Logging level ('debug', 'info', 'warning', 'error').",
     )
     initial_task: Optional[str] = Field(
-        None, description="The initial task description (can also be passed to run)."
+        default=None,
+        description="The initial task description (can also be passed to run).",
     )
-    tool_use_enabled: bool = Field(True, description="Whether the agent can use tools.")
-    use_memory_enabled: bool = Field(
-        True, description="Whether the agent uses long-term memory."
+    tool_use_enabled: Optional[bool] = Field(
+        default=True, description="Whether the agent can use tools."
     )
-    collect_metrics_enabled: bool = Field(
-        True, description="Whether to collect performance metrics."
+    custom_tools: Optional[List[Any]] = Field(
+        default_factory=list,
+        description="List of custom tool instances to use with the agent.",
     )
-    check_tool_feasibility: bool = Field(
-        True, description="Whether to check tool feasibility before starting."
+    use_memory_enabled: Optional[bool] = Field(
+        default=True, description="Whether the agent uses long-term memory."
     )
-    enable_caching: bool = Field(
-        True, description="Whether to enable LLM response caching."
+    collect_metrics_enabled: Optional[bool] = Field(
+        default=True, description="Whether to collect performance metrics."
+    )
+    check_tool_feasibility: Optional[bool] = Field(
+        default=True, description="Whether to check tool feasibility before starting."
+    )
+    enable_caching: Optional[bool] = Field(
+        default=True, description="Whether to enable LLM response caching."
     )
     confirmation_callback: Optional[ConfirmationCallbackProtocol] = Field(
-        None,
+        default=None,
         description="Callback for confirming tool use. Can return bool or (bool, feedback).",
     )
     confirmation_config: Optional[Dict[str, Any]] = Field(
-        None,
+        default=None,
         description="Configuration for tool confirmation behavior. If None, defaults will be used.",
     )
     # Store extra kwargs passed, e.g. for specific context managers
     kwargs: Dict[str, Any] = Field(
-        {}, description="Additional keyword arguments passed to AgentContext."
+        default_factory=dict,
+        description="Additional keyword arguments passed to AgentContext.",
     )
 
     class Config:
@@ -169,6 +185,9 @@ class ReactAgent(Agent):
         Args:
             config: The ReactAgentConfig object containing all settings.
         """
+        # Process custom tools to ensure they're properly wrapped
+        processed_tools = self._process_custom_tools(config.custom_tools)
+
         context = AgentContext(
             agent_name=config.agent_name,
             role=config.role,
@@ -181,6 +200,7 @@ class ReactAgent(Agent):
             log_level=config.log_level,
             initial_task=config.initial_task or "",
             tool_use_enabled=config.tool_use_enabled,
+            tools=processed_tools,  # Pass processed tools to context
             use_memory_enabled=config.use_memory_enabled,
             collect_metrics_enabled=config.collect_metrics_enabled,
             check_tool_feasibility=config.check_tool_feasibility,
@@ -192,12 +212,58 @@ class ReactAgent(Agent):
         super().__init__(context)
         # Store the config for potential reference, though context holds the state
         self.config = config
-        self.agent_logger.info(
-            f"ReactAgent '{self.context.agent_name}' initialized with internal context via config."
-        )
 
         # Initialize event manager for subscription interface
         self._event_manager = AgentEventManager(self.context.state_observer)
+
+    def _process_custom_tools(self, tools):
+        """
+        Process custom tools to ensure they match the ToolProtocol interface.
+
+        Args:
+            tools: List of tools, which could be functions decorated with @tool
+
+        Returns:
+            List of tools that all comply with the ToolProtocol interface
+        """
+        from tools.base import Tool
+        from tools.abstractions import ToolResult
+
+        processed_tools = []
+
+        for tool in tools:
+            # Skip None values
+            if tool is None:
+                continue
+
+            # If it's already a proper Tool class instance, use it as is
+            if isinstance(tool, Tool):
+                processed_tools.append(tool)
+            # If it has a tool_definition attribute (likely a decorated function)
+            elif hasattr(tool, "tool_definition"):
+                # Create a wrapper class that implements the Tool interface
+                class DecoratedFunctionWrapper(Tool):
+                    # Use the function's attributes
+                    name = tool.__name__
+                    tool_definition = tool.tool_definition
+
+                    def __init__(self, func):
+                        self.func = func
+
+                    async def use(self, params):
+                        # Call the original function
+                        result = await self.func(**params)
+                        return ToolResult(result)
+
+                # Create a wrapper instance and add it
+                processed_tools.append(DecoratedFunctionWrapper(tool))
+            # Otherwise it's not a compatible tool
+            else:
+                raise ValueError(
+                    f"Custom tool {tool} is not compatible with ToolProtocol"
+                )
+
+        return processed_tools
 
     async def run(
         self,
@@ -1523,7 +1589,38 @@ class ReactAgent(Agent):
 
     @property
     def events(self):
-        """Access the event subscription interface"""
+        """
+        Access the event subscription interface for this agent.
+
+        This property provides a fluent API for subscribing to agent events.
+        It allows subscribing to events in a type-safe manner without having
+        to directly access the underlying observer.
+
+        The events property is both a property accessor and callable:
+
+        Returns:
+            AgentEventManager: An interface for subscribing to events
+
+        Example:
+            ```python
+            # Subscribe to specific events using helper methods
+            agent.events.on_tool_called().subscribe(
+                lambda event: print(f"Tool called: {event['tool_name']}")
+            )
+
+            # Subscribe to any event directly using the callable interface
+            agent.events(AgentStateEvent.ERROR_OCCURRED).subscribe(
+                lambda event: print(f"Error: {event['error']}")
+            )
+
+            # Subscribe to multiple events with the same callback
+            def log_event(event):
+                print(f"Event: {event['event_type']}")
+
+            agent.events.on_tool_called().subscribe(log_event)
+            agent.events.on_tool_completed().subscribe(log_event)
+            ```
+        """
         return self._event_manager
 
     # Shorthand methods for common event subscriptions

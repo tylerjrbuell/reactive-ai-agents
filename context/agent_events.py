@@ -6,12 +6,12 @@ from typing import (
     Any,
     List,
     Callable,
-    Union,
     Generic,
     TypeVar,
     Protocol,
     runtime_checkable,
     Awaitable,
+    cast,
 )
 import asyncio
 
@@ -237,9 +237,26 @@ class EventSubscription(Generic[T]):
         self._async_callbacks.append(callback)
 
         # We need a wrapper to handle the type conversion
-        async def async_wrapper(event_data):
-            coroutine = callback(event_data)  # This will be an awaitable
-            return await coroutine  # This will await the coroutine
+        def async_wrapper(event_data: Dict[str, Any]) -> asyncio.Future:
+            # Create a future to return
+            future = asyncio.get_event_loop().create_future()
+
+            # Create a task that will set the future result
+            async def run_callback():
+                try:
+                    # Type cast event_data to T to satisfy type checker
+                    result = await callback(
+                        cast(T, event_data)
+                    )  # This will await the coroutine
+                    future.set_result(result)
+                except Exception as e:
+                    future.set_exception(e)
+
+            # Start the task
+            asyncio.create_task(run_callback())
+
+            # Return the future
+            return future
 
         self._register_async_callback(self.event_type, async_wrapper)
         return self
@@ -299,6 +316,21 @@ class AgentEventManager:
             observer: The AgentStateObserver instance to use
         """
         self._observer = observer
+
+    def __call__(self, event_type: AgentStateEvent) -> EventSubscription:
+        """
+        Get a subscription for a specific event type.
+
+        This allows using the manager directly as a callable:
+        agent.events(AgentStateEvent.TOOL_CALLED).subscribe(callback)
+
+        Args:
+            event_type: The event type to subscribe to
+
+        Returns:
+            An EventSubscription instance for the specified event type
+        """
+        return self.events(event_type)
 
     def events(self, event_type: AgentStateEvent) -> EventSubscription:
         """

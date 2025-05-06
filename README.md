@@ -6,6 +6,44 @@
 
 A custom reactive AI Agent framework that allows for creating reactive agents to carry out tasks using tools. The framework provides a flexible system for creating AI agents that can use different LLM providers (Ollama, Groq) and reflect on their actions and improve iteratively.
 
+## Quick Start
+
+The simplest way to create a reactive agent:
+
+```python
+import asyncio
+from agents import ReactAgent
+from agents.react_agent import ReactAgentConfig
+from tools.decorators import tool
+
+# Define a custom tool
+@tool(description="Get the current weather for a location")
+async def weather_tool(location: str) -> str:
+    # In a real app, this would call a weather API
+    return f"The weather in {location} is sunny and 72°F"
+
+async def main():
+    # Create agent with minimal configuration and custom tools
+    agent = ReactAgent(
+        config=ReactAgentConfig(
+            agent_name="QuickStart Agent",
+            provider_model_name="ollama:qwen2:7b",
+            custom_tools=[weather_tool]
+        )
+    )
+
+    # Run the agent with a task
+    result = await agent.run(
+        initial_task="What's the weather in Tokyo?"
+    )
+    print(result)
+
+    # Always close the agent when done
+    await agent.close()
+
+asyncio.run(main())
+```
+
 ## Overview
 
 The main purpose of this project is to create a custom AI Agent Framework that allows AI Agents driven by Large Language Models (LLMs) to make real-time decisions and take action to solve real-world tasks. Key features include:
@@ -41,8 +79,8 @@ To install and set up this project locally, follow these steps:
 1. Clone the repository:
 
    ```sh
-   git clone https://github.com/yourusername/projectname.git
-   cd projectname
+   git clone https://github.com/tylerjrbuell/reactive-agents
+   cd reactive-agents
    ```
 
 2. Install dependencies using Poetry:
@@ -379,6 +417,174 @@ async def main():
 
 asyncio.run(main())
 ```
+
+### 8. Agent Event Subscription
+
+You can monitor and react to agent lifecycle events in real-time using the event subscription system. The framework provides two main approaches for event subscription:
+
+#### Method 1: Using Specific Event Methods
+
+```python
+import asyncio
+from agents import ReactAgentBuilder
+from context.agent_events import ToolCalledEventData, ToolCompletedEventData
+
+async def main():
+    # Create counters to track events
+    tool_calls = 0
+    successful_tools = 0
+
+    # Define callbacks for specific events
+    def on_tool_called(event: ToolCalledEventData):
+        nonlocal tool_calls
+        tool_calls += 1
+        print(f"Tool #{tool_calls}: {event['tool_name']} called with parameters: {event['parameters']}")
+
+    def on_tool_completed(event: ToolCompletedEventData):
+        nonlocal successful_tools
+        successful_tools += 1
+        print(f"Tool completed: {event['tool_name']} (execution time: {event['execution_time']:.2f}s)")
+        print(f"Result: {event['result']}")
+
+    # Create an agent with event subscriptions
+    agent = await (
+        ReactAgentBuilder()
+        .with_name("Observable Agent")
+        .with_model("ollama:qwen3:4b")
+        .with_mcp_tools(["brave-search"])
+        # Subscribe to events with type-safe callbacks
+        .on_session_started(lambda event: print(f"Session started: {event['session_id']}"))
+        .on_tool_called(on_tool_called)
+        .on_tool_completed(on_tool_completed)
+        .on_iteration_started(lambda event: print(f"Iteration {event['iteration']} started"))
+        .on_final_answer_set(lambda event: print(f"Final answer: {event['answer']}"))
+        .build()
+    )
+
+    try:
+        result = await agent.run("What is the current price of Bitcoin?")
+        print(f"\nSummary:\n- Tool calls: {tool_calls}\n- Successful tools: {successful_tools}")
+        print(f"Final result: {result}")
+    finally:
+        await agent.close()
+
+asyncio.run(main())
+```
+
+#### Method 2: Using Generic with_subscription Method
+
+For a more flexible approach, you can use the generic `with_subscription` method:
+
+```python
+import asyncio
+from agents import ReactAgentBuilder
+from context.agent_observer import AgentStateEvent
+from context.agent_events import ToolCalledEventData, SessionStartedEventData
+
+async def main():
+    # Define callbacks for events
+    def log_session_start(event: SessionStartedEventData):
+        print(f"New session started: {event['session_id']} with task: {event['initial_task']}")
+
+    def log_tool_usage(event: ToolCalledEventData):
+        print(f"Tool called: {event['tool_name']} with parameters: {event['parameters']}")
+
+    # Create an agent with generic event subscriptions
+    agent = await (
+        ReactAgentBuilder()
+        .with_name("Generic Subscription Agent")
+        .with_model("ollama:qwen3:4b")
+        .with_mcp_tools(["brave-search"])
+        # Use the generic subscription method with proper event types
+        .with_subscription(AgentStateEvent.SESSION_STARTED, log_session_start)
+        .with_subscription(AgentStateEvent.TOOL_CALLED, log_tool_usage)
+        # You can mix and match with the specific methods
+        .on_tool_completed(lambda event: print(f"Tool {event['tool_name']} completed"))
+        .build()
+    )
+
+    try:
+        result = await agent.run("Research the latest cryptocurrency trends")
+        print(f"Final result: {result}")
+    finally:
+        await agent.close()
+
+asyncio.run(main())
+```
+
+You can also use the async version for asynchronous callbacks:
+
+```python
+import asyncio
+from agents import ReactAgentBuilder
+from context.agent_observer import AgentStateEvent
+
+async def log_tool_async(event):
+    # Simulate async database logging
+    await asyncio.sleep(0.1)  # Simulate network delay
+    print(f"Async logged: Tool {event['tool_name']} with params {event['parameters']}")
+
+async def main():
+    agent = await (
+        ReactAgentBuilder()
+        .with_name("Async Subscription Agent")
+        .with_model("ollama:qwen3:4b")
+        .with_mcp_tools(["brave-search"])
+        # Use async subscription for async callbacks
+        .with_async_subscription(AgentStateEvent.TOOL_CALLED, log_tool_async)
+        .build()
+    )
+
+    # ... rest of code
+```
+
+#### Available Observable Events
+
+The framework provides the following observable events:
+
+| Event Type             | Description                           | Event Data                                         |
+| ---------------------- | ------------------------------------- | -------------------------------------------------- |
+| `SESSION_STARTED`      | When a new agent session begins       | `session_id`, `initial_task`                       |
+| `SESSION_ENDED`        | When an agent session completes       | `session_id`, `final_status`, `elapsed_time`       |
+| `TASK_STATUS_CHANGED`  | When the task status changes          | `previous_status`, `new_status`, `rescoped_task`   |
+| `ITERATION_STARTED`    | When a new iteration begins           | `iteration`, `max_iterations`                      |
+| `ITERATION_COMPLETED`  | When an iteration completes           | `iteration`, `has_result`, `has_plan`              |
+| `TOOL_CALLED`          | When the agent calls a tool           | `tool_name`, `tool_id`, `parameters`               |
+| `TOOL_COMPLETED`       | When a tool execution completes       | `tool_name`, `tool_id`, `result`, `execution_time` |
+| `TOOL_FAILED`          | When a tool execution fails           | `tool_name`, `tool_id`, `error`, `details`         |
+| `REFLECTION_GENERATED` | When the agent generates a reflection | `reason`, `next_step`, `required_tools`            |
+| `FINAL_ANSWER_SET`     | When the agent sets a final answer    | `answer`                                           |
+| `METRICS_UPDATED`      | When agent metrics are updated        | `metrics`                                          |
+| `ERROR_OCCURRED`       | When an error occurs during execution | `error`, `details`                                 |
+
+#### Supporting Asynchronous Callbacks
+
+For integration with asynchronous code, you can use async callbacks:
+
+```python
+import asyncio
+from agents import ReactAgentBuilder
+import aiofiles
+
+async def log_tool_call(event):
+    async with aiofiles.open("agent_log.txt", "a") as f:
+        await f.write(f"Tool called: {event['tool_name']} with {event['parameters']}\n")
+
+async def main():
+    agent = await (
+        ReactAgentBuilder()
+        .with_name("Async Observable Agent")
+        .with_model("ollama:qwen3:4b")
+        .with_mcp_tools(["brave-search"])
+        # Register async callbacks using the _async suffix methods
+        .on_session_started_async(lambda event: asyncio.create_task(log_agent_session(event)))
+        .on_tool_called_async(log_tool_call)
+        .build()
+    )
+    # ... rest of the code
+```
+
+For more advanced usage and complete type safety, see the [Agent State Observation documentation](docs/README_AGENT_STATE_OBSERVATION.md).
 
 ## Tool Diagnostics and Debugging
 
