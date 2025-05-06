@@ -1,0 +1,104 @@
+"""
+Integration tests for custom tools.
+
+This file tests the integration of custom tools with the ReactAgentBuilder.
+"""
+
+import pytest
+from unittest.mock import patch, MagicMock, AsyncMock
+from agents import ReactAgentBuilder
+from tools.decorators import tool
+from tests.integration.mcp_fixtures import mock_agent_run, model_validation_bypass
+
+
+# Sample custom tools for testing
+@tool(description="Square a number")
+async def square(num: int) -> int:
+    """
+    Square a number
+
+    Args:
+        num: Number to square
+
+    Returns:
+        The squared number
+    """
+    return num * num
+
+
+@tool(description="Generate a greeting message")
+async def greeting(name: str) -> str:
+    """
+    Generate a greeting for a person
+
+    Args:
+        name: Person's name
+
+    Returns:
+        A greeting message
+    """
+    return f"Hello, {name}! Welcome to the integration test."
+
+
+@pytest.mark.asyncio
+async def test_builder_with_custom_tools_fixed(mock_agent_run, model_validation_bypass):
+    """Test the builder integration with custom tools"""
+    # Build agent with custom tools
+    agent = await (
+        ReactAgentBuilder()
+        .with_name("Custom Tools Agent")
+        .with_model("ollama:test:model")
+        .with_custom_tools([square, greeting])
+        .build()
+    )
+
+    # Verify agent was created with correct configuration
+    assert agent.context.agent_name == "Custom Tools Agent"
+
+    # Verify tools were added
+    tool_names = [getattr(tool, "name", str(id(tool))) for tool in agent.context.tools]
+    assert "square" in tool_names
+    assert "greeting" in tool_names
+
+    # Run a task
+    result = await agent.run("Test task")
+    assert result["status"] == "complete"
+    assert result["result"] == "Test successful"
+
+    # Clean up
+    await agent.close()
+
+
+@pytest.mark.asyncio
+async def test_add_custom_tools_to_existing_agent_fixed(
+    mock_agent_run, model_validation_bypass
+):
+    """Test adding custom tools to an existing agent"""
+    # Create a mock agent
+    mock_agent = MagicMock()
+    mock_context = MagicMock()
+    mock_tool_manager = MagicMock()
+
+    # Set up mock context
+    mock_context.tools = []
+    mock_context.tool_manager = mock_tool_manager
+    mock_tool_manager.tools = []
+    mock_agent.context = mock_context
+
+    # Mock the tool signatures generation
+    mock_tool_manager._generate_tool_signatures = MagicMock()
+
+    # Add custom tools to the existing agent
+    updated_agent = await ReactAgentBuilder.add_custom_tools_to_agent(
+        mock_agent, [square, greeting]
+    )
+
+    # Verify custom tools were added
+    assert len(mock_context.tools) == 2
+    assert len(mock_tool_manager.tools) == 2
+
+    # Verify agent returned is the same instance
+    assert updated_agent is mock_agent
+
+    # Verify generate_signatures was called
+    mock_tool_manager._generate_tool_signatures.assert_called_once()
