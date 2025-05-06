@@ -252,12 +252,13 @@ class Agent:
             self.context.session.current_task = task
 
         # Append the user's task message
+        task_nudges_joined = "\n".join(self.context.session.task_nudges)
         self.context.session.messages.append(
             {
                 "role": "user",
                 "content": f"""
                 {task}
-                {"\n".join(self.context.session.task_nudges)}
+                {task_nudges_joined}
                 """,
             }
         )
