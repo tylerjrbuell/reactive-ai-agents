@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "reactive-agents"
-version = "0.2.0"
+version = "0.1.0"
 description = "A custom reactive AI Agent framework for LLM-driven task execution"
 authors = ["Tyler Buell"]
 maintainers = ["Tyler Buell"]
