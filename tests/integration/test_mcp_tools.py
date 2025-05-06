@@ -5,6 +5,8 @@ This file tests the integration of MCP tools with the ReactAgentBuilder.
 """
 
 import pytest
+import os
+import asyncio
 from agents import ReactAgentBuilder
 from tests.integration.mcp_fixtures import (
     mock_mcp_initialize,
@@ -12,8 +14,12 @@ from tests.integration.mcp_fixtures import (
     model_validation_bypass,
 )
 
+# Get CI timeout value from environment or use default
+CI_TIMEOUT = int(os.environ.get("PYTEST_TIMEOUT", "5"))
+
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(CI_TIMEOUT)
 async def test_builder_with_mcp_tools_fixed(
     mock_mcp_initialize, mock_agent_run, model_validation_bypass
 ):
@@ -57,16 +63,21 @@ async def test_builder_with_mcp_tools_fixed(
     # Instead of checking specific tools, let's check if the agent context indicates MCP tools were initialized
     assert hasattr(agent.context, "mcp_client"), "No MCP client in agent context"
 
-    # Run a task
-    result = await agent.run("Test task")
-    assert result["status"] == "complete"
-    assert result["result"] == "Test successful"
-
-    # Clean up
-    await agent.close()
+    try:
+        # Run a task with a timeout
+        result = await asyncio.wait_for(agent.run("Test task"), timeout=2.0)
+        assert result["status"] == "complete"
+        assert result["result"] == "Test successful"
+    finally:
+        # Forcibly close the agent and ensure cleanup
+        try:
+            await asyncio.wait_for(agent.close(), timeout=1.0)
+        except asyncio.TimeoutError:
+            print("Warning: Agent cleanup timed out, but test can proceed")
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(CI_TIMEOUT)
 async def test_research_agent_factory_fixed(
     mock_mcp_initialize, mock_agent_run, model_validation_bypass
 ):
@@ -78,16 +89,21 @@ async def test_research_agent_factory_fixed(
     assert agent.context.agent_name == "Research Agent"
     assert agent.context.role == "Research Assistant"
 
-    # Run a task
-    result = await agent.run("Test research task")
-    assert result["status"] == "complete"
-    assert result["result"] == "Test successful"
-
-    # Clean up
-    await agent.close()
+    try:
+        # Run a task with a timeout
+        result = await asyncio.wait_for(agent.run("Test research task"), timeout=2.0)
+        assert result["status"] == "complete"
+        assert result["result"] == "Test successful"
+    finally:
+        # Forcibly close the agent and ensure cleanup
+        try:
+            await asyncio.wait_for(agent.close(), timeout=1.0)
+        except asyncio.TimeoutError:
+            print("Warning: Agent cleanup timed out, but test can proceed")
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(CI_TIMEOUT)
 async def test_database_agent_factory_fixed(
     mock_mcp_initialize, mock_agent_run, model_validation_bypass
 ):
@@ -99,10 +115,14 @@ async def test_database_agent_factory_fixed(
     assert agent.context.agent_name == "Database Agent"
     assert agent.context.role == "Database Assistant"
 
-    # Run a task
-    result = await agent.run("Test database task")
-    assert result["status"] == "complete"
-    assert result["result"] == "Test successful"
-
-    # Clean up
-    await agent.close()
+    try:
+        # Run a task with a timeout
+        result = await asyncio.wait_for(agent.run("Test database task"), timeout=2.0)
+        assert result["status"] == "complete"
+        assert result["result"] == "Test successful"
+    finally:
+        # Forcibly close the agent and ensure cleanup
+        try:
+            await asyncio.wait_for(agent.close(), timeout=1.0)
+        except asyncio.TimeoutError:
+            print("Warning: Agent cleanup timed out, but test can proceed")

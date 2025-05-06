@@ -29,6 +29,12 @@ jobs:
           # Set environment variables to disable potentially problematic components
           export DISABLE_MCP_CLIENT_SYSTEM_EXIT=1
           export PYTEST_TIMEOUT=60
+          export NO_DOCKER=1
+          export MOCK_ALL_TOOLS=1
+          export MOCK_MCP_CLIENT=1
+          export SKIP_DOCKER_CHECKS=1
+          # Prepare mock environment to ensure Docker isn't used
+          mkdir -p ~/.local/share/mcp/tools/
           # Run tests with a timeout and additional parameters to help with CI environment
           poetry run pytest -v --cov=./ --cov-report=xml --timeout=60 --no-header --tb=native
         timeout-minutes: 5

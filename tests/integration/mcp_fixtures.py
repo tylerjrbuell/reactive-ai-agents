@@ -10,6 +10,39 @@ import os
 from unittest.mock import patch, MagicMock, AsyncMock
 
 
+class SimpleMockMCPClient:
+    """A very simple mock MCPClient that doesn't try to use Docker"""
+
+    def __init__(self, *args, **kwargs):
+        self.initialized = True
+        self._closed = False
+        self._stdio_client = False
+        self._suppress_exit_errors = True
+        # Add mock tool methods
+        for tool_name in ["brave-search", "sqlite", "time", "shell", "file"]:
+            setattr(
+                self,
+                tool_name.replace("-", "_"),
+                AsyncMock(return_value={"result": f"Mocked {tool_name} result"}),
+            )
+
+    async def initialize(self):
+        """Mock initialization that returns self"""
+        return self
+
+    async def close(self):
+        """Mock close method"""
+        self._closed = True
+
+    async def get_tools(self):
+        """Return empty list of tools"""
+        return []
+
+    async def call_tool(self, tool_name, params):
+        """Mock tool calling"""
+        return {"result": f"Mocked {tool_name} result"}
+
+
 @pytest.fixture
 def mock_mcp_initialize():
     """
@@ -21,16 +54,15 @@ def mock_mcp_initialize():
     In CI environment with DISABLE_MCP_CLIENT_SYSTEM_EXIT=1, it uses a completely
     isolated implementation that won't attempt any system calls.
     """
-    # Check if we're in CI with special environment flag
-    disable_system_exit = os.environ.get("DISABLE_MCP_CLIENT_SYSTEM_EXIT") == "1"
-
     # Create a mock client that will be returned
     mock_client = MagicMock()
     mock_client.close = AsyncMock()
 
     # Create additional mocks for CI environment
-    if disable_system_exit:
-        # Create comprehensive mocks for properties that might be accessed
+    if (
+        os.environ.get("DISABLE_MCP_CLIENT_SYSTEM_EXIT") == "1"
+        or os.environ.get("MOCK_MCP_CLIENT") == "1"
+    ):
         mock_client._stdio_client = False
         mock_client._suppress_exit_errors = True
         # Add all known tool methods as AsyncMocks to prevent any AttributeError
@@ -40,6 +72,10 @@ def mock_mcp_initialize():
                 tool_name.replace("-", "_"),
                 AsyncMock(return_value={"result": f"Mocked {tool_name} result"}),
             )
+
+        # Replace the entire MCPClient class with our simple mock
+        patcher = patch("agent_mcp.client.MCPClient", SimpleMockMCPClient)
+        patcher.start()
 
     # Create a proper awaitable mock for initialize
     async def mock_initialize(*args, **kwargs):

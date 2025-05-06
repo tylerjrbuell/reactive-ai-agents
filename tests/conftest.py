@@ -1,15 +1,36 @@
 """
-Shared test fixtures and configuration
+Global pytest configuration and fixtures.
+
+This file configures pytest behavior for all tests in the project.
 """
 
 import pytest
-from tests.mocks import MockMCPClient
+import os
+from unittest.mock import patch
 
 
-@pytest.fixture
-async def mock_mcp_client():
-    """Fixture to create a mock MCP client for testing"""
-    client = MockMCPClient(server_filter=["local"])
-    await client.initialize()
-    yield client
-    await client.close()
+@pytest.fixture(scope="session", autouse=True)
+def mock_docker_environment():
+    """
+    Global fixture to ensure Docker operations are mocked for all tests.
+    """
+    # Only mock if we're in a test environment that requires it
+    if (
+        os.environ.get("DISABLE_MCP_CLIENT_SYSTEM_EXIT") == "1"
+        or os.environ.get("MOCK_MCP_CLIENT") == "1"
+        or os.environ.get("CI") == "true"
+    ):
+
+        # Set environment variables for test mode
+        env_patch = patch.dict(
+            "os.environ",
+            {"CI": "true", "MOCK_MCP_CLIENT": "true", "NO_DOCKER": "1"},
+            clear=False,
+        )
+
+        # Apply patches
+        env_patch.start()
+
+        yield
+    else:
+        yield
