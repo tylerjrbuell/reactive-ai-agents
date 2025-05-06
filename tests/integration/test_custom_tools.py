@@ -5,6 +5,7 @@ This file tests the integration of custom tools with the ReactAgentBuilder.
 """
 
 import pytest
+import os
 from unittest.mock import patch, MagicMock, AsyncMock
 from agents import ReactAgentBuilder
 from tools.decorators import tool
@@ -41,7 +42,12 @@ async def greeting(name: str) -> str:
     return f"Hello, {name}! Welcome to the integration test."
 
 
+# Get CI timeout value from environment or use default
+CI_TIMEOUT = int(os.environ.get("PYTEST_TIMEOUT", "5"))
+
+
 @pytest.mark.asyncio
+@pytest.mark.timeout(CI_TIMEOUT)
 async def test_builder_with_custom_tools_fixed(mock_agent_run, model_validation_bypass):
     """Test the builder integration with custom tools"""
     # Build agent with custom tools
@@ -63,18 +69,19 @@ async def test_builder_with_custom_tools_fixed(mock_agent_run, model_validation_
 
     try:
         # Run a task with a timeout
-        result = await asyncio.wait_for(agent.run("Test task"), timeout=5.0)
+        result = await asyncio.wait_for(agent.run("Test task"), timeout=2.0)
         assert result["status"] == "complete"
         assert result["result"] == "Test successful"
     finally:
         # Forcibly close the agent and ensure cleanup
         try:
-            await asyncio.wait_for(agent.close(), timeout=2.0)
+            await asyncio.wait_for(agent.close(), timeout=1.0)
         except asyncio.TimeoutError:
             print("Warning: Agent cleanup timed out, but test can proceed")
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(CI_TIMEOUT)
 async def test_add_custom_tools_to_existing_agent_fixed(
     mock_agent_run, model_validation_bypass
 ):

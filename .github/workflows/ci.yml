@@ -26,7 +26,12 @@ jobs:
           poetry install
       - name: Run tests
         run: |
-          poetry run pytest -v --cov=./ --cov-report=xml
+          # Set environment variables to disable potentially problematic components
+          export DISABLE_MCP_CLIENT_SYSTEM_EXIT=1
+          export PYTEST_TIMEOUT=60
+          # Run tests with a timeout and additional parameters to help with CI environment
+          poetry run pytest -v --cov=./ --cov-report=xml --timeout=60 --no-header --tb=native
+        timeout-minutes: 5
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v4
         with:
