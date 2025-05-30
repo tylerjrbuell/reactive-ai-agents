@@ -7,7 +7,12 @@ from pydantic import AnyUrl
 from mcp import ClientSession, StdioServerParameters, Tool
 from mcp.client.stdio import stdio_client
 from mcp.types import CallToolResult
-from config.mcp_config import load_server_config, MCPConfig, MCPServerConfig
+from config.mcp_config import (
+    load_server_config,
+    MCPConfig,
+    MCPServerConfig,
+    DockerConfig,
+)
 
 
 class MCPClient:
@@ -15,6 +20,7 @@ class MCPClient:
         self,
         config_file: str = "config/mcp.json",
         server_filter: Optional[List[str]] = None,
+        server_config: Optional[Dict[str, Any]] = None,
     ):
         # Initialize session and client objects
         self.sessions: Dict[str, ClientSession] = {}
@@ -27,6 +33,8 @@ class MCPClient:
         self.server_filter = server_filter
         self.instance_id = str(uuid.uuid4())[:8]
         self.config: Optional[MCPConfig] = None
+        self.config_file = config_file
+        self.server_config = server_config
 
     def _prepare_docker_args(
         self, server_name: str, server_config: MCPServerConfig
@@ -70,7 +78,32 @@ class MCPClient:
 
     async def connect_to_servers(self):
         """Connect to a group of MCP servers with unique container names"""
-        self.config = load_server_config()
+        if self.server_config:
+            # Use provided server configuration
+            servers_dict = {}
+            for server_name, server_info in self.server_config.get(
+                "mcpServers", {}
+            ).items():
+                docker_config = None
+                if "docker" in server_info:
+                    docker_config = DockerConfig(
+                        network=server_info["docker"].get("network"),
+                        extra_mounts=server_info["docker"].get("extra_mounts", []),
+                        extra_env=server_info["docker"].get("extra_env", {}),
+                    )
+
+                servers_dict[server_name] = MCPServerConfig(
+                    command=server_info["command"],
+                    args=server_info.get("args", []),
+                    env=server_info.get("env", {}),
+                    working_dir=server_info.get("working_dir"),
+                    docker=docker_config,
+                    enabled=server_info.get("enabled", True),
+                )
+            self.config = MCPConfig(servers=servers_dict)
+        else:
+            # Load from config file
+            self.config = load_server_config()
 
         for server_name, server_config in self.config.servers.items():
             if self._closed or not server_config.enabled:
