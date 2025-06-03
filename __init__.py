@@ -7,7 +7,7 @@ This framework provides a flexible system for creating AI agents that can:
 - Use tools through a simple decorator-based interface
 """
 
-__version__ = "0.1.0a4"
+__version__ = "0.1.0a5"
 
 import reactive_agents
 
