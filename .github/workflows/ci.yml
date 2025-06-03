@@ -36,7 +36,7 @@ jobs:
           # Prepare mock environment to ensure Docker isn't used
           mkdir -p ~/.local/share/mcp/tools/
           # Create an explicit mock script to run before pytest
-          echo "import tests.ci_mock; print('CI mocks loaded successfully')" > ci_pytest_loader.py
+          echo "import reactive_agents.tests.ci_mock; print('CI mocks loaded successfully')" > ci_pytest_loader.py
           # Run tests with CI-specific mock loader
           poetry run python ci_pytest_loader.py
           poetry run pytest -v --cov=./ --cov-report=xml --timeout=60 --no-header --tb=native -p no:docker
