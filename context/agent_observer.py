@@ -39,6 +39,18 @@ class AgentStateEvent(str, Enum):
     # Error events
     ERROR_OCCURRED = "error_occurred"
 
+    # --- Agent control events (pause/resume/stop/terminate) ---
+    PAUSE_REQUESTED = "pause_requested"
+    PAUSED = "paused"
+    RESUME_REQUESTED = "resume_requested"
+    RESUMED = "resumed"
+    # --- Graceful stop events ---
+    STOP_REQUESTED = "stop_requested"
+    STOPPED = "stopped"
+    # --- Forceful stop events ---
+    TERMINATE_REQUESTED = "terminate_requested"
+    TERMINATED = "terminated"
+
 
 # Define callback type
 ObserverCallback = Callable[[Dict[str, Any]], None]

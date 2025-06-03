@@ -293,7 +293,64 @@ async def main():
 
         examples.append((4, task4, build_agent4, confirmation_callback, 60))
 
-        await run_examples(examples)
+        # Example 5: Demonstrate pause, resume, stop, and terminate
+        task5 = "Get the weather in New York, London, Tokyo, and Sydney, and the price of Bitcoin, Ethereum, Solana, and Cardano."
+
+        async def build_agent5():
+            agent = await (
+                ReactAgentBuilder()
+                .with_name("Pause/Terminate Demo Agent")
+                .with_model(PROVIDER_MODEL)
+                .with_custom_tools([custom_weather_tool, crypto_price_simulator])
+                .with_instructions("Demonstrate pause, resume, stop, and terminate.")
+                .with_log_level(LogLevel.INFO)
+                .build()
+            )
+            # Subscribe to control events
+            agent.on_pause_requested(lambda e: print("[EVENT] Pause requested."))
+            agent.on_paused(lambda e: print("[EVENT] Agent paused."))
+            agent.on_resume_requested(lambda e: print("[EVENT] Resume requested."))
+            agent.on_resumed(lambda e: print("[EVENT] Agent resumed."))
+            agent.on_terminate_requested(
+                lambda e: print("[EVENT] Terminate requested.")
+            )
+            agent.on_terminated(lambda e: print("[EVENT] Agent terminated."))
+            agent.on_stop_requested(lambda e: print("[EVENT] Stop requested."))
+            agent.on_stopped(lambda e: print("[EVENT] Agent stopped (graceful)."))
+            return agent
+
+        async def pause_resume_terminate_demo():
+            print("\n=== Example 5: Pause/Resume/Stop/Terminate Demo ===")
+            agent = await build_agent5()
+            run_task = asyncio.create_task(agent.run(initial_task=task5))
+            await asyncio.sleep(1)  # Let the agent start
+            print("[CONTROL] Pausing agent...")
+            await agent.pause()
+            await asyncio.sleep(12)
+            print("[CONTROL] Resuming agent...")
+            await agent.resume()
+            await asyncio.sleep(2)
+            print("[CONTROL] Stopping agent (graceful)...")
+            await agent.stop()
+            await asyncio.sleep(5)
+            # print("[CONTROL] Terminating agent...")
+            # await agent.terminate()
+            result = await run_task
+            print("\n--- Example 5 Result ---")
+            print(json.dumps(result, indent=4, default=str))
+            print("------------------------")
+            await agent.close()
+
+        # Add Example 5 to the run sequence
+        async def noop_confirmation_callback(*args, **kwargs):
+            print("[CONTROL] Noop confirmation callback called.", args, kwargs)
+            return True
+
+        examples.append((5, task5, build_agent5, noop_confirmation_callback, 30))
+
+        # Run the examples one at a time
+        for example in examples:
+            await run_example(*example)
     except Exception as e:
         print(f"\nAn error occurred in main: {e}")
         traceback.print_exc()
@@ -350,9 +407,9 @@ async def context_managed_main():
 
 if __name__ == "__main__":
     PROVIDER_MODEL = "ollama:cogito:14b"
-    # 👇 Run the basic minimal agent example
-    asyncio.run(legacy_main())
     # 👇 Run the builder pattern examples
     asyncio.run(main())
+    # 👇 Run the basic minimal agent example
+    # asyncio.run(legacy_main())
     # 👇 Run the context managed agent example
-    asyncio.run(context_managed_main())
+    # asyncio.run(context_managed_main())

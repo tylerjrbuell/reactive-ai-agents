@@ -121,6 +121,41 @@ class ErrorOccurredEventData(BaseEventData):
     details: Optional[str]
 
 
+# --- Agent control event data (pause/resume/stop/terminate) ---
+class PauseRequestedEventData(BaseEventData):
+    pass
+
+
+class PausedEventData(BaseEventData):
+    pass
+
+
+class ResumeRequestedEventData(BaseEventData):
+    pass
+
+
+class ResumedEventData(BaseEventData):
+    pass
+
+
+# --- Graceful stop event data ---
+class StopRequestedEventData(BaseEventData):
+    pass
+
+
+class StoppedEventData(BaseEventData):
+    pass
+
+
+# --- Forceful terminate event data ---
+class TerminateRequestedEventData(BaseEventData):
+    pass
+
+
+class TerminatedEventData(BaseEventData):
+    pass
+
+
 # Map event types to their corresponding data types
 EventDataMapping = {
     AgentStateEvent.SESSION_STARTED: SessionStartedEventData,
@@ -135,6 +170,17 @@ EventDataMapping = {
     AgentStateEvent.FINAL_ANSWER_SET: FinalAnswerSetEventData,
     AgentStateEvent.METRICS_UPDATED: MetricsUpdatedEventData,
     AgentStateEvent.ERROR_OCCURRED: ErrorOccurredEventData,
+    # --- Agent control events ---
+    AgentStateEvent.PAUSE_REQUESTED: PauseRequestedEventData,
+    AgentStateEvent.PAUSED: PausedEventData,
+    AgentStateEvent.RESUME_REQUESTED: ResumeRequestedEventData,
+    AgentStateEvent.RESUMED: ResumedEventData,
+    # --- Graceful stop events ---
+    AgentStateEvent.STOP_REQUESTED: StopRequestedEventData,
+    AgentStateEvent.STOPPED: StoppedEventData,
+    # --- Forceful terminate events ---
+    AgentStateEvent.TERMINATE_REQUESTED: TerminateRequestedEventData,
+    AgentStateEvent.TERMINATED: TerminatedEventData,
 }
 
 

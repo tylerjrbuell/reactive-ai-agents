@@ -220,6 +220,13 @@ class ReactAgent(Agent):
         # Initialize event manager for subscription interface
         self._event_manager = AgentEventManager(self.context.state_observer)
 
+        # --- Control state for pause/terminate ---
+        self._paused = False
+        self._pause_event = asyncio.Event()
+        self._pause_event.set()  # Initially not paused
+        self._terminate_requested = False
+        self._stop_requested = False
+
     async def __aenter__(self):
         await self.initialize()
         return self
@@ -434,6 +441,35 @@ class ReactAgent(Agent):
 
             # 4. --- Execution Loop ---
             while self._should_continue():
+                # --- STOP CONTROL ---
+                if self._stop_requested:
+                    self.agent_logger.info(
+                        "Stop requested. Will stop after this iteration."
+                    )
+                    # Let the current step finish, then break after iteration
+                # --- END STOP CONTROL ---
+
+                # --- PAUSE/TERMINATE CONTROL ---
+                if self._terminate_requested:
+                    self.agent_logger.info("Terminate requested. Exiting run loop.")
+                    self.context.emit_event(
+                        AgentStateEvent.TERMINATED,
+                        {"message": "Agent terminated by user request."},
+                    )
+                    self.context.session.task_status = TaskStatus.CANCELLED
+                    break
+                if self._paused:
+                    self.agent_logger.info("Agent paused. Waiting for resume...")
+                    self.context.emit_event(
+                        AgentStateEvent.PAUSED, {"message": "Agent is now paused."}
+                    )
+                    await self._pause_event.wait()
+                    self.agent_logger.info("Agent resumed from pause.")
+                    self.context.emit_event(
+                        AgentStateEvent.RESUMED, {"message": "Agent resumed by user."}
+                    )
+                # --- END PAUSE/TERMINATE CONTROL ---
+
                 if cancellation_event and cancellation_event.is_set():
                     self.agent_logger.info("Task execution cancelled by user.")
                     self.context.session.task_status = TaskStatus.CANCELLED
@@ -669,6 +705,18 @@ class ReactAgent(Agent):
 
                         break  # Exit loop
                 # --- End Inner try/except ---
+
+                # If stop was requested, emit STOPPED and break after this iteration
+                if self._stop_requested:
+                    self.agent_logger.info(
+                        "Graceful stop: emitting STOPPED and breaking loop."
+                    )
+                    self.context.emit_event(
+                        AgentStateEvent.STOPPED,
+                        {"message": "Agent stopped gracefully by user request."},
+                    )
+                    self.context.session.task_status = TaskStatus.CANCELLED
+                    break
             # --- End While Loop ---
 
             # 5. --- Determine Final Status After Loop ---
@@ -1479,7 +1527,10 @@ class ReactAgent(Agent):
 
         # --- 1. Think/Act Step ---
         self.agent_logger.info("🧠 Thinking/Acting...")
-        think_act_result_dict = await super()._run_task(task=task)
+        # Use the robust await helper for immediate pause/terminate
+        think_act_result_dict = await self._await_with_control(
+            super()._run_task(task=task)
+        )
         last_content = None
         if (
             think_act_result_dict
@@ -1540,8 +1591,15 @@ class ReactAgent(Agent):
         last_reflection = None
         if self.context.reflect_enabled:
             if self.context.reflection_manager:
-                reflection = await self.context.reflection_manager.generate_reflection(
-                    think_act_result_dict
+                # Ensure the argument is a dict or None
+                reflection_input = think_act_result_dict
+                if isinstance(reflection_input, str):
+                    reflection_input = {"message": {"content": reflection_input}}
+                # Use the robust await helper for immediate pause/terminate
+                reflection = await self._await_with_control(
+                    self.context.reflection_manager.generate_reflection(
+                        reflection_input
+                    )
                 )
                 if reflection:
                     last_reflection = reflection
@@ -1608,6 +1666,31 @@ class ReactAgent(Agent):
         # Return both the last content generated during think/act and the derived plan
         # Use session final_answer
         return self.context.session.final_answer or last_content, plan
+
+    async def _await_with_control(self, coro):
+        """Await a coroutine, handling pause/terminate immediately after completion."""
+        self._current_async_task = asyncio.create_task(coro)
+        try:
+            result = await self._current_async_task
+        except asyncio.CancelledError:
+            # Handle cancellation if needed
+            raise
+        finally:
+            self._current_async_task = None
+        if self._terminate_requested:
+            self.agent_logger.info("Terminate requested during await. Exiting.")
+            raise Exception("Terminated")
+        if self._paused:
+            self.agent_logger.info("Agent paused after await. Waiting for resume...")
+            self.context.emit_event(
+                AgentStateEvent.PAUSED, {"message": "Agent is now paused."}
+            )
+            await self._pause_event.wait()
+            self.agent_logger.info("Agent resumed from pause.")
+            self.context.emit_event(
+                AgentStateEvent.RESUMED, {"message": "Agent resumed by user."}
+            )
+        return result
 
     # === Event Subscription Interface ===
 
@@ -1804,3 +1887,151 @@ class ReactAgent(Agent):
             The event subscription for method chaining
         """
         return self.events.on_error_occurred().subscribe(callback)
+
+    # --- Agent Control Methods ---
+    async def pause(self):
+        """Request the agent to pause at the next safe point."""
+        if not self._paused:
+            self._paused = True
+            self._pause_event.clear()
+            self.context.emit_event(
+                AgentStateEvent.PAUSE_REQUESTED, {"message": "Pause requested by user."}
+            )
+
+    async def resume(self):
+        """Resume the agent if it is paused."""
+        if self._paused:
+            self._paused = False
+            self._pause_event.set()
+            self.context.emit_event(
+                AgentStateEvent.RESUME_REQUESTED,
+                {"message": "Resume requested by user."},
+            )
+
+    async def terminate(self):
+        """Request the agent to terminate as soon as possible."""
+        if not self._terminate_requested:
+            self._terminate_requested = True
+            self.context.emit_event(
+                AgentStateEvent.TERMINATE_REQUESTED,
+                {"message": "Terminate requested by user."},
+            )
+            # Cancel any in-progress async task for immediate effect
+            if hasattr(self, "_current_async_task") and self._current_async_task:
+                self._current_async_task.cancel()
+            self._pause_event.set()  # Wake up if paused
+
+    # --- Agent Control Event Subscriptions ---
+    def on_pause_requested(self, callback):
+        """
+        Subscribe to pause requested events.
+
+        Args:
+            callback: Function to call when pause is requested
+                      Receives PauseRequestedEventData
+
+        Returns:
+            The event subscription for method chaining
+        """
+        return self.events(AgentStateEvent.PAUSE_REQUESTED).subscribe(callback)
+
+    def on_paused(self, callback):
+        """
+        Subscribe to paused events.
+
+        Args:
+            callback: Function to call when agent is paused
+                      Receives PausedEventData
+
+        Returns:
+            The event subscription for method chaining
+        """
+        return self.events(AgentStateEvent.PAUSED).subscribe(callback)
+
+    def on_resume_requested(self, callback):
+        """
+        Subscribe to resume requested events.
+
+        Args:
+            callback: Function to call when resume is requested
+                      Receives ResumeRequestedEventData
+
+        Returns:
+            The event subscription for method chaining
+        """
+        return self.events(AgentStateEvent.RESUME_REQUESTED).subscribe(callback)
+
+    def on_resumed(self, callback):
+        """
+        Subscribe to resumed events.
+
+        Args:
+            callback: Function to call when agent is resumed
+                      Receives ResumedEventData
+
+        Returns:
+            The event subscription for method chaining
+        """
+        return self.events(AgentStateEvent.RESUMED).subscribe(callback)
+
+    def on_terminate_requested(self, callback):
+        """
+        Subscribe to terminate requested events.
+
+        Args:
+            callback: Function to call when terminate is requested
+                      Receives TerminateRequestedEventData
+
+        Returns:
+            The event subscription for method chaining
+        """
+        return self.events(AgentStateEvent.TERMINATE_REQUESTED).subscribe(callback)
+
+    def on_terminated(self, callback):
+        """
+        Subscribe to terminated events.
+
+        Args:
+            callback: Function to call when agent is terminated
+                      Receives TerminatedEventData
+
+        Returns:
+            The event subscription for method chaining
+        """
+        return self.events(AgentStateEvent.TERMINATED).subscribe(callback)
+
+    def on_stop_requested(self, callback):
+        """
+        Subscribe to stop requested events.
+
+        Args:
+            callback: Function to call when stop is requested
+                      Receives StopRequestedEventData
+
+        Returns:
+            The event subscription for method chaining
+        """
+        return self.events(AgentStateEvent.STOP_REQUESTED).subscribe(callback)
+
+    def on_stopped(self, callback):
+        """
+        Subscribe to stopped events.
+
+        Args:
+            callback: Function to call when agent is stopped
+                      Receives StoppedEventData
+
+        Returns:
+            The event subscription for method chaining
+        """
+        return self.events(AgentStateEvent.STOPPED).subscribe(callback)
+
+    async def stop(self):
+        """Request the agent to gracefully stop after the current step."""
+        if not self._stop_requested:
+            self._stop_requested = True
+            self.context.emit_event(
+                AgentStateEvent.STOP_REQUESTED,
+                {"message": "Stop requested by user (graceful)."},
+            )
+            self._pause_event.set()  # Wake up if paused
