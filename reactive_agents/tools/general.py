@@ -1,9 +1,9 @@
 from typing import Any, Dict, List
-from tools.decorators import tool
+from reactive_agents.tools.decorators import tool
 from bs4 import BeautifulSoup
 import ollama
-from agents.react_agent import ReactAgent
-from agent_mcp.client import MCPClient
+from reactive_agents.agents.react_agent import ReactAgent
+from reactive_agents.agent_mcp.client import MCPClient
 import aiohttp
 import requests
 import fake_useragent
@@ -12,7 +12,6 @@ import os
 import requests
 import shutil
 import sqlite3
-from pydantic import BaseModel
 from markitdown import MarkItDown
 import json
 

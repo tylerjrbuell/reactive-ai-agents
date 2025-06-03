@@ -6,10 +6,8 @@ or container operations by replacing key components with mock implementations.
 """
 
 import os
-import sys
 from unittest.mock import patch, MagicMock, AsyncMock
 from typing import Dict, Any, Optional, List
-from reactive_agents.agent_mcp.client import MCPClient
 
 
 def create_mock_mcp_response(tool_name: str, result: Any = None) -> Dict[str, Any]:

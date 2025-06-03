@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 from contextlib import AsyncExitStack
 
 if TYPE_CHECKING:
-    from agents.react_agent import ReactAgent
-    from agent_mcp.client import MCPClient
+    from reactive_agents.agents.react_agent import ReactAgent
+    from reactive_agents.agent_mcp.client import MCPClient
 
 
 @dataclass
@@ -89,8 +89,8 @@ class Workflow:
         self, agent_config: AgentConfig, dependencies: List[str]
     ) -> ReactAgent:
         """Create an agent instance from configuration"""
-        from agents.react_agent import ReactAgent  # Import at runtime
-        from agent_mcp.client import MCPClient  # Import at runtime
+        from reactive_agents.agents.react_agent import ReactAgent  # Import at runtime
+        from reactive_agents.agent_mcp.client import MCPClient  # Import at runtime
 
         # Initialize agent's context in the workflow context if it doesn't exist
         if agent_config.role not in self._workflow_context:
