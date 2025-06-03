@@ -983,7 +983,7 @@ class ReactAgentBuilder:
         # Create the config and agent
         try:
             agent_config = ReactAgentConfig(**self._config)
-            agent = ReactAgent(config=agent_config)
+            agent = await ReactAgent(config=agent_config).initialize()
 
             # Post-initialization hook for custom tools
             if hasattr(agent, "context"):
@@ -1030,59 +1030,6 @@ class ReactAgentBuilder:
                         agent.context.state_observer.register_async_callback(
                             event_type, callback
                         )
-
-            # Ensure the mcp_client reference is properly shared
-            if self._mcp_client is not None:
-                # Store a reference to the current task
-                creation_task = asyncio.current_task()
-
-                # Add a custom close method to the agent to handle MCPClient cleanup properly
-                original_close = agent.close
-
-                async def enhanced_close():
-                    try:
-                        # Make sure we're in the right task context for MCPClient cleanup
-                        current_task = asyncio.current_task()
-                        client = getattr(agent.context, "mcp_client", None)
-
-                        if client:
-                            # Always set suppression flags to avoid errors during shutdown
-                            if (
-                                hasattr(client, "_stdio_client")
-                                and client._stdio_client
-                            ):
-                                client._suppress_exit_errors = True
-
-                            try:
-                                # Detach the MCPClient from the agent context before closing
-                                # to prevent cancel scope issues
-                                detached_client = client
-                                agent.context.mcp_client = None
-
-                                # Close with a timeout to prevent hanging
-                                try:
-                                    await asyncio.wait_for(
-                                        detached_client.close(), timeout=1.0
-                                    )
-                                except (asyncio.TimeoutError, Exception) as e:
-                                    # Ignore cleanup errors, we've already detached the client
-                                    pass
-                            except Exception:
-                                # If we encounter any issues, just detach the client
-                                agent.context.mcp_client = None
-
-                        # Call the original close method with a timeout
-                        try:
-                            await asyncio.wait_for(original_close(), timeout=2.0)
-                        except asyncio.TimeoutError:
-                            # Log but continue if original close times out
-                            pass
-                    except Exception as e:
-                        # Ensure we don't propagate errors during cleanup
-                        pass
-
-                # Replace the close method
-                agent.close = enhanced_close
 
             return agent
         except Exception as e:

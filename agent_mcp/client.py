@@ -41,26 +41,28 @@ class MCPClient:
     ) -> List[str]:
         """Prepare Docker arguments with any custom configuration"""
         args = list(server_config.args)  # Convert to list to allow modification
-
-        if server_config.docker:
+        if server_config.command == "docker":
             # Modify container name for better identification
             if "--name" in args:
                 name_index = args.index("--name") + 1
                 if name_index < len(args):
-                    args[name_index] = f"{args[name_index]}-{self.instance_id}"
+                    args[name_index] = f"{server_name}-{self.instance_id}"
+            else:
+                args.insert(args.index("run") + 1, "--name")
+                args.insert(args.index("run") + 2, f"{server_name}-{self.instance_id}")
 
-            # Add network if specified
-            if server_config.docker.network:
-                args.extend(["--network", server_config.docker.network])
+            if server_config.docker:
+                # Add network if specified
+                if server_config.docker.network:
+                    args.extend(["--network", server_config.docker.network])
 
-            # Add any extra mount points
-            for mount in server_config.docker.extra_mounts:
-                args.extend(["--mount", mount])
+                # Add any extra mount points
+                for mount in server_config.docker.extra_mounts:
+                    args.extend(["--mount", mount])
 
-            # Add any extra environment variables
-            for key, value in server_config.docker.extra_env.items():
-                args.extend(["-e", f"{key}={value}"])
-
+                # Add any extra environment variables
+                for key, value in server_config.docker.extra_env.items():
+                    args.extend(["-e", f"{key}={value}"])
         return args
 
     def _prepare_environment(self, server_config: MCPServerConfig) -> Dict[str, str]:
@@ -232,7 +234,6 @@ class MCPClient:
         """Clean up all resources"""
         if not self._closed:
             self._closed = True
-
             # Stop Docker containers first
             if self.config:
                 for server_name, server_config in self.config.servers.items():
@@ -242,7 +243,8 @@ class MCPClient:
                             name_index = server_config.args.index("--name") + 1
                             if name_index < len(server_config.args):
                                 container_name = f"{server_config.args[name_index]}-{self.instance_id}"
-
+                        else:
+                            container_name = f"{server_name}-{self.instance_id}"
                         if container_name:
                             try:
                                 import subprocess
@@ -264,7 +266,7 @@ class MCPClient:
 
             # Close the exit stack
             try:
-                await asyncio.wait_for(self.exit_stack.aclose(), timeout=5)
+                await self.exit_stack.aclose()
             except asyncio.TimeoutError:
                 print("MCPClient cleanup timed out after 5 seconds")
             except Exception as e:

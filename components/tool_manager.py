@@ -101,8 +101,6 @@ class ToolManager(BaseModel):
 
     def __init__(self, **data):
         super().__init__(**data)
-        # Initialize tools based on context (MCP or local)
-        self._initialize_tools()
         # Set config from context
         self.enable_caching = self.context.enable_caching
         self.cache_ttl = self.context.cache_ttl
@@ -128,7 +126,7 @@ class ToolManager(BaseModel):
         assert self.context.model_provider is not None
         return self.context.model_provider
 
-    def _initialize_tools(self):
+    async def _initialize_tools(self, attempts: int = 0):
         """Populates tools and signatures from MCP client or local list."""
         if self.context.mcp_client:
             # Ensure MCP client tools are loaded (might need await if not already done)
@@ -156,7 +154,21 @@ class ToolManager(BaseModel):
             ]
             self.agent_logger.info(f"Initialized {len(self.tools)} local tools.")
         else:
-            self.agent_logger.info("No MCP client or local tools provided.")
+            # No tools provided
+            MAX_ATTEMPTS = 3
+            PAUSE = 2
+            self.agent_logger.info(
+                "No MCP client or local tools provided retrying in 2 seconds..."
+            )
+            await asyncio.sleep(PAUSE)
+            attempts += 1
+            if attempts > MAX_ATTEMPTS:
+                self.agent_logger.warning(
+                    "Failed to initialize tools after multiple attempts."
+                )
+                return False
+            # Try again
+            await self._initialize_tools(attempts=attempts)
 
         # --- Inject final_answer tool if missing ---
         has_final_answer = any(tool.name == "final_answer" for tool in self.tools)
@@ -164,14 +176,14 @@ class ToolManager(BaseModel):
             self.tool_logger.info("Injecting internal 'final_answer' tool.")
             internal_final_answer_tool = FinalAnswerTool(context=self.context)
             self.tools.append(internal_final_answer_tool)
-        # --- End injection ---
 
         # Generate signatures AFTER all tools (including injected ones) are loaded
-        self._generate_tool_signatures()
-
-        self.tool_logger.info(
-            f"ToolManager initialized with {len(self.tools)} total tools: {', '.join([tool.name for tool in self.tools])}"
-        )
+        if not self.tool_signatures:
+            self._generate_tool_signatures()
+            self.tool_logger.info(
+                f"ToolManager initialized with {len(self.tools)} total tool(s): \
+                {', '.join([tool.name for tool in self.tools])}"
+            )
 
     def get_tool(self, tool_name: str) -> Optional[ToolProtocol]:
         """Finds a tool by name."""

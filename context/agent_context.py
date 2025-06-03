@@ -264,23 +264,10 @@ class AgentContext(BaseModel):
         """Safely close resources like the MCP client."""
         assert self.agent_logger is not None
         self.agent_logger.info(f"Closing AgentContext for '{self.agent_name}'...")
-        if self.mcp_client:
-            try:
-                # Use the safe close method from the original Agent class logic
-                loop = asyncio.get_running_loop()
-                close_task = loop.create_task(self.mcp_client.close())
-                await asyncio.wait_for(close_task, timeout=5.0)
-                self.agent_logger.info("MCP client closed successfully.")
-            except asyncio.TimeoutError:
-                self.agent_logger.warning("MCP client close timed out.")
-            except asyncio.CancelledError:
-                self.agent_logger.warning("MCP client closure cancelled.")
-                # Consider detaching if necessary, similar to original logic
-            except Exception as e:
-                self.agent_logger.error(f"Error closing MCP client: {e}")
-            finally:
-                self.mcp_client = None
-        self.agent_logger.info(f"AgentContext for '{self.agent_name}' closed.")
+        # TODO: Add any other closing responsibilities for context
+        self.agent_logger.info(
+            f"AgentContext for '{self.agent_name}' closed successfully."
+        )
 
     # Convenience accessors (optional, direct access context.manager is also fine)
     def get_tool_signatures(self) -> List[Dict[str, Any]]:

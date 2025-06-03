@@ -31,6 +31,8 @@ async def main():
             custom_tools=[weather_tool]
         )
     )
+    # Initialize the agent (required for MCP tools and full setup)
+    await agent.initialize()
 
     # Run the agent with a task
     result = await agent.run(
@@ -43,6 +45,42 @@ async def main():
 
 asyncio.run(main())
 ```
+
+## Context Management Support (New)
+
+`ReactAgent` now supports Python's async context management protocol, making resource management even easier. This is the recommended way to use agents when possible:
+
+```python
+import asyncio
+from agents import ReactAgent
+from agents.react_agent import ReactAgentConfig
+from tools.decorators import tool
+
+@tool(description="Get the current weather for a location")
+async def weather_tool(location: str) -> str:
+    return f"The weather in {location} is sunny and 72°F"
+
+async def main():
+    async with ReactAgent(
+        config=ReactAgentConfig(
+            agent_name="Context Managed Agent",
+            provider_model_name="ollama:qwen2:7b",
+            custom_tools=[weather_tool]
+        )
+    ) as agent:
+        # The agent is automatically initialized and will be closed when the block exits
+        result = await agent.run(
+            initial_task="What's the weather in Tokyo?"
+        )
+        print(result)
+
+asyncio.run(main())
+```
+
+**Key Points:**
+
+- Use `await agent.initialize()` if you instantiate the agent directly and want to manage its lifecycle manually.
+- Use `async with ReactAgent(...) as agent:` for automatic initialization and cleanup.
 
 ## Overview
 
@@ -408,6 +446,7 @@ async def main():
 
     # Create the agent
     agent = ReactAgent(config=config)
+    await agent.initialize()  # <-- Required for full setup
 
     try:
         result = await agent.run("Research the price of Bitcoin")

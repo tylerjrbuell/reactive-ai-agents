@@ -44,6 +44,9 @@ class ReactAgentConfig(BaseModel):
     mcp_client: Optional[MCPClient] = Field(
         default=None, description="An initialized MCPClient instance."
     )
+    mcp_config: Optional[Any] = Field(
+        default=None, description="MCP config dict or file path to use for MCPClient."
+    )
     min_completion_score: Optional[float] = Field(
         default=1.0,
         ge=0.0,
@@ -212,9 +215,37 @@ class ReactAgent(Agent):
         super().__init__(context)
         # Store the config for potential reference, though context holds the state
         self.config = config
+        self._closed = False
 
         # Initialize event manager for subscription interface
         self._event_manager = AgentEventManager(self.context.state_observer)
+
+    async def __aenter__(self):
+        await self.initialize()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.close()
+
+    async def close(self):
+        """Closes the agent's context and associated resources."""
+        await self.context.close()
+        if self.context.mcp_client is not None:
+            await self.context.mcp_client.close()
+
+    async def initialize(self) -> ReactAgent:
+        """Initialize the agent's context and associated resources."""
+        try:
+            if self.config.mcp_config:
+                self.context.mcp_client = await MCPClient(
+                    server_config=self.config.mcp_config
+                ).initialize()
+            if self.context.tool_manager:
+                await self.context.tool_manager._initialize_tools()
+            return self
+        except Exception as e:
+            print("Error initializing MCPClient:", e)
+            raise e
 
     def _process_custom_tools(self, tools):
         """
@@ -280,6 +311,7 @@ class ReactAgent(Agent):
         Returns:
             A dictionary containing the final status, result, and other execution details.
         """
+
         # --- Use initial_task from run() if provided, otherwise context cannot provide it anymore ---
         # Config might hold an initial task if provided at agent init, but run() arg takes precedence.
         current_initial_task = initial_task
@@ -878,14 +910,6 @@ class ReactAgent(Agent):
         # --- End Finally Block ---
 
         return final_result_package
-
-    async def close(self):
-        """Closes the agent's context and associated resources."""
-        self.agent_logger.info(
-            f"Closing context for agent '{self.context.agent_name}'..."
-        )
-        await self.context.close()
-        self.agent_logger.info(f"Context closed for agent '{self.context.agent_name}'.")
 
     def _prepare_final_result(
         self,

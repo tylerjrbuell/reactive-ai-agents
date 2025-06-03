@@ -73,6 +73,11 @@ async def crypto_price_simulator(coin: str) -> str:
         return f"Price data for {coin} not available. Try Bitcoin, Ethereum, Solana, or Cardano."
 
 
+async def run_examples(examples):
+    # Run each example sequentially with a timeout
+    await asyncio.gather(*(run_example(*example) for example in examples))
+
+
 async def run_example(
     example_num: int,
     task: str,
@@ -101,7 +106,6 @@ async def run_example(
 
             # Build the agent
             agent = await builder_fn()
-
             # Run the task
             result = await agent.run(initial_task=task)
 
@@ -190,7 +194,7 @@ async def main():
             return await (
                 ReactAgentBuilder()
                 .with_name("MCP Tools Agent")
-                .with_model("ollama:cogito:14b")
+                .with_model(PROVIDER_MODEL)
                 .with_mcp_tools(["time", "brave-search"])
                 .with_instructions("Answer questions using MCP tools.")
                 .with_confirmation(confirmation_callback, confirmation_config)
@@ -208,7 +212,7 @@ async def main():
             builder = (
                 ReactAgentBuilder()
                 .with_name("Custom Tools Agent")
-                .with_model("ollama:cogito:14b")
+                .with_model(PROVIDER_MODEL)
                 .with_custom_tools([custom_weather_tool, crypto_price_simulator])
                 .with_instructions("Answer questions using custom tools.")
                 .with_confirmation(confirmation_callback, confirmation_config)
@@ -232,7 +236,7 @@ async def main():
             builder = (
                 ReactAgentBuilder()
                 .with_name("Hybrid Tools Agent")
-                .with_model("ollama:cogito:14b")
+                .with_model(PROVIDER_MODEL)
                 .with_tools(
                     mcp_tools=["time"],
                     custom_tools=[custom_weather_tool, crypto_price_simulator],
@@ -280,7 +284,7 @@ async def main():
 
         async def build_agent4():
             # Start with a research agent but add a custom crypto price tool
-            agent = await ReactAgentBuilder.research_agent(model="ollama:cogito:14b")
+            agent = await ReactAgentBuilder.research_agent(model=PROVIDER_MODEL)
 
             # Use the new utility method to add the custom tool
             return await ReactAgentBuilder.add_custom_tools_to_agent(
@@ -289,17 +293,7 @@ async def main():
 
         examples.append((4, task4, build_agent4, confirmation_callback, 60))
 
-        # Run each example sequentially with a timeout
-        for example in examples:
-            try:
-                await run_example(*example)
-                # Add a small delay between examples to ensure clean separation
-                await asyncio.sleep(1)
-            except Exception as e:
-                print(f"\nError running example {example[0]}: {e}")
-                # Continue with next example even if one fails
-                continue
-
+        await run_examples(examples)
     except Exception as e:
         print(f"\nAn error occurred in main: {e}")
         traceback.print_exc()
@@ -311,25 +305,54 @@ async def legacy_main():
 
     This demonstrates creating a minimal ReactAgent using ReactAgentConfig with custom tools.
     """
-    # Create agent with required parameters and custom tools
-    agent = ReactAgent(
+    mcp_config = {
+        "mcpServers": {
+            "duckduckgo": {
+                "args": ["run", "-i", "--rm", "mcp/duckduckgo"],
+                "command": "docker",
+            }
+        }
+    }
+    agent = await ReactAgent(
         config=ReactAgentConfig(
             agent_name="Legacy Agent",
-            provider_model_name="ollama:cogito:14b",
-            custom_tools=[custom_weather_tool, crypto_price_simulator],
+            provider_model_name=PROVIDER_MODEL,
+            mcp_config=mcp_config,
         )
-    )
-
-    # Run the agent with the task specified at runtime
-    result = await agent.run(
-        initial_task="What's the weather in Tokyo and what's the price of Bitcoin?"
-    )
+    ).initialize()
+    result = await agent.run(initial_task="When did Chris Cornell die?")
     print(result)
+    await agent.close()
+
+
+async def context_managed_main():
+
+    mcp_config = {
+        "mcpServers": {
+            "time": {
+                "args": ["run", "-i", "--rm", "mcp/time"],
+                "command": "docker",
+            }
+        }
+    }
+    #  Create agent with required parameters and custom tools
+    async with ReactAgent(
+        config=ReactAgentConfig(
+            agent_name="Context Managed Agent",
+            provider_model_name=PROVIDER_MODEL,
+            mcp_config=mcp_config,
+        )
+    ) as agent:
+        # Run the agent with the task specified at runtime
+        result = await agent.run(initial_task="What is the current time in New York?")
+        print(result)
 
 
 if __name__ == "__main__":
-    # Set a reasonable timeout and handle cleanup properly
+    PROVIDER_MODEL = "ollama:cogito:14b"
     # 👇 Run the basic minimal agent example
     asyncio.run(legacy_main())
     # 👇 Run the builder pattern examples
     asyncio.run(main())
+    # 👇 Run the context managed agent example
+    asyncio.run(context_managed_main())
