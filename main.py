@@ -7,10 +7,10 @@ import traceback
 from typing import Any, Dict, Optional, Callable, Awaitable, List, Tuple
 from pydantic import PydanticDeprecatedSince211
 
-from agents import ReactAgent, ReactAgentBuilder
-from agents.builders import ConfirmationConfig, LogLevel
-from agents.react_agent import ReactAgentConfig
-from tools.decorators import tool
+from reactive_agents.agents import ReactAgent, ReactAgentBuilder
+from reactive_agents.agents.builders import ConfirmationConfig, LogLevel
+from reactive_agents.agents.react_agent import ReactAgentConfig
+from reactive_agents.tools.decorators import tool
 
 warnings.simplefilter("ignore", ResourceWarning)
 warnings.filterwarnings("ignore", category=PydanticDeprecatedSince211)

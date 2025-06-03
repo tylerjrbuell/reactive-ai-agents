@@ -10,20 +10,7 @@ setup(
     description="A custom reactive AI Agent framework for LLM-driven task execution",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    packages=find_packages(
-        include=[
-            "agents*",
-            "model_providers*",
-            "tools*",
-            "prompts*",
-            "loggers*",
-            "config*",
-            "agent_mcp*",
-            "context*",
-            "common*",
-            "components*",
-        ]
-    ),
+    packages=find_packages(include=["reactive_agents", "reactive_agents.*"]),
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",

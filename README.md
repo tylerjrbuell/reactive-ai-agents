@@ -8,13 +8,12 @@ A custom reactive AI Agent framework that allows for creating reactive agents to
 
 ## Quick Start
 
-The simplest way to create a reactive agent:
+The simplest way to create a reactive agent using the recommended Builder pattern:
 
 ```python
 import asyncio
-from agents import ReactAgent
-from agents.react_agent import ReactAgentConfig
-from tools.decorators import tool
+from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.tools.decorators import tool
 
 # Define a custom tool
 @tool(description="Get the current weather for a location")
@@ -23,16 +22,16 @@ async def weather_tool(location: str) -> str:
     return f"The weather in {location} is sunny and 72°F"
 
 async def main():
-    # Create agent with minimal configuration and custom tools
-    agent = ReactAgent(
-        config=ReactAgentConfig(
-            agent_name="QuickStart Agent",
-            provider_model_name="ollama:qwen2:7b",
-            custom_tools=[weather_tool]
-        )
+    # Build agent with minimal configuration and custom tools
+    agent = await (
+        ReactAgentBuilder()
+        .with_name("QuickStart Agent")
+        .with_model("ollama:qwen2:7b")
+        .with_custom_tools([weather_tool])
+        .build()
     )
-    # Initialize the agent (required for MCP tools and full setup)
-    await agent.initialize()
+
+    # Initialize the agent (done by .build() when using the builder)
 
     # Run the agent with a task
     result = await agent.run(
@@ -48,26 +47,19 @@ asyncio.run(main())
 
 ## Context Management Support (New)
 
-`ReactAgent` now supports Python's async context management protocol, making resource management even easier. This is the recommended way to use agents when possible:
+`ReactAgentBuilder` and the resulting agent instances support Python's async context management protocol, making resource management even easier. This is the recommended way to use agents when possible:
 
 ```python
 import asyncio
-from agents import ReactAgent
-from agents.react_agent import ReactAgentConfig
-from tools.decorators import tool
+from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.tools.decorators import tool
 
 @tool(description="Get the current weather for a location")
 async def weather_tool(location: str) -> str:
     return f"The weather in {location} is sunny and 72°F"
 
 async def main():
-    async with ReactAgent(
-        config=ReactAgentConfig(
-            agent_name="Context Managed Agent",
-            provider_model_name="ollama:qwen2:7b",
-            custom_tools=[weather_tool]
-        )
-    ) as agent:
+    async with ReactAgentBuilder().with_name("Context Managed Agent").with_model("ollama:qwen2:7b").with_custom_tools([weather_tool]).build() as agent:
         # The agent is automatically initialized and will be closed when the block exits
         result = await agent.run(
             initial_task="What's the weather in Tokyo?"
@@ -79,8 +71,8 @@ asyncio.run(main())
 
 **Key Points:**
 
-- Use `await agent.initialize()` if you instantiate the agent directly and want to manage its lifecycle manually.
-- Use `async with ReactAgent(...) as agent:` for automatic initialization and cleanup.
+- Use the `ReactAgentBuilder`'s `.build()` method, preferably within an `async with` block, for automatic initialization and cleanup.
+- If you need to manage the agent lifecycle manually after building (less recommended), remember to `await agent.close()` when done.
 
 ## Overview
 
@@ -209,7 +201,7 @@ For beginners or quick testing, use the `quick_create_agent` function:
 
 ```python
 import asyncio
-from agents import quick_create_agent
+from reactive_agents.agents import quick_create_agent
 
 async def main():
     # Create and run an agent in a single line
@@ -230,8 +222,8 @@ For most use cases, use the `ReactAgentBuilder` class with its fluent interface:
 
 ```python
 import asyncio
-from agents import ReactAgentBuilder
-from agents.builders import ConfirmationConfig
+from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.agents.builders import ConfirmationConfig
 
 async def main():
     # Create a confirmation callback for interactive use
@@ -275,7 +267,7 @@ For common use cases, use the factory methods:
 
 ```python
 import asyncio
-from agents import ReactAgentBuilder
+from reactive_agents.agents import ReactAgentBuilder
 
 async def main():
     # Create a specialized research agent
@@ -305,8 +297,8 @@ You can create and use custom tools with the `@tool()` decorator:
 
 ```python
 import asyncio
-from agents import ReactAgentBuilder
-from tools.decorators import tool
+from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.tools.decorators import tool
 
 # Define a custom tool
 @tool(description="Get the current weather for a location")
@@ -348,8 +340,8 @@ You can combine MCP tools and custom tools in a single agent:
 
 ```python
 import asyncio
-from agents import ReactAgentBuilder
-from tools.decorators import tool
+from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.tools.decorators import tool
 
 @tool(description="Get cryptocurrency price information")
 async def crypto_price(coin: str) -> str:
@@ -387,8 +379,8 @@ You can add custom tools to an agent that has already been created:
 
 ```python
 import asyncio
-from agents import ReactAgentBuilder
-from tools.decorators import tool
+from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.tools.decorators import tool
 
 @tool(description="Get cryptocurrency price information")
 async def crypto_price(coin: str) -> str:
@@ -418,12 +410,12 @@ asyncio.run(main())
 
 ### 7. Traditional ReactAgent Creation (Legacy Method)
 
-For advanced use cases or backward compatibility:
+While the Builder Pattern is recommended, you can still create `ReactAgent` instances directly for advanced configurations or backward compatibility. However, note that directly instantiating `ReactAgent` **does not automatically handle initialization or cleanup**. You must manually call `await agent.initialize()` after creation and `await agent.close()` when done.
 
 ```python
 import asyncio
-from agent_mcp.client import MCPClient
-from agents import ReactAgent, ReactAgentConfig
+from reactive_agents.agent_mcp.client import MCPClient
+from reactive_agents.agents import ReactAgent, ReactAgentConfig
 
 async def main():
     # Initialize MCP client
@@ -466,8 +458,8 @@ You can monitor and react to agent lifecycle events in real-time using the event
 
 ```python
 import asyncio
-from agents import ReactAgentBuilder
-from context.agent_events import ToolCalledEventData, ToolCompletedEventData
+from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.context.agent_events import ToolCalledEventData, ToolCompletedEventData
 
 async def main():
     # Create counters to track events
@@ -517,9 +509,9 @@ For a more flexible approach, you can use the generic `with_subscription` method
 
 ```python
 import asyncio
-from agents import ReactAgentBuilder
-from context.agent_observer import AgentStateEvent
-from context.agent_events import ToolCalledEventData, SessionStartedEventData
+from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.context.agent_observer import AgentStateEvent
+from reactive_agents.context.agent_events import ToolCalledEventData, SessionStartedEventData
 
 async def main():
     # Define callbacks for events
@@ -556,8 +548,8 @@ You can also use the async version for asynchronous callbacks:
 
 ```python
 import asyncio
-from agents import ReactAgentBuilder
-from context.agent_observer import AgentStateEvent
+from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.context.agent_observer import AgentStateEvent
 
 async def log_tool_async(event):
     # Simulate async database logging
@@ -570,52 +562,6 @@ async def main():
         .with_name("Async Subscription Agent")
         .with_model("ollama:qwen3:4b")
         .with_mcp_tools(["brave-search"])
-        # Use async subscription for async callbacks
-        .with_async_subscription(AgentStateEvent.TOOL_CALLED, log_tool_async)
-        .build()
-    )
-
-    # ... rest of code
-```
-
-#### Available Observable Events
-
-The framework provides the following observable events:
-
-| Event Type             | Description                           | Event Data                                         |
-| ---------------------- | ------------------------------------- | -------------------------------------------------- |
-| `SESSION_STARTED`      | When a new agent session begins       | `session_id`, `initial_task`                       |
-| `SESSION_ENDED`        | When an agent session completes       | `session_id`, `final_status`, `elapsed_time`       |
-| `TASK_STATUS_CHANGED`  | When the task status changes          | `previous_status`, `new_status`, `rescoped_task`   |
-| `ITERATION_STARTED`    | When a new iteration begins           | `iteration`, `max_iterations`                      |
-| `ITERATION_COMPLETED`  | When an iteration completes           | `iteration`, `has_result`, `has_plan`              |
-| `TOOL_CALLED`          | When the agent calls a tool           | `tool_name`, `tool_id`, `parameters`               |
-| `TOOL_COMPLETED`       | When a tool execution completes       | `tool_name`, `tool_id`, `result`, `execution_time` |
-| `TOOL_FAILED`          | When a tool execution fails           | `tool_name`, `tool_id`, `error`, `details`         |
-| `REFLECTION_GENERATED` | When the agent generates a reflection | `reason`, `next_step`, `required_tools`            |
-| `FINAL_ANSWER_SET`     | When the agent sets a final answer    | `answer`                                           |
-| `METRICS_UPDATED`      | When agent metrics are updated        | `metrics`                                          |
-| `ERROR_OCCURRED`       | When an error occurs during execution | `error`, `details`                                 |
-
-#### Supporting Asynchronous Callbacks
-
-For integration with asynchronous code, you can use async callbacks:
-
-```python
-import asyncio
-from agents import ReactAgentBuilder
-import aiofiles
-
-async def log_tool_call(event):
-    async with aiofiles.open("agent_log.txt", "a") as f:
-        await f.write(f"Tool called: {event['tool_name']} with {event['parameters']}\n")
-
-async def main():
-    agent = await (
-        ReactAgentBuilder()
-        .with_name("Async Observable Agent")
-        .with_model("ollama:qwen3:4b")
-        .with_mcp_tools(["brave-search"])
         # Register async callbacks using the _async suffix methods
         .on_session_started_async(lambda event: asyncio.create_task(log_agent_session(event)))
         .on_tool_called_async(log_tool_call)
@@ -626,14 +572,41 @@ async def main():
 
 For more advanced usage and complete type safety, see the [Agent State Observation documentation](docs/README_AGENT_STATE_OBSERVATION.md).
 
+### Available Agent State Events
+
+The `AgentStateEvent` enum defines all the observable events in the agent's lifecycle. You can subscribe to these events using the methods described above.
+
+Here is a comprehensive list of the available events:
+
+- `SESSION_STARTED`: Emitted when a new agent run session begins.
+- `SESSION_ENDED`: Emitted when an agent run session finishes (either successfully or due to an error/stop).
+- `TASK_STATUS_CHANGED`: Emitted when the agent's internal task status is updated.
+- `ITERATION_STARTED`: Emitted at the beginning of each agent iteration.
+- `ITERATION_COMPLETED`: Emitted at the end of each agent iteration.
+- `TOOL_CALLED`: Emitted just before a tool is executed.
+- `TOOL_COMPLETED`: Emitted after a tool successfully completes.
+- `TOOL_FAILED`: Emitted if a tool execution fails.
+- `REFLECTION_GENERATED`: Emitted after the agent generates a reflection on its previous steps.
+- `FINAL_ANSWER_SET`: Emitted when the agent determines the final answer for the task.
+- `METRICS_UPDATED`: Emitted when the agent's internal performance metrics are updated.
+- `ERROR_OCCURRED`: Emitted when an unhandled error occurs during the agent's execution.
+- `PAUSE_REQUESTED`: Emitted when a pause of the agent's execution is requested.
+- `PAUSED`: Emitted when the agent successfully pauses its execution.
+- `RESUME_REQUESTED`: Emitted when a resume of the agent's execution is requested.
+- `RESUMED`: Emitted when the agent successfully resumes its execution.
+- `STOP_REQUESTED`: Emitted when a graceful stop of the agent's execution is requested.
+- `STOPPED`: Emitted when the agent successfully stops gracefully.
+- `TERMINATE_REQUESTED`: Emitted when a forceful termination of the agent's execution is requested.
+- `TERMINATED`: Emitted when the agent is forcefully terminated.
+
 ## Tool Diagnostics and Debugging
 
 The framework provides diagnostic tools to help debug tool registration issues:
 
 ```python
 import asyncio
-from agents import ReactAgentBuilder
-from tools.decorators import tool
+from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.tools.decorators import tool
 
 @tool(description="Example custom tool")
 async def example_tool(param: str) -> str:
@@ -733,6 +706,12 @@ To run the tests:
 
 ```sh
 poetry run pytest
+```
+
+If you have Docker installed and would like to run the `test_real_agent_execution` test, which interacts with a real Ollama instance and Brave Search MCP server, set the `ENABLE_REAL_EXECUTION=1` environment variable before running pytest:
+
+```sh
+ENABLE_REAL_EXECUTION=1 poetry run pytest
 ```
 
 ## License

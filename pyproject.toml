@@ -23,16 +23,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 packages = [
-    { include = "agents" },
-    { include = "model_providers" },
-    { include = "tools" },
-    { include = "prompts" },
-    { include = "loggers" },
-    { include = "config" },
-    { include = "agent_mcp" },
-    { include = "context" },
-    { include = "common" },
-    { include = "components" },
+    { include = "reactive_agents" }
 ]
 
 [tool.poetry.dependencies]
