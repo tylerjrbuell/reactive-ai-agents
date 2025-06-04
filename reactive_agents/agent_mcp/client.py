@@ -102,12 +102,12 @@ class MCPClient:
                     docker=docker_config,
                     enabled=server_info.get("enabled", True),
                 )
-            self.config = MCPConfig(servers=servers_dict)
+            self.config = MCPConfig(mcpServers=servers_dict)
         else:
             # Load from config file
             self.config = load_server_config()
 
-        for server_name, server_config in self.config.servers.items():
+        for server_name, server_config in self.config.mcpServers.items():
             if self._closed or not server_config.enabled:
                 continue
 
@@ -236,7 +236,7 @@ class MCPClient:
             self._closed = True
             # Stop Docker containers first
             if self.config:
-                for server_name, server_config in self.config.servers.items():
+                for server_name, server_config in self.config.mcpServers.items():
                     if server_config.command == "docker":
                         container_name = None
                         if "--name" in server_config.args:

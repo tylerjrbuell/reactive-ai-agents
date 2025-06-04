@@ -9,10 +9,7 @@ import pytest
 import os
 import sys
 from unittest.mock import patch, MagicMock, AsyncMock
-from reactive_agents.tests.integration.mcp_fixtures import (
-    SimpleMockMCPClient,
-    model_validation_bypass,
-)
+from reactive_agents.tests.integration.mcp_fixtures import SimpleMockMCPClient
 
 # Import OllamaModelProvider for type hinting, not direct use here
 from reactive_agents.model_providers.ollama import OllamaModelProvider

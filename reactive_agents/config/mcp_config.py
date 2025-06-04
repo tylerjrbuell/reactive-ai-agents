@@ -49,7 +49,7 @@ class MCPServerConfig(BaseModel):
 class MCPConfig(BaseModel):
     """Root configuration for all MCP servers"""
 
-    servers: Dict[str, MCPServerConfig] = Field(
+    mcpServers: Dict[str, MCPServerConfig] = Field(
         default_factory=dict, description="Map of server names to their configurations"
     )
     default_docker_config: Optional[DockerConfig] = Field(
@@ -77,13 +77,13 @@ class MCPConfig(BaseModel):
                 enabled=server_info.get("enabled", True),
             )
 
-        return cls(servers=servers_dict)
+        return cls(mcpServers=servers_dict)
 
     def merge_config(self, other_config: "MCPConfig") -> "MCPConfig":
         """Merge another config into this one, with the other config taking precedence"""
-        merged_servers = {**self.servers}
+        merged_servers = {**self.mcpServers}
 
-        for name, server in other_config.servers.items():
+        for name, server in other_config.mcpServers.items():
             if name in merged_servers:
                 # Update existing server with new values, preserving existing ones if not specified
                 current_dict = merged_servers[name].dict()
@@ -95,7 +95,7 @@ class MCPConfig(BaseModel):
                 merged_servers[name] = server
 
         return MCPConfig(
-            servers=merged_servers,
+            mcpServers=merged_servers,
             default_docker_config=other_config.default_docker_config
             or self.default_docker_config,
         )
@@ -130,12 +130,81 @@ def load_server_config(
     """
     # Start with base configuration
     config = MCPConfig(
-        servers={
+        mcpServers={
             "local": MCPServerConfig(
                 command="python",
                 args=["./agent_mcp/servers/server.py"],
                 working_dir=Path.cwd(),
-            )
+            ),
+            "time": MCPServerConfig(
+                command="docker",
+                args=["run", "--name", "mcp-time", "-i", "--rm", "mcp/time"],
+                docker=DockerConfig(),
+            ),
+            "filesystem": MCPServerConfig(
+                command="docker",
+                args=[
+                    "run",
+                    "--name",
+                    "mcp-filesystem",
+                    "-i",
+                    "--rm",
+                    "--mount",
+                    f"type=bind,src={os.path.expandvars('$PWD')},dst=/projects",
+                    "--workdir",
+                    "/projects",
+                    "mcp/filesystem",
+                    "/projects",
+                ],
+                docker=DockerConfig(),
+            ),
+            "sqlite": MCPServerConfig(
+                command="docker",
+                args=[
+                    "run",
+                    "--name",
+                    "mcp-sqlite",
+                    "--rm",
+                    "-i",
+                    "-v",
+                    f"{os.path.expandvars('$PWD')}/agent_mcp:/mcp",
+                    "mcp/sqlite",
+                    "--db-path",
+                    "/mcp/agent.db",
+                ],
+                docker=DockerConfig(),
+            ),
+            "playwright": MCPServerConfig(
+                command="npx",
+                args=["-y", "@executeautomation/playwright-mcp-server"],
+            ),
+            "brave-search": MCPServerConfig(
+                command="docker",
+                args=[
+                    "run",
+                    "--name",
+                    "mcp-brave-search",
+                    "-i",
+                    "--rm",
+                    "-e",
+                    "BRAVE_API_KEY",
+                    "mcp/brave-search",
+                ],
+                env={"BRAVE_API_KEY": os.environ.get("BRAVE_API_KEY", "")},
+                docker=DockerConfig(),
+            ),
+            "duckduckgo": MCPServerConfig(
+                command="docker",
+                args=[
+                    "run",
+                    "--name",
+                    "mcp-duckduckgo",
+                    "-i",
+                    "--rm",
+                    "mcp/duckduckgo",
+                ],
+                docker=DockerConfig(),
+            ),
         }
     )
 
@@ -168,84 +237,6 @@ def load_server_config(
                         f"Error loading config from {env_var} ({config_path}): {str(e)}"
                     )
 
-    # Load default MCP servers if no other configurations were loaded
-    if len(config.servers) <= 1:  # Only has local server
-        config = config.merge_config(
-            MCPConfig(
-                servers={
-                    "time": MCPServerConfig(
-                        command="docker",
-                        args=["run", "--name", "mcp-time", "-i", "--rm", "mcp/time"],
-                        docker=DockerConfig(),
-                    ),
-                    "filesystem": MCPServerConfig(
-                        command="docker",
-                        args=[
-                            "run",
-                            "--name",
-                            "mcp-filesystem",
-                            "-i",
-                            "--rm",
-                            "--mount",
-                            f"type=bind,src={os.path.expandvars('$PWD')},dst=/projects",
-                            "--workdir",
-                            "/projects",
-                            "mcp/filesystem",
-                            "/projects",
-                        ],
-                        docker=DockerConfig(),
-                    ),
-                    "sqlite": MCPServerConfig(
-                        command="docker",
-                        args=[
-                            "run",
-                            "--name",
-                            "mcp-sqlite",
-                            "--rm",
-                            "-i",
-                            "-v",
-                            f"{os.path.expandvars('$PWD')}/agent_mcp:/mcp",
-                            "mcp/sqlite",
-                            "--db-path",
-                            "/mcp/agent.db",
-                        ],
-                        docker=DockerConfig(),
-                    ),
-                    "playwright": MCPServerConfig(
-                        command="npx",
-                        args=["-y", "@executeautomation/playwright-mcp-server"],
-                    ),
-                    "brave-search": MCPServerConfig(
-                        command="docker",
-                        args=[
-                            "run",
-                            "--name",
-                            "mcp-brave-search",
-                            "-i",
-                            "--rm",
-                            "-e",
-                            "BRAVE_API_KEY",
-                            "mcp/brave-search",
-                        ],
-                        env={"BRAVE_API_KEY": os.environ.get("BRAVE_API_KEY", "")},
-                        docker=DockerConfig(),
-                    ),
-                    "duckduckgo": MCPServerConfig(
-                        command="docker",
-                        args=[
-                            "run",
-                            "--name",
-                            "mcp-duckduckgo",
-                            "-i",
-                            "--rm",
-                            "mcp/duckduckgo",
-                        ],
-                        docker=DockerConfig(),
-                    ),
-                }
-            )
-        )
-
     return config
 
 
@@ -253,13 +244,13 @@ def get_mcp_servers(filter: Optional[List[str]] = None) -> Dict[str, Any]:
     """Get filtered server configurations in legacy format for backward compatibility"""
     config = load_server_config()
 
-    # Convert to legacy format
-    legacy_config = {
-        "mcpServers": {
-            name: {"command": server.command, "args": server.args, "env": server.env}
-            for name, server in config.servers.items()
-            if server.enabled and (not filter or name in filter)
-        }
-    }
+    # # Convert to legacy format
+    # legacy_config = {
+    #     "mcpServers": {
+    #         name: {"command": server.command, "args": server.args, "env": server.env}
+    #         for name, server in config.mcpServers.items()
+    #         if server.enabled and (not filter or name in filter)
+    #     }
+    # }
 
-    return legacy_config
+    return config.mcpServers

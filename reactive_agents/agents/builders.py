@@ -21,6 +21,8 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 from reactive_agents.agent_mcp.client import MCPClient
+from reactive_agents.loggers.base import Logger
+from reactive_agents.config.mcp_config import MCPConfig
 from .react_agent import ReactAgent, ReactAgentConfig
 from reactive_agents.tools.base import Tool
 from reactive_agents.context.agent_observer import AgentStateEvent
@@ -201,9 +203,11 @@ class ReactAgentBuilder:
             "kwargs": {},
         }
         self._mcp_client: Optional[MCPClient] = None
+        self._mcp_config: Optional[MCPConfig] = None
         self._server_filter: Optional[List[str]] = None
         self._custom_tools: List[Any] = []
         self._registered_tools: Set[str] = set()
+        self._logger = Logger("ReactAgentBuilder", "builder", self._config["log_level"])
 
     # Basic configuration methods
 
@@ -254,6 +258,15 @@ class ReactAgentBuilder:
             server_filter: List of MCP tool names to include
         """
         self._server_filter = server_filter
+
+        # warn of servers not found
+        if self._mcp_config:
+            for server_name in server_filter:
+                if server_name not in self._mcp_config.mcpServers.keys():
+                    self._logger.warning(
+                        f"Server {server_name} not found in MCP config skipping..."
+                    )
+
         # Track MCP tools for debugging
         for tool_name in server_filter:
             self._registered_tools.add(f"mcp:{tool_name}")
@@ -342,6 +355,20 @@ class ReactAgentBuilder:
         self._config["mcp_client"] = mcp_client
         return self
 
+    def with_mcp_config(self, mcp_config: MCPConfig) -> "ReactAgentBuilder":
+        """
+        Use an MCP server configuration
+
+        This allows using an MCP client that has already been initialized
+        with specific configurations.
+
+        Args:
+            mcp_client: An initialized MCPClient instance
+        """
+        self._mcp_config = mcp_config
+        self._config["mcp_config"] = mcp_config
+        return self
+
     def with_confirmation(
         self,
         callback: Callable[[str, Dict[str, Any]], Awaitable[bool]],
@@ -376,7 +403,7 @@ class ReactAgentBuilder:
     # Factory methods for common agent types
 
     @classmethod
-    async def research_agent(cls, model: Optional[str] = None) -> ReactAgent:
+    async def research_agent(cls, model: Optional[str] = None,) -> ReactAgent:
         """
         Create a pre-configured research agent optimized for information gathering
 

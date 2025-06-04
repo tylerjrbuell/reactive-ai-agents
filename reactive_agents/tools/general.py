@@ -4,9 +4,7 @@ from bs4 import BeautifulSoup
 import ollama
 from reactive_agents.agents.react_agent import ReactAgent
 from reactive_agents.agent_mcp.client import MCPClient
-import aiohttp
 import requests
-import fake_useragent
 from urllib.parse import urlparse
 import os
 import requests
@@ -327,32 +325,6 @@ async def google_search_api(query, num_results=1):
         return []
 
 
-async def google_search_scrape(query, num_results=2):
-    headers = {"User-Agent": fake_useragent.UserAgent().random}
-    search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
-    response = requests.get(search_url, headers=headers)
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    results = []
-    for d in soup.find_all("div"):
-        if d.find("a"):
-            links = d.find_all("a")
-            for link in links:
-                if link:
-                    href = str(link.get("href"))
-                    parsed_href = urlparse(href)
-                    href = (
-                        f"{parsed_href.scheme}://{parsed_href.netloc}{parsed_href.path}"
-                    )
-                    if "google.com" in parsed_href.netloc:
-                        continue
-                    if parsed_href.scheme == "https" and href not in [
-                        result["link"] for result in results
-                    ]:
-                        results.append({"link": href})
-    return results[:num_results]
-
-
 @tool()
 async def get_current_datetime():
     """
@@ -364,78 +336,6 @@ async def get_current_datetime():
     import datetime
 
     return f"Todays date and time is: {datetime.datetime.now().strftime('%A, %Y-%m-%d %H:%M:%S')}"
-
-
-async def summarize_search_result(result: dict, query: str):
-    if result.get("error"):
-        return result["error"]
-    if not result.get("link"):
-        return ""
-    print(f"Summarizing search result: {result['link']}")
-
-    print("Fetching markdown content...")
-
-    mkdown = await url_to_markdown(result["link"])
-    if not mkdown:
-        print("Fetching raw site content...")
-        async with aiohttp.ClientSession() as session:
-            async with session.get(result["link"]) as res:
-                if res.status != 200:
-                    return "Error fetching site content"
-                text = await res.text()
-        soup = BeautifulSoup(text, "html.parser")
-        website_text = soup.get_text(separator=" ", strip=True)
-        summary_content = website_text.strip()
-    else:
-        summary_content = mkdown.strip()
-    print(f"Computing summary...")
-    ollama_client = ollama.AsyncClient()
-    summary = await ollama_client.chat(
-        model="deepseek-r1:14b",
-        messages=[
-            {
-                "role": "system",
-                "content": """
-                You are an expert at extracting any relevant information from a website that would help answer a query.
-                Do not attempt to answer the query, rather focus on extracting relevant information to the query so that another AI Agent can answer the query with the information you extract.
-                Retain all source content, links and urls relevant to the query in your summary.
-                Try to be as concise as possible, only retaining information that is relevant to the query, but do not leave out any information that is relevant to the query.
-                Keep the summary as short as possible while still retaining all relevant information to the query.
-                """,
-            },
-            {
-                "role": "user",
-                "content": f"Summarize the following website content optimized for the QUERY: '{query}'\n CONTENT: '{summary_content}'.",
-            },
-        ],
-        stream=False,
-        options={"num_gpu": 256, "temperature": 0, "num_ctx": 10000},
-    )
-    if summary.get("message"):
-        return summary["message"]["content"]
-    return f"No Summary found for query {query}"
-
-
-@tool()
-async def web_search(query: str):
-    """
-    Search the web using Google Custom Search JSON API.
-
-    Args:
-        query (str): The search query string.
-
-    Returns:
-        list: List of search results
-    """
-
-    results = await google_search_api(query, num_results=2)
-    if not results:
-        print("Scraping data from Google Search...")
-        results = await google_search_scrape(query, num_results=2)
-    # summary_coroutines = [summarize_search_result(result, query) for result in results]
-    # search_summaries = await asyncio.gather(*summary_coroutines)
-    # return "\n".join(search_summaries) if search_summaries else ""
-    return results
 
 
 @tool()
@@ -637,40 +537,6 @@ async def write_file(path: str, content: str, mode: str = "w") -> str:
         return f"File '{path}' written successfully."
     except Exception as e:
         return f"Error writing file: {e}"
-
-
-@tool()
-async def run_ai_agent(
-    agent_name: str,
-    task_prompt: str,
-    provider_model: str = "ollama:qwen2.5:14b",
-    max_iterations: int = 5,
-):
-    """
-    Creates and runs an AI agent to complete a specific task. May take some time to complete and return the result.
-    Create an appropriate name for the AI agent that matches the task the agent will be completing.
-    The task prompt should be specific and concise instruction for the AI agent to complete the task. The more specific the task prompt, the more accurate and complete the result will be.
-
-    Args:
-        agent_name (str): The name of the AI agent.
-        task_prompt (str): The prompt to the AI Agent for the task to be completed. The prompt should be specific and concise instruction for the AI Agent.
-        provider_model (str, optional): The provider model to use for the AI task agent. Defaults to "ollama:qwen2.5:14b".
-        max_iterations (int, optional): The maximum number of iterations to run the AI task agent. Defaults to 5.
-
-    Returns:
-        str: The response from the AI task agent.
-    """
-
-    agent = ReactAgent(
-        name=agent_name,
-        provider_model=provider_model,
-        mcp_client=await MCPClient().initialize(),
-        reflect=True,
-        max_iterations=max_iterations,
-        min_completion_score=1,
-        log_level="debug",
-    )
-    return await agent.run(task_prompt)
 
 
 @tool()

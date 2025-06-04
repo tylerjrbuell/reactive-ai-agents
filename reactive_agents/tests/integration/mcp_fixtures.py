@@ -8,9 +8,6 @@ addressing the issue with AsyncMock in await expressions.
 import pytest
 import os
 from unittest.mock import patch, MagicMock, AsyncMock
-from reactive_agents.agent_mcp.client import MCPClient
-from reactive_agents.agents import react_agent
-from reactive_agents.model_providers import ollama
 
 
 class SimpleMockMCPClient:

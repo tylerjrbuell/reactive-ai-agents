@@ -10,11 +10,11 @@ These tests verify that ReactAgentBuilder correctly integrates with:
 
 import pytest
 import os
-import asyncio
 from unittest.mock import patch, MagicMock, AsyncMock
 
 from reactive_agents.agents import ReactAgentBuilder
 from reactive_agents.tools.decorators import tool
+from reactive_agents.agent_mcp.client import MCPClient
 
 
 # Sample custom tools for testing
@@ -52,36 +52,70 @@ async def greeting(name: str) -> str:
     "reactive_agents.model_providers.ollama.OllamaModelProvider.validate_model",
     return_value=None,
 )
+@patch("reactive_agents.model_providers.ollama.OllamaModelProvider.get_completion")
 @patch("reactive_agents.agents.react_agent.ReactAgent.run")
-@patch("reactive_agents.agent_mcp.client.MCPClient")
+@patch("reactive_agents.agent_mcp.client.MCPClient", spec=MCPClient)
+@patch(
+    "reactive_agents.model_providers.factory.ModelProviderFactory.get_model_provider"
+)
 async def test_builder_with_mcp_tools_integration(
-    mock_mcp_client_class, mock_run, model_validation_bypass
+    mock_get_model_provider,
+    mock_mcp_client_class,
+    mock_run,
+    mock_get_completion,
+    model_validation_bypass,
 ):
     """Test the builder integration with MCP tools"""
+    # Configure mock model provider and its get_completion method
+    mock_model_provider_instance = MagicMock()
+    mock_get_model_provider.return_value = mock_model_provider_instance
+    mock_completion_response = MagicMock()
+    mock_completion_response.get.return_value = {"response": "{}"}
+    mock_model_provider_instance.get_completion = AsyncMock(
+        return_value=mock_completion_response
+    )
+
+    # Also mock get_chat_completion as it might be used
+    mock_model_provider_instance.get_chat_completion = AsyncMock(
+        return_value=MagicMock(choices=[MagicMock(message=MagicMock(tool_calls=[]))])
+    )
+
+    mock_get_completion.return_value = mock_completion_response  # Keep this for backward compatibility if needed by other mocks
+
     # Configure mocks
-    mock_mcp_client = AsyncMock()
-    mock_mcp_client_class.return_value.initialize.return_value = mock_mcp_client
+    mock_mcp_client_instance = mock_mcp_client_class()
+    mock_mcp_client_instance.server_tools = {}
+    mock_mcp_client_instance.initialize = AsyncMock(
+        return_value=mock_mcp_client_instance
+    )
     mock_run.return_value = {"status": "complete", "result": "Test successful"}
 
     # Build agent with MCP tools
+    print("Before agent build")
     agent = await (
         ReactAgentBuilder()
         .with_name("Integration Test Agent")
         .with_model("ollama:test:model")
+        .with_mcp_client(mock_mcp_client_instance)
         .with_mcp_tools(["time", "brave-search"])
         .build()
     )
+    print("After agent build")
 
     # Verify agent was created with correct configuration
     assert agent.context.agent_name == "Integration Test Agent"
 
     # Run a task
+    print("Before agent run")
     result = await agent.run("Test task")
+    print("After agent run")
     assert mock_run.return_value["status"] == "complete"
     assert mock_run.return_value["result"] == "Test successful"
 
     # Clean up
+    print("Before agent close")
     await agent.close()
+    print("After agent close")
 
 
 @pytest.mark.asyncio
@@ -90,8 +124,27 @@ async def test_builder_with_mcp_tools_integration(
     return_value=None,
 )
 @patch("reactive_agents.agents.react_agent.ReactAgent.run")
-async def test_builder_with_custom_tools_integration(mock_run, model_validation_bypass):
+@patch(
+    "reactive_agents.model_providers.factory.ModelProviderFactory.get_model_provider"
+)
+async def test_builder_with_custom_tools_integration(
+    mock_get_model_provider, mock_run, model_validation_bypass
+):
     """Test the builder integration with custom tools"""
+    # Configure mock model provider and its get_completion method
+    mock_model_provider_instance = MagicMock()
+    mock_get_model_provider.return_value = mock_model_provider_instance
+    mock_completion_response = MagicMock()
+    mock_completion_response.get.return_value = {"response": "{}"}
+    mock_model_provider_instance.get_completion = AsyncMock(
+        return_value=mock_completion_response
+    )
+
+    # Also mock get_chat_completion as it might be used
+    mock_model_provider_instance.get_chat_completion = AsyncMock(
+        return_value=MagicMock(choices=[MagicMock(message=MagicMock(tool_calls=[]))])
+    )
+
     mock_run.return_value = {"status": "complete", "result": "Test successful"}
 
     # Build agent with custom tools
@@ -126,14 +179,32 @@ async def test_builder_with_custom_tools_integration(mock_run, model_validation_
     return_value=None,
 )
 @patch("reactive_agents.agents.react_agent.ReactAgent.run")
-@patch("reactive_agents.agent_mcp.client.MCPClient")
+@patch("reactive_agents.agent_mcp.client.MCPClient", spec=MCPClient)
+@patch(
+    "reactive_agents.model_providers.factory.ModelProviderFactory.get_model_provider"
+)
 async def test_builder_with_hybrid_tools_integration(
-    mock_mcp_client_class, mock_run, model_validation_bypass
+    mock_get_model_provider, mock_mcp_client_class, mock_run, model_validation_bypass
 ):
     """Test the builder integration with both MCP and custom tools"""
+    # Configure mock model provider and its get_completion method
+    mock_model_provider_instance = MagicMock()
+    mock_get_model_provider.return_value = mock_model_provider_instance
+    mock_completion_response = MagicMock()
+    mock_completion_response.get.return_value = {"response": "{}"}
+    mock_model_provider_instance.get_completion = AsyncMock(
+        return_value=mock_completion_response
+    )
+
+    # Also mock get_chat_completion as it might be used
+    mock_model_provider_instance.get_chat_completion = AsyncMock(
+        return_value=MagicMock(choices=[MagicMock(message=MagicMock(tool_calls=[]))])
+    )
+
     # Configure mocks
-    mock_mcp_client = AsyncMock()
-    mock_mcp_client_class.return_value.initialize.return_value = mock_mcp_client
+    mock_mcp_client_instance = mock_mcp_client_class()
+    mock_mcp_client_instance.server_tools = {}
+    mock_mcp_client_instance.initialize.return_value = mock_mcp_client_instance
     mock_run.return_value = {"status": "complete", "result": "Test successful"}
 
     # Build agent with hybrid tools
@@ -141,6 +212,7 @@ async def test_builder_with_hybrid_tools_integration(
         ReactAgentBuilder()
         .with_name("Hybrid Tools Agent")
         .with_model("ollama:test:model")
+        .with_mcp_client(mock_mcp_client_instance)
         .with_tools(mcp_tools=["time"], custom_tools=[square, greeting])
         .build()
     )
@@ -174,18 +246,42 @@ async def test_builder_with_hybrid_tools_integration(
     return_value=None,
 )
 @patch("reactive_agents.agents.react_agent.ReactAgent.run")
-@patch("reactive_agents.agent_mcp.client.MCPClient")
+@patch("reactive_agents.agent_mcp.client.MCPClient", spec=MCPClient)
+@patch(
+    "reactive_agents.model_providers.factory.ModelProviderFactory.get_model_provider"
+)
 async def test_adding_custom_tools_to_existing_agent(
-    mock_mcp_client_class, mock_run, model_validation_bypass
+    mock_get_model_provider, mock_mcp_client_class, mock_run, model_validation_bypass
 ):
     """Test adding custom tools to an existing agent"""
+    # Configure mock model provider and its get_completion method
+    mock_model_provider_instance = MagicMock()
+    mock_get_model_provider.return_value = mock_model_provider_instance
+    mock_completion_response = MagicMock()
+    mock_completion_response.get.return_value = {"response": "{}"}
+    mock_model_provider_instance.get_completion = AsyncMock(
+        return_value=mock_completion_response
+    )
+
+    # Also mock get_chat_completion as it might be used
+    mock_model_provider_instance.get_chat_completion = AsyncMock(
+        return_value=MagicMock(choices=[MagicMock(message=MagicMock(tool_calls=[]))])
+    )
+
     # Configure mocks
-    mock_mcp_client = AsyncMock()
-    mock_mcp_client_class.return_value.initialize.return_value = mock_mcp_client
+    mock_mcp_client_instance = mock_mcp_client_class()
+    mock_mcp_client_instance.server_tools = {}
+    mock_mcp_client_instance.initialize.return_value = mock_mcp_client_instance
     mock_run.return_value = {"status": "complete", "result": "Test successful"}
 
     # Create a research agent
-    agent = await ReactAgentBuilder.research_agent(model="ollama:test:model")
+    agent = await (
+        ReactAgentBuilder()
+        .with_name("Existing Agent")
+        .with_model("ollama:test:model")
+        .with_mcp_client(mock_mcp_client_instance)
+        .build()
+    )
 
     # Verify initial tools (just MCP tools)
     initial_tool_names = [tool.name for tool in agent.context.tools]
@@ -225,21 +321,38 @@ async def test_adding_custom_tools_to_existing_agent(
     "reactive_agents.model_providers.ollama.OllamaModelProvider.validate_model",
     return_value=None,
 )
-@patch("reactive_agents.agents.react_agent.ReactAgent.run")
-@patch("reactive_agents.agent_mcp.client.MCPClient")
+@patch("reactive_agents.agent_mcp.client.MCPClient", spec=MCPClient)
+@patch(
+    "reactive_agents.model_providers.factory.ModelProviderFactory.get_model_provider"
+)
 async def test_tool_registration_diagnostics(
-    mock_mcp_client_class, mock_run, model_validation_bypass
+    mock_get_model_provider, mock_mcp_client_class, model_validation_bypass
 ):
     """Test the tool registration diagnostics in an integration scenario"""
+    # Configure mock model provider and its get_completion method
+    mock_model_provider_instance = MagicMock()
+    mock_get_model_provider.return_value = mock_model_provider_instance
+    mock_completion_response = MagicMock()
+    mock_completion_response.get.return_value = {"response": "{}"}
+    mock_model_provider_instance.get_completion = AsyncMock(
+        return_value=mock_completion_response
+    )
+
+    # Also mock get_chat_completion as it might be used
+    mock_model_provider_instance.get_chat_completion = AsyncMock(
+        return_value=MagicMock(choices=[MagicMock(message=MagicMock(tool_calls=[]))])
+    )
+
     # Configure mocks
-    mock_mcp_client = AsyncMock()
-    mock_mcp_client_class.return_value.initialize.return_value = mock_mcp_client
-    mock_run.return_value = {"status": "complete", "result": "Test successful"}
+    mock_mcp_client_instance = mock_mcp_client_class()
+    mock_mcp_client_instance.server_tools = {}
+    mock_mcp_client_instance.initialize.return_value = mock_mcp_client_instance
 
     # Create a builder with hybrid tools
     builder = (
         ReactAgentBuilder()
         .with_name("Diagnostic Test Agent")
+        .with_mcp_client(mock_mcp_client_instance)
         .with_model("ollama:test:model")
         .with_tools(mcp_tools=["time", "brave-search"], custom_tools=[square, greeting])
     )
