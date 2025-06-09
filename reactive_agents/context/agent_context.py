@@ -3,6 +3,7 @@ from typing import (
     List,
     Dict,
     Any,
+    Literal,
     Optional,
     Callable,
     Sequence,
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field
 # from components.reflection_manager import ReflectionManager
 # from components.workflow_manager import WorkflowManager
 # from components.tool_manager import ToolManager
+from reactive_agents.config.mcp_config import MCPConfig
 from reactive_agents.loggers.base import Logger
 from reactive_agents.model_providers.base import BaseModelProvider
 from reactive_agents.agent_mcp.client import MCPClient
@@ -70,7 +72,7 @@ class AgentContext(BaseModel):
     min_completion_score: float = 1.0
     max_iterations: Optional[int] = None
     max_task_retries: int = 3
-    log_level: str = "info"
+    log_level: Literal["debug", "info", "warning", "error", "critical"] = "info"
     enable_caching: bool = True
     cache_ttl: int = 3600
     offline_mode: bool = False
@@ -92,7 +94,9 @@ class AgentContext(BaseModel):
 
     # Core Components (Remain in Context)
     model_provider: Optional[BaseModelProvider] = None
+    model_provider_options: Optional[Dict[str, Any]] = None
     mcp_client: Optional[MCPClient] = None
+    mcp_config: Optional[MCPConfig] = None
     tools: List[Any] = Field(default_factory=list)
 
     # Loggers (Remain in Context)
@@ -258,12 +262,9 @@ class AgentContext(BaseModel):
     async def close(self):
         """Safely close resources like the MCP client."""
         assert self.agent_logger is not None
-        self.agent_logger.info(f"Closing AgentContext for '{self.agent_name}'...")
+        self.agent_logger.info(f"Closing context for {self.agent_name}...")
         # TODO: Add any other closing responsibilities for context
-        self.agent_logger.info(
-            f"AgentContext for '{self.agent_name}' closed successfully."
-        )
-        print(f"AgentContext for '{self.agent_name}': close() completed")
+        self.agent_logger.info(f"{self.agent_name} context closed successfully.")
 
     # Convenience accessors (optional, direct access context.manager is also fine)
     def get_tool_signatures(self) -> List[Dict[str, Any]]:

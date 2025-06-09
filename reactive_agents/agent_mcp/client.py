@@ -13,6 +13,8 @@ from reactive_agents.config.mcp_config import (
     MCPServerConfig,
     DockerConfig,
 )
+from reactive_agents.config.logging import LogLevel, formatter
+from reactive_agents.loggers.base import Logger
 
 
 class MCPClient:
@@ -20,7 +22,8 @@ class MCPClient:
         self,
         config_file: str = "config/mcp.json",
         server_filter: Optional[List[str]] = None,
-        server_config: Optional[Dict[str, Any]] = None,
+        server_config: Optional[MCPConfig] = None,
+        log_level: Optional[str] = None,
     ):
         # Initialize session and client objects
         self.sessions: Dict[str, ClientSession] = {}
@@ -35,6 +38,8 @@ class MCPClient:
         self.config: Optional[MCPConfig] = None
         self.config_file = config_file
         self.server_config = server_config
+        self.logger = Logger(__name__, "mcp", log_level or LogLevel.INFO.value)
+        self.logger.formatter = formatter
 
     def _prepare_docker_args(
         self, server_name: str, server_config: MCPServerConfig
@@ -46,7 +51,9 @@ class MCPClient:
             if "--name" in args:
                 name_index = args.index("--name") + 1
                 if name_index < len(args):
-                    args[name_index] = f"{server_name}-{self.instance_id}"
+                    args[name_index] = (
+                        f"{server_config.args[name_index]}-{self.instance_id}"
+                    )
             else:
                 args.insert(args.index("run") + 1, "--name")
                 args.insert(args.index("run") + 2, f"{server_name}-{self.instance_id}")
@@ -83,24 +90,22 @@ class MCPClient:
         if self.server_config:
             # Use provided server configuration
             servers_dict = {}
-            for server_name, server_info in self.server_config.get(
-                "mcpServers", {}
-            ).items():
+            for server_name, server_config in self.server_config.mcpServers.items():
                 docker_config = None
-                if "docker" in server_info:
+                if "docker" in server_config.command and server_config.docker:
                     docker_config = DockerConfig(
-                        network=server_info["docker"].get("network"),
-                        extra_mounts=server_info["docker"].get("extra_mounts", []),
-                        extra_env=server_info["docker"].get("extra_env", {}),
+                        network=server_config.docker.network,
+                        extra_mounts=server_config.docker.extra_mounts,
+                        extra_env=server_config.docker.extra_env,
                     )
 
                 servers_dict[server_name] = MCPServerConfig(
-                    command=server_info["command"],
-                    args=server_info.get("args", []),
-                    env=server_info.get("env", {}),
-                    working_dir=server_info.get("working_dir"),
+                    command=server_config.command,
+                    args=server_config.args,
+                    env=server_config.env,
+                    working_dir=server_config.working_dir,
                     docker=docker_config,
-                    enabled=server_info.get("enabled", True),
+                    enabled=server_config.enabled,
                 )
             self.config = MCPConfig(mcpServers=servers_dict)
         else:
@@ -108,14 +113,20 @@ class MCPClient:
             self.config = load_server_config()
 
         for server_name, server_config in self.config.mcpServers.items():
+
+            # Skip if server is disabled or already closed
             if self._closed or not server_config.enabled:
+                self.logger.warning(f"Skipping disabled server {server_name}...")
                 continue
 
+            # Skip if server is not in filter
             if self.server_filter and server_name not in self.server_filter:
+                self.logger.info(f"Filtering out server {server_name}...")
                 continue
 
             # Skip if already connected
             if server_name in self.sessions:
+                self.logger.info(f"Already connected to server {server_name}...")
                 continue
 
             try:
@@ -152,7 +163,9 @@ class MCPClient:
                 self.server_tools[server_name] = (await session.list_tools()).tools
 
             except Exception as e:
-                print(f"Failed to connect to server {server_name}: {str(e)}")
+                self.logger.error(
+                    f"Failed to connect to server {server_name}: {str(e)}"
+                )
                 # Clean up any partial connections
                 if server_name in self.sessions:
                     del self.sessions[server_name]

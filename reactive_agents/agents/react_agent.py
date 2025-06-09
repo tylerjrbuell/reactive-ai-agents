@@ -2,10 +2,11 @@ from __future__ import annotations
 import json
 import traceback
 import asyncio
-from typing import List, Any, Optional, Dict, Set, Tuple
+from typing import List, Any, Literal, Optional, Dict, Set, Tuple
 import time
 
 from pydantic import BaseModel, Field, model_validator
+from reactive_agents.config.mcp_config import MCPConfig
 from reactive_agents.prompts.agent_prompts import (
     MISSING_TOOLS_PROMPT,
     TOOL_FEASIBILITY_CONTEXT_PROMPT,
@@ -33,14 +34,21 @@ class ReactAgentConfig(BaseModel):
     provider_model_name: str = Field(description="Name of the LLM provider and model.")
 
     # Optional parameters
+    model_provider_options: Optional[Dict[str, Any]] = Field(
+        default_factory=dict, description="Options for the LLM provider."
+    )
     role: Optional[str] = Field(
         default="Task Executor", description="Role of the agent."
     )
     mcp_client: Optional[MCPClient] = Field(
         default=None, description="An initialized MCPClient instance."
     )
-    mcp_config: Optional[Any] = Field(
+    mcp_config: Optional[MCPConfig] = Field(
         default=None, description="MCP config dict or file path to use for MCPClient."
+    )
+    mcp_server_filter: Optional[List[str]] = Field(
+        default_factory=list,
+        description="Filter List of MCP servers for the agent to use in the MCPClient.",
     )
     min_completion_score: Optional[float] = Field(
         default=1.0,
@@ -58,9 +66,11 @@ class ReactAgentConfig(BaseModel):
     reflect_enabled: Optional[bool] = Field(
         default=True, description="Whether reflection mechanism is enabled."
     )
-    log_level: Optional[str] = Field(
-        default="info",
-        description="Logging level ('debug', 'info', 'warning', 'error').",
+    log_level: Optional[Literal["debug", "info", "warning", "error", "critical"]] = (
+        Field(
+            default="info",
+            description="Logging level ('debug', 'info', 'warning', 'error' or 'critical').",
+        )
     )
     initial_task: Optional[str] = Field(
         default=None,
@@ -97,6 +107,7 @@ class ReactAgentConfig(BaseModel):
     workflow_context_shared: Optional[Dict[str, Any]] = Field(
         default=None, description="Shared workflow context data."
     )
+
     # Store extra kwargs passed, e.g. for specific context managers
     kwargs: Dict[str, Any] = Field(
         default_factory=dict,
@@ -199,6 +210,7 @@ class ReactAgent(Agent):
             agent_name=config.agent_name,
             role=config.role,
             provider_model_name=config.provider_model_name,
+            model_provider_options=config.model_provider_options,
             mcp_client=config.mcp_client,
             min_completion_score=config.min_completion_score,
             instructions=config.instructions,
@@ -242,16 +254,28 @@ class ReactAgent(Agent):
         """Closes the agent's context and associated resources."""
         await self.context.close()
         if self.context.mcp_client is not None:
-            print("ReactAgent: Calling mcp_client.close()")
+            self.agent_logger.info(
+                f"Closing MCPClient for {self.context.agent_name}..."
+            )
             await self.context.mcp_client.close()
-        print("ReactAgent: close() completed")
+            self.agent_logger.info(
+                f"{self.context.agent_name} MCPClient closed successfully."
+            )
+        self._closed = True
+        self.agent_logger.info(f"{self.context.agent_name} closed successfully.")
 
     async def initialize(self) -> ReactAgent:
         """Initialize the agent's context and associated resources."""
         try:
-            if self.config.mcp_config:
+            if self.config.mcp_config or self.config.mcp_server_filter:
+                self.context.mcp_config = (
+                    MCPConfig.model_validate(self.config.mcp_config, strict=False)
+                    if self.config.mcp_config
+                    else None
+                )
                 self.context.mcp_client = await MCPClient(
-                    server_config=self.config.mcp_config
+                    server_config=self.context.mcp_config,
+                    server_filter=self.config.mcp_server_filter,
                 ).initialize()
             if self.context.tool_manager:
                 await self.context.tool_manager._initialize_tools()

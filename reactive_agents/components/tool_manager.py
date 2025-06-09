@@ -32,7 +32,7 @@ from reactive_agents.common.types import (
 )
 
 if TYPE_CHECKING:
-    from context.agent_context import AgentContext  # Keep import here
+    from reactive_agents.context.agent_context import AgentContext  # Keep import here
 
 
 class FinalAnswerTool(Tool):
@@ -127,6 +127,8 @@ class ToolManager(BaseModel):
 
     async def _initialize_tools(self, attempts: int = 0):
         """Populates tools and signatures from MCP client or local list."""
+        generate = False
+
         if self.context.mcp_client:
             # Ensure MCP client tools are loaded (might need await if not already done)
             # Assuming mcp_client.tools and mcp_client.tool_signatures are populated
@@ -143,6 +145,7 @@ class ToolManager(BaseModel):
             self.agent_logger.info(
                 f"MCP Tools: {[t.name for tool in servers.values() for t in tool]}"
             )
+            generate = True
         elif self.context.tools:
             # Use locally provided tools
             self.tools = self.context.tools
@@ -152,6 +155,7 @@ class ToolManager(BaseModel):
                 if hasattr(tool, "tool_definition")
             ]
             self.agent_logger.info(f"Initialized {len(self.tools)} local tools.")
+            generate = True
         else:
             # No tools provided
             MAX_ATTEMPTS = 3
@@ -175,14 +179,15 @@ class ToolManager(BaseModel):
             self.tool_logger.info("Injecting internal 'final_answer' tool.")
             internal_final_answer_tool = FinalAnswerTool(context=self.context)
             self.tools.append(internal_final_answer_tool)
+            generate = True
 
         # Generate signatures AFTER all tools (including injected ones) are loaded
-        if not self.tool_signatures:
+        if generate:
             self._generate_tool_signatures()
             self.tool_logger.info(
-                f"ToolManager initialized with {len(self.tools)} total tool(s): \
-                {', '.join([tool.name for tool in self.tools])}"
+                f"Initialized with {len(self.tools)} total tool(s): \n{', '.join([tool.name for tool in self.tools])}"
             )
+            generated = True
 
     def get_tool(self, tool_name: str) -> Optional[ToolProtocol]:
         """Finds a tool by name."""
@@ -615,12 +620,15 @@ class ToolManager(BaseModel):
     def _generate_tool_signatures(self):
         """Generates tool signatures from the schemas of available tools."""
         self.tool_signatures = []
+
         for tool in self.tools:
             try:
 
                 # Handle MCPToolWrapper specifically if needed
-                if hasattr(tool, "tool_definition") and isinstance(
-                    tool.tool_definition, dict
+                if (
+                    hasattr(tool, "tool_definition")
+                    and isinstance(tool.tool_definition, dict)
+                    and tool.tool_definition not in self.tool_signatures
                 ):
                     self.tool_signatures.append(tool.tool_definition)
                 else:

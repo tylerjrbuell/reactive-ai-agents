@@ -1,6 +1,15 @@
+from enum import Enum
 import logging
 import traceback
 from colorlog import StreamHandler, ColoredFormatter
+
+
+class LogLevel(str, Enum):
+    DEBUG = "debug"
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
 
 
 class LoggerAdapter(logging.LoggerAdapter):

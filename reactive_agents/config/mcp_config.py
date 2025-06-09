@@ -49,7 +49,7 @@ class MCPServerConfig(BaseModel):
 class MCPConfig(BaseModel):
     """Root configuration for all MCP servers"""
 
-    mcpServers: Dict[str, MCPServerConfig] = Field(
+    mcpServers: dict[str, MCPServerConfig] = Field(
         default_factory=dict, description="Map of server names to their configurations"
     )
     default_docker_config: Optional[DockerConfig] = Field(
@@ -145,8 +145,6 @@ def load_server_config(
                 command="docker",
                 args=[
                     "run",
-                    "--name",
-                    "mcp-filesystem",
                     "-i",
                     "--rm",
                     "--mount",
@@ -162,12 +160,10 @@ def load_server_config(
                 command="docker",
                 args=[
                     "run",
-                    "--name",
-                    "mcp-sqlite",
                     "--rm",
                     "-i",
                     "-v",
-                    f"{os.path.expandvars('$PWD')}/agent_mcp:/mcp",
+                    f"{os.path.expandvars('$PWD')}/reactive_agents/agent_mcp:/mcp",
                     "mcp/sqlite",
                     "--db-path",
                     "/mcp/agent.db",
@@ -182,8 +178,6 @@ def load_server_config(
                 command="docker",
                 args=[
                     "run",
-                    "--name",
-                    "mcp-brave-search",
                     "-i",
                     "--rm",
                     "-e",
@@ -197,8 +191,6 @@ def load_server_config(
                 command="docker",
                 args=[
                     "run",
-                    "--name",
-                    "mcp-duckduckgo",
                     "-i",
                     "--rm",
                     "mcp/duckduckgo",

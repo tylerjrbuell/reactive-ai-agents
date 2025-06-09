@@ -28,14 +28,22 @@ class Logger:
             reset=True,
         )
 
-        logger.setLevel(getattr(logging, level.upper()))
-        self.logger = LoggerAdapter(logger, {"class_name": self.name})
+        self._logger = logging.getLogger(self.name)
+        self._logger.setLevel(getattr(logging, level.upper()))
+
+        # Ensure no duplicate handlers are added
+        if not self._logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(self.formatter)
+            self._logger.addHandler(handler)
+
+        self.logger = LoggerAdapter(self._logger, {"class_name": self.name})
 
     def get_logger(self):
-        return logger
+        return self._logger
 
     def log(self, message: str, level: str = "info", exc_info=None):
-        logger.log(
+        self._logger.log(
             getattr(logging, level.upper()),
             f"{self.name}: {message}",
             extra={"class_name": self.name, "formatter": self.formatter},
@@ -56,14 +64,14 @@ class Logger:
     def error(
         self, message: str, exc_info=True
     ):  # Changed to include exc_info by default
-        logger.error(
+        self.logger.error(
             msg=message,
             extra={"class_name": self.name, "formatter": self.formatter},
             exc_info=exc_info,
         )
 
     def warning(self, message: str, exc_info=None):
-        logger.warning(
+        self.logger.warning(
             msg=message,
             extra={"class_name": self.name, "formatter": self.formatter},
             exc_info=exc_info,
@@ -72,7 +80,7 @@ class Logger:
     def critical(
         self, message: str, exc_info=True
     ):  # Changed to include exc_info by default
-        logger.critical(
+        self.logger.critical(
             msg=message,
             extra={"class_name": self.name, "formatter": self.formatter},
             exc_info=exc_info,

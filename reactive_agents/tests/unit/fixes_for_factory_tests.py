@@ -45,7 +45,7 @@ async def test_research_agent_factory_fixed():
         assert builder._config["agent_name"] == "Research Agent"
         assert builder._config["role"] == "Research Assistant"
         assert builder._config["provider_model_name"] == "ollama:test:model"
-        assert builder._server_filter == ["brave-search", "time"]
+        assert builder._mcp_server_filter == ["brave-search", "time"]
         assert builder._config["reflect_enabled"] is True
         assert builder._config["max_iterations"] == 15
 
@@ -75,7 +75,7 @@ async def test_database_agent_factory_fixed():
         # Verify the key config values
         assert builder._config["agent_name"] == "Database Agent"
         assert builder._config["role"] == "Database Assistant"
-        assert builder._server_filter == ["sqlite"]
+        assert builder._mcp_server_filter == ["sqlite"]
         assert builder._config["reflect_enabled"] is True
 
 
@@ -123,7 +123,7 @@ async def test_crypto_research_agent_factory_fixed():
         assert builder._config["agent_name"] == "Crypto Research Agent"
         assert builder._config["role"] == "Financial Data Analyst"
         assert builder._config["provider_model_name"] == "ollama:test:model"
-        assert builder._server_filter == ["brave-search", "sqlite", "time"]
+        assert builder._mcp_server_filter == ["brave-search", "sqlite", "time"]
         assert builder._config["reflect_enabled"] is True
         assert builder._config["max_iterations"] == 15
         assert builder._config["confirmation_callback"] is mock_callback

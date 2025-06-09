@@ -17,10 +17,10 @@ from typing import (
     Set,
 )
 import asyncio
-from enum import Enum
 from pydantic import BaseModel, Field
 
 from reactive_agents.agent_mcp.client import MCPClient
+from reactive_agents.config.logging import LogLevel, formatter
 from reactive_agents.loggers.base import Logger
 from reactive_agents.config.mcp_config import MCPConfig
 from .react_agent import ReactAgent, ReactAgentConfig
@@ -47,16 +47,6 @@ from reactive_agents.context.agent_events import (
 # Define type variables for better type hinting
 T = TypeVar("T")
 ReactAgentBuilderT = TypeVar("ReactAgentBuilderT", bound="ReactAgentBuilder")
-
-
-# Pydantic models for type safety
-class LogLevel(str, Enum):
-    """Enum for log levels to ensure type safety"""
-
-    DEBUG = "debug"
-    INFO = "info"
-    WARNING = "warning"
-    ERROR = "error"
 
 
 class ToolConfig(BaseModel):
@@ -186,6 +176,7 @@ class ReactAgentBuilder:
             "agent_name": "ReactAgent",
             "role": "Task Executor",
             "provider_model_name": "ollama:qwen2:7b",
+            "model_provider_options": {},
             "mcp_client": None,
             "min_completion_score": 1.0,
             "instructions": "Solve the given task as efficiently as possible.",
@@ -204,10 +195,11 @@ class ReactAgentBuilder:
         }
         self._mcp_client: Optional[MCPClient] = None
         self._mcp_config: Optional[MCPConfig] = None
-        self._server_filter: Optional[List[str]] = None
+        self._mcp_server_filter: Optional[List[str]] = None
         self._custom_tools: List[Any] = []
         self._registered_tools: Set[str] = set()
         self._logger = Logger("ReactAgentBuilder", "builder", self._config["log_level"])
+        self._logger.formatter = formatter
 
     # Basic configuration methods
 
@@ -226,6 +218,13 @@ class ReactAgentBuilder:
         self._config["provider_model_name"] = model_name
         return self
 
+    def with_model_provider_options(
+        self, options: Dict[str, Any]
+    ) -> "ReactAgentBuilder":
+        """Set the model provider options for the agent"""
+        self._config["model_provider_options"] = options
+        return self
+
     def with_instructions(self, instructions: str) -> "ReactAgentBuilder":
         """Set the agent's instructions"""
         self._config["instructions"] = instructions
@@ -242,7 +241,7 @@ class ReactAgentBuilder:
         return self
 
     def with_log_level(self, level: Union[LogLevel, str]) -> "ReactAgentBuilder":
-        """Set the log level (debug, info, warning, error)"""
+        """Set the log level (debug, info, warning, error, critical)"""
         if isinstance(level, LogLevel):
             level = level.value
         self._config["log_level"] = level
@@ -257,7 +256,7 @@ class ReactAgentBuilder:
         Args:
             server_filter: List of MCP tool names to include
         """
-        self._server_filter = server_filter
+        self._mcp_server_filter = server_filter
 
         # warn of servers not found
         if self._mcp_config:
@@ -311,6 +310,10 @@ class ReactAgentBuilder:
 
         return self
 
+    def with_tool_use(self, tool_use: bool = True) -> "ReactAgentBuilder":
+        self._config["tool_use_enabled"] = tool_use
+        return self
+
     def with_tools(
         self,
         mcp_tools: Optional[List[str]] = None,
@@ -339,6 +342,11 @@ class ReactAgentBuilder:
             "custom_tools_count": len(custom_tools) if custom_tools else 0,
         }
 
+        return self
+
+    def with_tool_caching(self, enabled: bool = True) -> "ReactAgentBuilder":
+        """Enable or disable tool caching"""
+        self._config["enable_caching"] = enabled
         return self
 
     def with_mcp_client(self, mcp_client: MCPClient) -> "ReactAgentBuilder":
@@ -403,7 +411,10 @@ class ReactAgentBuilder:
     # Factory methods for common agent types
 
     @classmethod
-    async def research_agent(cls, model: Optional[str] = None,) -> ReactAgent:
+    async def research_agent(
+        cls,
+        model: Optional[str] = None,
+    ) -> ReactAgent:
         """
         Create a pre-configured research agent optimized for information gathering
 
@@ -671,7 +682,7 @@ class ReactAgentBuilder:
             "custom_tools": custom_tools,
             "custom_tool_details": custom_tool_details,
             "mcp_client_initialized": self._mcp_client is not None,
-            "server_filter": self._server_filter,
+            "server_filter": self._mcp_server_filter,
             "total_tools": len(self._registered_tools),
         }
 
@@ -969,11 +980,14 @@ class ReactAgentBuilder:
             ReactAgent: A fully configured agent ready to use
         """
         # Initialize MCP client if not already done
-        if self._mcp_client is None and self._server_filter is not None:
+        if (self._mcp_client is None and self._mcp_config is not None) or (
+            self._mcp_client is None and self._mcp_server_filter is not None
+        ):
             try:
                 # Create the client in the same task context where it will be used
                 self._mcp_client = await MCPClient(
-                    server_filter=self._server_filter
+                    server_config=self._mcp_config,
+                    server_filter=self._mcp_server_filter,
                 ).initialize()
                 self._config["mcp_client"] = self._mcp_client
             except Exception as e:

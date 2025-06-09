@@ -114,35 +114,40 @@ class Agent:
             self.agent_logger.debug(
                 f"Thinking (chat completion, tool_use={use_tools})..."
             )
+            if self.context.model_provider_options:
+                self.agent_logger.debug(
+                    f"Using model provider options: {self.context.model_provider_options}"
+                )
+                kwargs["options"] = self.context.model_provider_options
 
             result = await self.model_provider.get_chat_completion(
                 tools=tool_signatures if use_tools else [],
                 **kwargs,
             )
-
+            result = result.model_dump()
+            self.agent_logger.debug(f"Chat completion result: {result}")
             # Metric Tracking (always track call, even if it fails below)
             execution_time = time.time() - start_time
             if self.context.metrics_manager:
-                usage = result.get("usage", {}) if result else {}
                 self.context.metrics_manager.update_model_metrics(
                     {
-                        "time": execution_time,
-                        "prompt_tokens": usage.get("prompt_tokens", 0),
-                        "completion_tokens": usage.get("completion_tokens", 0),
+                        "time": result.get("total_duration", execution_time),
+                        "prompt_tokens": result.get("prompt_tokens", 0),
+                        "completion_tokens": result.get("completion_tokens", 0),
                     }
                 )
 
-            if not result or "message" not in result:
+            if not result or "message" not in result.keys():
                 self.agent_logger.warning(
                     "Chat completion did not return a valid message structure."
                 )
                 return None
 
             message = result["message"]
-            message_content = message.get("content")
-            tool_calls = message.get("tool_calls")
+            message_content: str = message.get("content")
+            tool_calls: List[Dict[str, Any]] = message.get("tool_calls")
 
-            if message_content and remember_messages:
+            if message_content.strip() and remember_messages:
                 # Add assistant response to context's message history
                 self.context.session.messages.append(
                     {"role": "assistant", "content": message_content}
@@ -150,7 +155,6 @@ class Agent:
                 self.agent_logger.debug(
                     f"Added assistant message to context: {message_content[:100]}..."
                 )
-
             elif tool_calls and use_tools:
                 self.agent_logger.info(f"Received {len(tool_calls)} tool calls.")
                 # Add the assistant message with tool calls before processing results
@@ -168,7 +172,7 @@ class Agent:
                 # Recursive call to let the model respond to tool results
                 # Pass remember_messages=False for the recursive call if we only want the *final* assistant message
                 return await self._think_chain(
-                    remember_messages=remember_messages, use_tools=False, **kwargs
+                    remember_messages=remember_messages, use_tools=use_tools, **kwargs
                 )
 
             # Return the result which might contain content or tool_calls

@@ -10,6 +10,7 @@ from pydantic import PydanticDeprecatedSince211
 from reactive_agents.agents import ReactAgent, ReactAgentBuilder
 from reactive_agents.agents.builders import ConfirmationConfig, LogLevel
 from reactive_agents.agents.react_agent import ReactAgentConfig
+from reactive_agents.config.mcp_config import DockerConfig, MCPConfig, MCPServerConfig
 from reactive_agents.tools.decorators import tool
 
 warnings.simplefilter("ignore", ResourceWarning)
@@ -195,10 +196,13 @@ async def main():
                 ReactAgentBuilder()
                 .with_name("MCP Tools Agent")
                 .with_model(PROVIDER_MODEL)
+                .with_tool_use()
+                .with_tool_caching()
+                .with_model_provider_options(options={"num_ctx": 4000, "num_gpus": 256})
                 .with_mcp_tools(["time", "brave-search"])
                 .with_instructions("Answer questions using MCP tools.")
                 .with_confirmation(confirmation_callback, confirmation_config)
-                .with_log_level(LogLevel.INFO)
+                .with_log_level(LogLevel.DEBUG)
                 .build()
             )
 
@@ -213,6 +217,14 @@ async def main():
                 ReactAgentBuilder()
                 .with_name("Custom Tools Agent")
                 .with_model(PROVIDER_MODEL)
+                .with_model_provider_options(
+                    {
+                        "temperature": 0.2,
+                        "num_ctx": 4000,
+                        "num_gpus": 256,
+                        "think": False,
+                    }
+                )
                 .with_custom_tools([custom_weather_tool, crypto_price_simulator])
                 .with_instructions("Answer questions using custom tools.")
                 .with_confirmation(confirmation_callback, confirmation_config)
@@ -356,42 +368,52 @@ async def main():
         traceback.print_exc()
 
 
-async def legacy_main():
+async def classic_main():
     """
     Example usage of the legacy way to create a ReactAgent with custom tools.
 
     This demonstrates creating a minimal ReactAgent using ReactAgentConfig with custom tools.
     """
-    mcp_config = {
-        "mcpServers": {
-            "duckduckgo": {
-                "args": ["run", "-i", "--rm", "mcp/duckduckgo"],
-                "command": "docker",
-            }
+    mcp_config = MCPConfig(
+        mcpServers={
+            "time": MCPServerConfig(
+                command="docker",
+                args=["run", "-i", "--rm", "mcp/time"],
+            ),
         }
-    }
+    )
     agent = await ReactAgent(
         config=ReactAgentConfig(
             agent_name="Legacy Agent",
+            role="Task Execution Agent",
+            instructions="Use your tools to solve problems. Always take steps to confirm your actions are correct.",
             provider_model_name=PROVIDER_MODEL,
+            model_provider_options={
+                "num_ctx": 4000,
+                "num_gpu": 256,
+                "temperature": 0,
+                "think": False,
+            },
+            log_level="info",
             mcp_config=mcp_config,
+            mcp_server_filter=[],
         )
     ).initialize()
-    result = await agent.run(initial_task="When did Chris Cornell die?")
-    print(result)
+    result = await agent.run(initial_task="What is the current time in New York?")
+    print(json.dumps(result, indent=4, default=str))
     await agent.close()
 
 
 async def context_managed_main():
 
-    mcp_config = {
-        "mcpServers": {
-            "time": {
-                "args": ["run", "-i", "--rm", "mcp/time"],
-                "command": "docker",
-            }
+    mcp_config = MCPConfig(
+        mcpServers={
+            "time": MCPServerConfig(
+                args=["run", "-i", "--rm", "mcp/time"],
+                command="docker",
+            )
         }
-    }
+    )
     #  Create agent with required parameters and custom tools
     async with ReactAgent(
         config=ReactAgentConfig(
@@ -409,7 +431,7 @@ if __name__ == "__main__":
     PROVIDER_MODEL = "ollama:cogito:14b"
     # 👇 Run the builder pattern examples
     asyncio.run(main())
-    # 👇 Run the basic minimal agent example
-    # asyncio.run(legacy_main())
+    # 👇 Run the class based minimal agent example
+    asyncio.run(classic_main())
     # 👇 Run the context managed agent example
-    # asyncio.run(context_managed_main())
+    asyncio.run(context_managed_main())
