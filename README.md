@@ -1,5 +1,6 @@
 # Reactive AI Agent Framework
 
+[![CI Build Status](https://github.com/tylerjrbuell/reactive-agents/actions/workflows/ci.yml/badge.svg)](https://github.com/tylerjrbuell/reactive-agents/actions/workflows/ci.yml)
 [![PyPI version](https://badge.fury.io/py/reactive-agents.svg)](https://badge.fury.io/py/reactive-agents)
 [![Python](https://img.shields.io/pypi/pyversions/reactive-agents.svg)](https://pypi.org/project/reactive-agents/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -149,7 +150,7 @@ Included MCP servers:
 
 ### Custom Configuration
 
-You can customize MCP servers in two ways:
+You can customize MCP servers in a few ways:
 
 1. Environment variable (`MCP_CONFIG_PATH`):
 
@@ -157,37 +158,55 @@ You can customize MCP servers in two ways:
    MCP_CONFIG_PATH=/path/to/custom/mcp_config.json
    ```
 
-2. JSON configuration file:
-   ```json
-   {
-     "servers": {
-       "custom-server": {
-         "command": "python",
-         "args": ["./path/to/server.py"],
-         "env": {
-           "CUSTOM_VAR": "value"
-         },
-         "working_dir": "/path/to/working/dir",
-         "enabled": true
-       },
-       "custom-docker-server": {
-         "command": "docker",
-         "args": ["run", "--name", "my-server", "-i", "--rm", "my-image"],
-         "docker": {
-           "network": "my-network",
-           "extra_mounts": ["type=bind,src=/host/path,dst=/container/path"],
-           "extra_env": {
-             "DOCKER_VAR": "value"
-           }
-         }
-       }
-     },
-     "default_docker_config": {
-       "host": "unix:///var/run/docker.sock",
-       "network": "default-network"
-     }
-   }
+2. Python
+
+   ```python
+
+   # Minimal example using `ReactAgentBuilder`
+   agent = await ReactAgentBuilder().with_mcp_config_path("/path/to/custom/mcp_config.json").build()
+
+   # Minimal Example using `ReactAgent` class directly
+   from reactive_agents.agents import ReactAgent, ReactAgentConfig
+
+   agentConf = ReactAgentConfig(mcp_config_path="/path/to/custom/mcp_config.json")
+   agent = await ReactAgent(config=agentConf).initialize()
+
    ```
+
+- JSON configuration file example:
+
+  ```json
+  {
+    "mcpServers": {
+      "custom-server": {
+        "command": "python",
+        "args": ["./path/to/server.py"],
+        "env": {
+          "CUSTOM_VAR": "value"
+        },
+        "working_dir": "/path/to/working/dir",
+        "enabled": true
+      },
+      // For networked Docker servers
+      "custom-docker-server": {
+        "command": "docker",
+        "args": ["run", "--name", "my-server", "-i", "--rm", "my-image"],
+        "docker": {
+          "network": "my-network",
+          "extra_mounts": ["type=bind,src=/host/path,dst=/container/path"],
+          "extra_env": {
+            "DOCKER_VAR": "value"
+          }
+        }
+      }
+    },
+    // For non-networked Docker servers
+    "default_docker_config": {
+      "host": "unix:///var/run/docker.sock",
+      "network": "default-network"
+    }
+  }
+  ```
 
 ## Usage Details
 
