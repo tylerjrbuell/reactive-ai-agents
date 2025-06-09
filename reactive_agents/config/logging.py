@@ -1,6 +1,7 @@
 from enum import Enum
 import logging
 import traceback
+import sys
 from colorlog import StreamHandler, ColoredFormatter
 
 
@@ -22,9 +23,11 @@ class LoggerAdapter(logging.LoggerAdapter):
         if kwargs.get("exc_info"):
             # Format exception with full traceback
             exc_info = kwargs["exc_info"]
+            if exc_info is True:
+                exc_info = sys.exc_info()
             if isinstance(exc_info, BaseException):
                 exc_info = (type(exc_info), exc_info, exc_info.__traceback__)
-            if exc_info:
+            if exc_info and isinstance(exc_info, tuple) and len(exc_info) == 3:
                 msg += "\n" + "".join(
                     traceback.format_exception(exc_info[0], exc_info[1], exc_info[2])
                 )

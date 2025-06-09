@@ -61,7 +61,7 @@ def test_builder_initialization(basic_builder):
     assert basic_builder._config["role"] == "Task Executor"
     assert basic_builder._config["provider_model_name"] == "ollama:qwen2:7b"
     assert basic_builder._mcp_client is None
-    assert basic_builder._server_filter is None
+    assert basic_builder._mcp_server_filter is None
     assert len(basic_builder._custom_tools) == 0
     assert isinstance(basic_builder._registered_tools, set)
     assert len(basic_builder._registered_tools) == 0
@@ -107,7 +107,7 @@ def test_builder_with_methods(basic_builder):
 def test_with_mcp_tools(basic_builder):
     """Test the with_mcp_tools method"""
     builder = basic_builder.with_mcp_tools(["time", "brave-search"])
-    assert builder._server_filter == ["time", "brave-search"]
+    assert builder._mcp_server_filter == ["time", "brave-search"]
     assert "mcp:time" in builder._registered_tools
     assert "mcp:brave-search" in builder._registered_tools
     assert len(builder._registered_tools) == 2
@@ -132,7 +132,7 @@ def test_with_tools_method(basic_builder):
         mcp_tools=["time", "brave-search"], custom_tools=[square_tool]
     )
 
-    assert builder._server_filter == ["time", "brave-search"]
+    assert builder._mcp_server_filter == ["time", "brave-search"]
     assert len(builder._custom_tools) == 1
     assert "mcp:time" in builder._registered_tools
     assert "mcp:brave-search" in builder._registered_tools
@@ -312,7 +312,7 @@ async def test_research_agent_factory(mock_new, mock_build):
     # Create a mock builder that will be returned by __new__
     mock_builder = MagicMock()
     mock_builder._config = {}
-    mock_builder._server_filter = None
+    mock_builder._mcp_server_filter = None
     mock_builder.with_name.return_value = mock_builder
     mock_builder.with_role.return_value = mock_builder
     mock_builder.with_model.return_value = mock_builder
@@ -352,7 +352,7 @@ async def test_database_agent_factory(mock_new, mock_build):
     # Create a mock builder that will be returned by __new__
     mock_builder = MagicMock()
     mock_builder._config = {}
-    mock_builder._server_filter = None
+    mock_builder._mcp_server_filter = None
     mock_builder.with_name.return_value = mock_builder
     mock_builder.with_role.return_value = mock_builder
     mock_builder.with_model.return_value = mock_builder
@@ -389,7 +389,7 @@ async def test_crypto_research_agent_factory(mock_new, mock_build):
     # Create a mock builder that will be returned by __new__
     mock_builder = MagicMock()
     mock_builder._config = {}
-    mock_builder._server_filter = None
+    mock_builder._mcp_server_filter = None
     mock_builder.with_name.return_value = mock_builder
     mock_builder.with_role.return_value = mock_builder
     mock_builder.with_model.return_value = mock_builder
