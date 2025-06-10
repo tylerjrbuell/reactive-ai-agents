@@ -1139,7 +1139,7 @@ class ReactAgent(Agent):
             return False
         # Use session final_answer and task_nudges
         elif tools_completed and self.context.session.final_answer is None:
-            nudge = "**All required tools used, but requires final_answer(<answer>) tool call.**"
+            nudge = "**All required tools used, but requires 'final_answer(<answer>)' tool call.**"
             if nudge not in self.context.session.task_nudges:
                 self.context.session.task_nudges.append(nudge)
         # Use session task_nudges

@@ -46,7 +46,7 @@ Guidelines:
 - Follow task progress
 - Provide clear reasoning for actions
 - Adhere to role-specific instructions and constraints
-- Call the final_answer(<answer>) tool to provide the final answer to the user when task is complete
+- Call the 'final_answer(<answer>)' tool to provide the final answer to the user when task is complete
 """
 
 PERCENTAGE_COMPLETE_TASK_REFLECTION_PROMPT = """
