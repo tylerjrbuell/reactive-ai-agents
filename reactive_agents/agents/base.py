@@ -172,7 +172,7 @@ class Agent:
                 # Recursive call to let the model respond to tool results
                 # Pass remember_messages=False for the recursive call if we only want the *final* assistant message
                 return await self._think_chain(
-                    remember_messages=remember_messages, use_tools=use_tools, **kwargs
+                    remember_messages=remember_messages, use_tools=False, **kwargs
                 )
 
             # Return the result which might contain content or tool_calls
