@@ -301,7 +301,7 @@ async def test_unify_tool_registration():
 
 # Factory Methods Tests
 @pytest.mark.asyncio
-@patch("agents.builders.ReactAgentBuilder.build")
+@patch("reactive_agents.agents.builders.ReactAgentBuilder.build")
 @patch.object(ReactAgentBuilder, "__new__")
 async def test_research_agent_factory(mock_new, mock_build):
     """Test the research_agent factory method"""
@@ -341,7 +341,7 @@ async def test_research_agent_factory(mock_new, mock_build):
 
 
 @pytest.mark.asyncio
-@patch("agents.builders.ReactAgentBuilder.build")
+@patch("reactive_agents.agents.builders.ReactAgentBuilder.build")
 @patch.object(ReactAgentBuilder, "__new__")
 async def test_database_agent_factory(mock_new, mock_build):
     """Test the database_agent factory method"""
@@ -378,7 +378,7 @@ async def test_database_agent_factory(mock_new, mock_build):
 
 
 @pytest.mark.asyncio
-@patch("agents.builders.ReactAgentBuilder.build")
+@patch("reactive_agents.agents.builders.ReactAgentBuilder.build")
 @patch.object(ReactAgentBuilder, "__new__")
 async def test_crypto_research_agent_factory(mock_new, mock_build):
     """Test the crypto_research_agent factory method"""
