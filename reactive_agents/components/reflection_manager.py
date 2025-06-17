@@ -27,10 +27,10 @@ class ReflectionFormat(BaseModel):
 
 
 if TYPE_CHECKING:
-    from context.agent_context import AgentContext
-    from loggers.base import Logger
-    from model_providers.base import BaseModelProvider
-    from components.tool_manager import ToolManager
+    from reactive_agents.context.agent_context import AgentContext
+    from reactive_agents.loggers.base import Logger
+    from reactive_agents.model_providers.base import BaseModelProvider
+    from reactive_agents.components.tool_manager import ToolManager
 
 
 class ReflectionManager(BaseModel):
