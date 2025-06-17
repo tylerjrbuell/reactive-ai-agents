@@ -30,6 +30,9 @@ class MCPServerConfig(BaseModel):
     env: Dict[str, str] = Field(
         default_factory=dict, description="Environment variables"
     )
+    inputs: Dict[str, Any] = Field(
+        default_factory=dict, description="Inputs for the server configuration"
+    )
     working_dir: Optional[DirectoryPath] = Field(
         default=None, description="Working directory"
     )
