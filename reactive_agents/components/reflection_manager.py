@@ -14,6 +14,8 @@ from reactive_agents.prompts.agent_prompts import (
 
 # --- End Import ---
 
+from reactive_agents.common.types.event_types import AgentStateEvent
+
 
 # Assuming ReflectionFormat is defined here or imported
 class ReflectionFormat(BaseModel):
@@ -138,14 +140,33 @@ class ReflectionManager(BaseModel):
                 try:
                     reflection_data = json.loads(response["response"])
                     self.reflections.append(reflection_data)
+                    # Emit REFLECTION_GENERATED event
+                    self.context.emit_event(
+                        AgentStateEvent.REFLECTION_GENERATED,
+                        {"reflection": reflection_data},
+                    )
                     return reflection_data
                 except json.JSONDecodeError as e:
                     if self.context.agent_logger:
-                        self.context.agent_logger.error(
-                            f"Error parsing reflection JSON: {e}"
+                        self.context.agent_logger.warning(
+                            f"Reflection LLM did not return valid JSON. Raw response: {response['response']!r}. Error: {e}"
                         )
-                    return None
-            return None
+                    # Fallback: return a minimal default reflection
+                    return {
+                        "next_step": "No valid reflection generated. Proceed to next step or retry.",
+                        "reason": "LLM did not return valid JSON for reflection.",
+                        "completed_tools": tools_used_successfully,
+                    }
+            else:
+                if self.context.agent_logger:
+                    self.context.agent_logger.warning(
+                        f"Reflection LLM returned empty or no response."
+                    )
+                return {
+                    "next_step": "No reflection response. Proceed to next step or retry.",
+                    "reason": "LLM returned empty response for reflection.",
+                    "completed_tools": tools_used_successfully,
+                }
 
         except Exception as e:
             if self.context.agent_logger:

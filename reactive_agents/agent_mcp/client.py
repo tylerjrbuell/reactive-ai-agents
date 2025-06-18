@@ -38,7 +38,7 @@ class MCPClient:
         self.config: Optional[MCPConfig] = None
         self.config_file = config_file
         self.server_config = server_config
-        self.logger = Logger(__name__, "mcp", log_level or LogLevel.INFO.value)
+        self.logger = Logger("MCPClient", "mcp", log_level or LogLevel.INFO.value)
         self.logger.formatter = formatter
 
     def _prepare_docker_args(

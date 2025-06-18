@@ -7,31 +7,20 @@ from typing import (
     Any,
     Optional,
     Set,
-    Tuple,
     TYPE_CHECKING,
     Protocol,
     runtime_checkable,
     List,
+    Tuple,
 )
 import json
 
 from reactive_agents.common.types.status_types import TaskStatus
-from reactive_agents.context.agent_context import AgentContext
 from reactive_agents.common.types.session_types import AgentSession
 from reactive_agents.common.types.event_types import AgentStateEvent
 from reactive_agents.common.types.agent_types import (
-    PlanFormat,
-    ToolAnalysisFormat,
-    RescopeFormat,
     EvaluationFormat,
 )
-from reactive_agents.common.types.confirmation_types import (
-    ConfirmationCallbackProtocol,
-    ConfirmationResult,
-    ConfirmationResultAwaitable,
-    ConfirmationConfig,
-)
-from reactive_agents.common.types.memory_types import AgentMemory
 from reactive_agents.prompts.agent_prompts import (
     SUMMARY_SYSTEM_PROMPT,
     SUMMARY_CONTEXT_PROMPT,
@@ -41,8 +30,6 @@ from reactive_agents.prompts.agent_prompts import (
 
 if TYPE_CHECKING:
     from reactive_agents.agents.base import Agent
-    from reactive_agents.agents.react_agent import ReactAgent
-    from reactive_agents.agents.task_executor import TaskExecutor
 
 
 @runtime_checkable
@@ -64,7 +51,7 @@ class AgentExecutionEngine:
             agent: The Agent instance containing all necessary components and state for the agent execution.
         """
         # Import here to avoid circular imports
-        from reactive_agents.agents.task_executor import TaskExecutor
+        from reactive_agents.components.task_executor import TaskExecutor
 
         self.agent = agent
         self.context = agent.context
@@ -84,8 +71,6 @@ class AgentExecutionEngine:
         self,
         initial_task: str,
         cancellation_event: Optional[asyncio.Event] = None,
-        self_improve: bool = False,
-        max_improvement_attempts: int = 3,
     ) -> Dict[str, Any]:
         """
         Execute the agent's task, managing the main execution loop.
@@ -93,8 +78,6 @@ class AgentExecutionEngine:
         Args:
             initial_task: The task description to execute.
             cancellation_event: Optional event to signal cancellation.
-            self_improve: Whether to enable self-improvement loop.
-            max_improvement_attempts: Maximum number of improvement attempts.
 
         Returns:
             A dictionary containing the final status, result, and other execution details.
@@ -116,9 +99,6 @@ class AgentExecutionEngine:
             answer_quality_score=0.0,
             llm_evaluation_score=0.0,
             instruction_adherence_score=0.0,
-            improvement_history=[],
-            best_score=0.0,
-            improvement_attempts=0,
         )
 
         # Reset managers
@@ -144,9 +124,6 @@ class AgentExecutionEngine:
         failure_count = 0
         active_tasks: Set[asyncio.Task] = set()
         last_plan = None
-        improvement_attempt = 0
-        best_score = 0.0
-        improvement_history = []
 
         try:
             # Pre-run checks
@@ -154,10 +131,25 @@ class AgentExecutionEngine:
                 return await self._prepare_final_result()
 
             if self.context.check_tool_feasibility:
-                feasibility = await self._check_tool_feasibility(initial_task)
-                if not feasibility["feasible"]:
-                    self.context.session.task_status = TaskStatus.MISSING_TOOLS
-                    return await self._prepare_final_result()
+                check_method = getattr(self.agent, "check_tool_feasibility", None)
+                if check_method:
+                    feasibility = await check_method(initial_task)
+                    if not feasibility["feasible"]:
+                        self.context.session.task_status = TaskStatus.MISSING_TOOLS
+                        return await self._prepare_final_result()
+
+                    # Set min_required_tools in the session if available
+                    if "required_tools" in feasibility:
+                        self.context.session.min_required_tools = set(
+                            feasibility["required_tools"]
+                        )
+                        self.agent.agent_logger.info(
+                            f"Set min_required_tools in session: {self.context.session.min_required_tools}"
+                        )
+                else:
+                    self.agent.agent_logger.warning(
+                        "Tool feasibility check not available for this agent type."
+                    )
 
             # Set status to running
             self.context.session.task_status = TaskStatus.RUNNING
@@ -166,139 +158,80 @@ class AgentExecutionEngine:
                 {"previous_status": "initialized", "new_status": "running"},
             )
 
-            while improvement_attempt < max_improvement_attempts:
-                # Main execution loop
-                while await self._should_continue():
-                    if self._handle_control_signals():
-                        break
-
-                    self.context.session.iterations += 1
+            # Main execution loop
+            while await self._should_continue():
+                # Check for cancellation event
+                if cancellation_event and cancellation_event.is_set():
                     self.context.emit_event(
-                        AgentStateEvent.ITERATION_STARTED,
-                        {
-                            "iteration": self.context.session.iterations,
-                            "max_iterations": self.context.max_iterations,
-                        },
+                        AgentStateEvent.CANCELLED,
+                        {"message": "Agent cancelled by external event."},
                     )
+                    self.context.session.task_status = TaskStatus.CANCELLED
+                    return await self._prepare_final_result()
 
-                    # Execute iteration
-                    try:
-                        iteration_result = await self._execute_iteration(
-                            rescoped_task or self.context.session.current_task,
-                            last_plan,
-                        )
-                        last_content, new_plan = iteration_result
-                        last_plan = new_plan
-
-                        if last_content:
-                            final_result_content = last_content
-
-                        if self.context.session.final_answer:
-                            self.context.session.task_status = TaskStatus.COMPLETE
-                            break
-
-                    except Exception as iter_error:
-                        failure_count += 1
-                        last_error = str(iter_error)
-                        await self._handle_iteration_error(
-                            iter_error, failure_count, max_failures
-                        )
-
-                # Post-execution processing
-                self.context.session.summary = await self._generate_summary()
-                self.context.session.evaluation = (
-                    await self._generate_goal_result_evaluation()
-                )
-
-                # Get current score
-                current_score = self.context.session.evaluation.get(
-                    "adherence_score", 0.0
-                )
-
-                # Store best score
-                if current_score > best_score:
-                    best_score = current_score
-
-                # Check if we need to improve
-                if (
-                    not self_improve
-                    or current_score >= self.context.min_completion_score
-                ):
+                if self._handle_control_signals():
                     break
 
-                # Prepare improvement context
-                improvement_context = {
-                    "attempt": improvement_attempt + 1,
-                    "previous_score": current_score,
-                    "strengths": self.context.session.evaluation.get("strengths", []),
-                    "weaknesses": self.context.session.evaluation.get("weaknesses", []),
-                    "explanation": self.context.session.evaluation.get(
-                        "explanation", ""
-                    ),
-                    "tool_history": (
-                        self.context.tool_manager.tool_history
-                        if self.context.tool_manager
-                        else []
-                    ),
-                    "reasoning_log": self.context.session.reasoning_log,
-                }
-
-                # Generate improvement instructions
-                improvement_prompt = f"""
-                Based on the previous attempt (score: {current_score:.2f}), improve the agent's performance.
-                Strengths to maintain: {', '.join(improvement_context['strengths'])}
-                Weaknesses to address: {', '.join(improvement_context['weaknesses'])}
-                Previous explanation: {improvement_context['explanation']}
-                
-                Provide specific instructions to improve the next attempt.
-                """
-
-                # Get improvement suggestions
-                improvement_response = await self.agent.model_provider.get_completion(
-                    system="You are an expert at improving agent performance. Provide specific, actionable improvements.",
-                    prompt=improvement_prompt,
+                self.context.session.iterations += 1
+                self.context.emit_event(
+                    AgentStateEvent.ITERATION_STARTED,
+                    {
+                        "iteration": self.context.session.iterations,
+                        "max_iterations": self.context.max_iterations,
+                    },
                 )
 
-                if improvement_response and improvement_response.get("response"):
-                    # Store improvement data
-                    improvement_data = {
-                        "attempt": improvement_attempt + 1,
-                        "score": current_score,
-                        "improvements": improvement_response["response"],
-                        "strengths": improvement_context["strengths"],
-                        "weaknesses": improvement_context["weaknesses"],
-                    }
-                    improvement_history.append(improvement_data)
-
-                    # Update agent instructions with improvements
-                    self.context.instructions = f"""
-                    {self.context.instructions}
-                    
-                    Improvement attempt {improvement_attempt + 1}:
-                    {improvement_response['response']}
-                    """
-
-                improvement_attempt += 1
-
-                if self.context.agent_logger:
-                    self.context.agent_logger.info(
-                        f"Starting improvement attempt {improvement_attempt} "
-                        f"(previous score: {current_score:.2f})"
+                # Execute iteration
+                try:
+                    self.agent.agent_logger.debug(
+                        f"🔄 Starting Iteration - {self.context.session.iterations}/{self.context.max_iterations}"
+                    )
+                    iteration_result = await self._execute_iteration(
+                        rescoped_task or self.context.session.current_task,
+                        last_plan,
+                    )
+                    last_content, new_plan = iteration_result
+                    last_plan = new_plan
+                    if last_content:
+                        final_result_content = last_content
+                    if self.context.session.final_answer:
+                        self.context.session.task_status = TaskStatus.COMPLETE
+                        # Emit ITERATION_COMPLETED event before breaking
+                        self.context.emit_event(
+                            AgentStateEvent.ITERATION_COMPLETED,
+                            {
+                                "iteration": self.context.session.iterations,
+                                "has_result": bool(last_content),
+                                "has_plan": bool(new_plan),
+                            },
+                        )
+                        break
+                    # Emit ITERATION_COMPLETED event at end of iteration
+                    self.context.emit_event(
+                        AgentStateEvent.ITERATION_COMPLETED,
+                        {
+                            "iteration": self.context.session.iterations,
+                            "has_result": bool(last_content),
+                            "has_plan": bool(new_plan),
+                        },
+                    )
+                except Exception as iter_error:
+                    failure_count += 1
+                    last_error = str(iter_error)
+                    await self._handle_iteration_error(
+                        iter_error, failure_count, max_failures
                     )
 
-                # Reset iteration count for next attempt
-                self.context.session.iterations = 0
+            # Post-execution processing
+            self.context.session.summary = await self._generate_summary()
+            self.context.session.evaluation = (
+                await self._generate_goal_result_evaluation()
+            )
 
         except Exception as run_error:
             return await self._handle_execution_error(run_error)
 
         finally:
-            # Add improvement history to session
-            if improvement_history:
-                self.context.session.improvement_history = improvement_history
-                self.context.session.best_score = best_score
-                self.context.session.improvement_attempts = improvement_attempt
-
             return await self._finalize_execution(
                 rescoped_task,
                 final_result_content,
@@ -359,13 +292,13 @@ class AgentExecutionEngine:
         if not plan and reflection:
             plan = await self._generate_plan(reflection, last_plan)
 
-        # Log the final plan
-        if self.context.agent_logger:
-            self.context.agent_logger.debug("\n=== FINAL PLAN ===")
-            self.context.agent_logger.debug(
-                f"Plan: {json.dumps(plan, indent=2) if plan else 'None'}"
-            )
-            self.context.agent_logger.debug("=================\n")
+            # Log the final plan
+            if self.context.agent_logger:
+                self.context.agent_logger.debug("\n=== FINAL PLAN ===")
+                self.context.agent_logger.debug(
+                    f"Plan: {json.dumps(plan, indent=2) if plan else 'None'}"
+                )
+                self.context.agent_logger.debug("=================\n")
 
         return content, plan
 
@@ -644,51 +577,6 @@ class AgentExecutionEngine:
     async def _check_dependencies(self) -> bool:
         """Check if all dependencies are met."""
         return self.task_executor._check_dependencies()
-
-    async def _check_tool_feasibility(self, task: str) -> Dict[str, Any]:
-        """
-        Check if the task is feasible with the available tools.
-
-        Args:
-            task: The task to check feasibility for.
-
-        Returns:
-            Dict containing feasibility information with the following keys:
-                - feasible (bool): Whether the task is feasible
-                - missing_tools (List[str]): List of missing tools if any
-                - explanation (str): Explanation of feasibility
-                - required_tools (List[str], optional): List of required tools if feasible
-        """
-        if not isinstance(self.agent, ToolFeasibilityChecker):
-            self.agent.agent_logger.warning(
-                "Tool feasibility check not available for this agent type."
-            )
-            return {
-                "feasible": True,
-                "missing_tools": [],
-                "explanation": "Tool feasibility check not available for this agent type.",
-            }
-
-        try:
-            feasibility = await self.agent.check_tool_feasibility(task)
-
-            # Set min_required_tools in the session if available
-            if "required_tools" in feasibility:
-                self.context.session.min_required_tools = set(
-                    feasibility["required_tools"]
-                )
-                self.agent.agent_logger.info(
-                    f"Set min_required_tools in session: {self.context.session.min_required_tools}"
-                )
-
-            return feasibility
-        except Exception as e:
-            self.agent.agent_logger.error(f"Error checking tool feasibility: {e}")
-            return {
-                "feasible": True,
-                "missing_tools": [],
-                "explanation": f"Error checking tool feasibility: {e}",
-            }
 
     async def _generate_reflection(
         self, think_act_result: Any

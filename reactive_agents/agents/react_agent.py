@@ -8,9 +8,6 @@ from typing import (
     Literal,
     Optional,
     Dict,
-    Set,
-    Tuple,
-    Callable,
     TYPE_CHECKING,
 )
 
@@ -23,10 +20,8 @@ from reactive_agents.prompts.agent_prompts import (
     RESCOPE_CONTEXT_PROMPT,
 )
 from reactive_agents.agents.base import Agent
-from reactive_agents.common.types.session_types import AgentSession
 from reactive_agents.context.agent_context import AgentContext
 from reactive_agents.agent_mcp.client import MCPClient
-from reactive_agents.common.types.event_types import AgentStateEvent
 from reactive_agents.context.agent_events import (
     EventCallback,
     SessionStartedEventData,
@@ -53,25 +48,18 @@ from reactive_agents.context.agent_events import (
 from reactive_agents.common.types.status_types import TaskStatus
 from reactive_agents.common.types.confirmation_types import (
     ConfirmationCallbackProtocol,
-    ConfirmationResult,
-    ConfirmationResultAwaitable,
-    ConfirmationConfig,
 )
-from reactive_agents.common.types.memory_types import AgentMemory
 from reactive_agents.common.types.agent_types import (
-    PlanFormat,
     ToolAnalysisFormat,
     RescopeFormat,
-    EvaluationFormat,
 )
-from reactive_agents.agents.task_executor import TaskExecutor
-from reactive_agents.loggers.base import Logger
-from reactive_agents.agents.tool_processor import ToolProcessor
-from reactive_agents.agents.event_manager import EventManager
-from reactive_agents.agents.config_validator import ConfigValidator
+from reactive_agents.components.task_executor import TaskExecutor
+from reactive_agents.components.tool_processor import ToolProcessor
+from reactive_agents.components.event_manager import EventManager
+from reactive_agents.agents.validators.config_validator import ConfigValidator
 
 if TYPE_CHECKING:
-    from reactive_agents.agents.execution_engine import AgentExecutionEngine
+    from reactive_agents.components.execution_engine import AgentExecutionEngine
 
 
 # --- Agent Configuration Model ---
@@ -207,7 +195,7 @@ class ReactAgent(Agent):
             config: The ReactAgentConfig object containing all settings.
         """
         # Import here to avoid circular imports
-        from reactive_agents.agents.execution_engine import AgentExecutionEngine
+        from reactive_agents.components.execution_engine import AgentExecutionEngine
 
         # Initialize config validator with string log level
         self.config_validator = ConfigValidator(str(config.log_level or "info"))

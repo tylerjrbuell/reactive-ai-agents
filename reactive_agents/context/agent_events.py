@@ -158,6 +158,11 @@ class TerminatedEventData(BaseEventData):
     pass
 
 
+# --- Cancellation event data ---
+class CancelledEventData(BaseEventData):
+    pass
+
+
 # Map event types to their corresponding data types
 EventDataMapping = {
     AgentStateEvent.SESSION_STARTED: SessionStartedEventData,
@@ -183,6 +188,8 @@ EventDataMapping = {
     # --- Forceful terminate events ---
     AgentStateEvent.TERMINATE_REQUESTED: TerminateRequestedEventData,
     AgentStateEvent.TERMINATED: TerminatedEventData,
+    # --- Cancellation events ---
+    AgentStateEvent.CANCELLED: CancelledEventData,
 }
 
 
@@ -508,3 +515,7 @@ class AgentEventManager:
     def on_stopped(self) -> EventSubscription[StoppedEventData]:
         """Subscribe to stopped events"""
         return self.events(AgentStateEvent.STOPPED)
+
+    def on_cancelled(self) -> EventSubscription[CancelledEventData]:
+        """Subscribe to cancelled events"""
+        return self.events(AgentStateEvent.CANCELLED)

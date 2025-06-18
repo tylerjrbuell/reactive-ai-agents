@@ -2,9 +2,6 @@ from __future__ import annotations
 import traceback
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 
-# Removed Logger, BaseModelProvider, MCPClient, ToolProtocol, ToolResult, MCPToolWrapper etc.
-# Removed ModelProviderFactory, prompts
-
 # Import the AgentContext
 from reactive_agents.context.agent_context import AgentContext
 
@@ -13,14 +10,12 @@ from reactive_agents.loggers.base import Logger
 from reactive_agents.model_providers.base import BaseModelProvider
 import time  # Keep time for metric tracking
 
-# Removed time import if not used directly
-
 # Import shared types from the new location
 from reactive_agents.common.types.status_types import TaskStatus
 from reactive_agents.common.types.session_types import AgentSession
 
 if TYPE_CHECKING:
-    from reactive_agents.agents.execution_engine import AgentExecutionEngine
+    from reactive_agents.components.execution_engine import AgentExecutionEngine
 
 
 class Agent:
@@ -99,6 +94,35 @@ class Agent:
             # Track error? Maybe implicitly tracked by lack of successful result.
             return None
 
+    def _should_use_tools_in_recursion(self, tool_calls: List[Dict[str, Any]]) -> bool:
+        """
+        Dynamically determine if the recursive think_chain should use tools.
+
+        Args:
+            tool_calls: The tool calls that were just processed
+
+        Returns:
+            bool: True if tools should be enabled in the recursive call, False otherwise
+        """
+        if not self.context.tool_manager:
+            return False
+
+        # Check if we have required tools and if they've been used
+        if self.context.session.min_required_tools:
+            successful_tools = set(self.context.session.successful_tools)
+            required_tools = self.context.session.min_required_tools
+
+            # If we've used all required tools, disable tools to force final response
+            if required_tools.issubset(successful_tools):
+                self.agent_logger.info(
+                    "✅ All required tools used, disabling tools to force final response"
+                )
+                return False
+
+        # Default: allow tools for proactive behavior
+        self.agent_logger.info("🛠️ Enabling tools in recursion for proactive tool usage")
+        return True
+
     async def _think_chain(
         self,
         remember_messages: bool = True,
@@ -176,10 +200,14 @@ class Agent:
                 # Process tools using ToolManager via context
                 await self._process_tool_calls(tool_calls=tool_calls)
 
+                # Dynamically determine if tools should be enabled in the recursive call
+                should_use_tools = self._should_use_tools_in_recursion(tool_calls)
+
                 # Recursive call to let the model respond to tool results
-                # Pass remember_messages=False for the recursive call if we only want the *final* assistant message
                 return await self._think_chain(
-                    remember_messages=remember_messages, use_tools=False, **kwargs
+                    remember_messages=remember_messages,
+                    use_tools=should_use_tools,
+                    **kwargs,
                 )
 
             # Return the result which might contain content or tool_calls

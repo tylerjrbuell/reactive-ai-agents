@@ -24,3 +24,4 @@ class AgentStateEvent(str, Enum):
     STOPPED = "stopped"
     TERMINATE_REQUESTED = "terminate_requested"
     TERMINATED = "terminated"
+    CANCELLED = "cancelled"

@@ -28,6 +28,7 @@ from reactive_agents.context.agent_events import (
     TerminatedEventData,
     StopRequestedEventData,
     StoppedEventData,
+    CancelledEventData,
     EventCallback,
 )
 
@@ -143,6 +144,10 @@ class EventManager:
     def on_stopped(self, callback: EventCallback[StoppedEventData]) -> Any:
         """Subscribe to stopped events."""
         return self._event_manager.on_stopped().subscribe(callback)
+
+    def on_cancelled(self, callback: EventCallback[CancelledEventData]) -> Any:
+        """Subscribe to cancelled events."""
+        return self._event_manager.on_cancelled().subscribe(callback)
 
     def emit_event(self, event_type: AgentStateEvent, data: Dict[str, Any]) -> None:
         """

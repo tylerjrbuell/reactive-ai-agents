@@ -27,11 +27,14 @@ from reactive_agents.prompts.agent_prompts import (
 )
 from reactive_agents.common.types.confirmation_types import (
     ConfirmationCallbackProtocol,
-    ConfirmationConfig,
-    ConfirmationResult,
 )
+from reactive_agents.common.types.event_types import AgentStateEvent
 
 if TYPE_CHECKING:
+    from reactive_agents.common.types.confirmation_types import (
+        ConfirmationConfig,
+        ConfirmationResult,
+    )
     from reactive_agents.context.agent_context import AgentContext  # Keep import here
 
 
@@ -230,11 +233,20 @@ class ToolManager(BaseModel):
             available_tools = [t.name for t in self.tools]
             error_message = f"Tool '{tool_name}' not found. Available tools: {', '.join(available_tools)}"
             self.tool_logger.error(error_message)
-            # Update history for the failed attempt
+            # Emit TOOL_FAILED event
+            self.context.emit_event(
+                AgentStateEvent.TOOL_FAILED,
+                {"tool_name": tool_name, "parameters": params, "error": error_message},
+            )
             self._add_to_history(
                 tool_name, params, error_message, error=True, execution_time=0.0
             )
             return error_message
+
+        # Emit TOOL_CALLED event before execution
+        self.context.emit_event(
+            AgentStateEvent.TOOL_CALLED, {"tool_name": tool_name, "parameters": params}
+        )
 
         # Add reasoning to the main context log
         if "reasoning" in params:
@@ -266,6 +278,26 @@ class ToolManager(BaseModel):
                             self.context.session.final_answer = str(
                                 cached_result
                             )  # Ensure string
+                        # Emit TOOL_COMPLETED event
+                        self.context.emit_event(
+                            AgentStateEvent.TOOL_COMPLETED,
+                            {
+                                "tool_name": tool_name,
+                                "parameters": params,
+                                "result": cached_result,
+                                "execution_time": time.time() - time.time(),
+                            },
+                        )
+                        # Emit FINAL_ANSWER_SET if tool is final_answer
+                        if tool_name == "final_answer":
+                            self.context.emit_event(
+                                AgentStateEvent.FINAL_ANSWER_SET,
+                                {
+                                    "tool_name": tool_name,
+                                    "answer": cached_result,
+                                    "parameters": params,
+                                },
+                            )
                         return cached_result
                 self.cache_misses += 1
             except TypeError as e:
@@ -318,6 +350,15 @@ class ToolManager(BaseModel):
                         self._inject_user_feedback(tool_name, params, feedback)
                         cancel_msg += f" - Feedback: {feedback}"
 
+                    # Emit TOOL_FAILED event
+                    self.context.emit_event(
+                        AgentStateEvent.TOOL_FAILED,
+                        {
+                            "tool_name": tool_name,
+                            "parameters": params,
+                            "error": cancel_msg,
+                        },
+                    )
                     return cancel_msg
 
                 # If confirmed but user provided feedback, still inject it
@@ -334,6 +375,11 @@ class ToolManager(BaseModel):
                 )
                 self._add_to_history(
                     tool_name, params, error_msg, error=True, execution_time=0.0
+                )
+                # Emit TOOL_FAILED event
+                self.context.emit_event(
+                    AgentStateEvent.TOOL_FAILED,
+                    {"tool_name": tool_name, "parameters": params, "error": error_msg},
                 )
                 return error_msg
 
@@ -393,6 +439,26 @@ class ToolManager(BaseModel):
             if tool_name != "final_answer":  # Don't track final_answer as successful?
                 # Append to session successful_tools
                 self.context.session.successful_tools.append(tool_name)
+            # Emit TOOL_COMPLETED event
+            self.context.emit_event(
+                AgentStateEvent.TOOL_COMPLETED,
+                {
+                    "tool_name": tool_name,
+                    "parameters": params,
+                    "result": result_list,
+                    "execution_time": tool_execution_time,
+                },
+            )
+            # Emit FINAL_ANSWER_SET if tool is final_answer
+            if tool_name == "final_answer":
+                self.context.emit_event(
+                    AgentStateEvent.FINAL_ANSWER_SET,
+                    {
+                        "tool_name": tool_name,
+                        "answer": result_list,
+                        "parameters": params,
+                    },
+                )
             return result_list  # Return the structured result
 
         except Exception as e:
@@ -407,6 +473,16 @@ class ToolManager(BaseModel):
             )  # Log full traceback for debugging
             self._add_to_history(
                 tool_name, params, error_message, error=True, execution_time=0.0
+            )
+            # Emit TOOL_FAILED event
+            self.context.emit_event(
+                AgentStateEvent.TOOL_FAILED,
+                {
+                    "tool_name": tool_name,
+                    "parameters": params,
+                    "error": error_message,
+                    "traceback": tb_str,
+                },
             )
             return error_message  # Return error message to the agent loop
 
@@ -553,8 +629,12 @@ class ToolManager(BaseModel):
         # Optionally update metrics (delegated)
         if self.context.collect_metrics_enabled and self.context.metrics_manager:
             try:
-                # Pass relevant info for metrics update
                 self.context.metrics_manager.update_tool_metrics(entry)
+                # Emit METRICS_UPDATED event after metrics update
+                self.context.emit_event(
+                    AgentStateEvent.METRICS_UPDATED,
+                    {"metrics": self.context.metrics_manager.get_metrics()},
+                )
             except Exception as metrics_error:
                 self.tool_logger.debug(
                     f"Metrics update error (non-critical): {metrics_error}"

@@ -14,27 +14,16 @@ from typing import (
 
 from pydantic import BaseModel, Field
 import time
-
-# Placeholder imports - will be replaced with actual component classes
-# from components.metrics_manager import MetricsManager
-# from components.memory_manager import MemoryManager
-# from components.reflection_manager import ReflectionManager
-# from components.workflow_manager import WorkflowManager
-# from components.tool_manager import ToolManager
 from reactive_agents.config.mcp_config import MCPConfig
 from reactive_agents.loggers.base import Logger
 from reactive_agents.model_providers.base import BaseModelProvider
 from reactive_agents.agent_mcp.client import MCPClient
-from reactive_agents.prompts.agent_prompts import REACT_AGENT_SYSTEM_PROMPT
+from reactive_agents.prompts.agent_prompts import (
+    REACT_AGENT_SYSTEM_PROMPT,
+    DYNAMIC_SYSTEM_PROMPT_TEMPLATE,
+)
 from reactive_agents.tools.abstractions import ToolProtocol
 from reactive_agents.common.types.status_types import TaskStatus
-
-# Forward references for type hinting (No longer strictly needed with direct imports, but can keep for clarity)
-# MetricsManager = Any # Now imported
-# MemoryManager = Any # Now imported
-# ReflectionManager = Any # Now imported
-# WorkflowManager = Any # Now imported
-# ToolManager = Any # Now imported
 
 # --- Import Manager Classes ---
 from reactive_agents.components.metrics_manager import MetricsManager
@@ -135,9 +124,6 @@ class AgentContext(BaseModel):
             answer_quality_score=0.0,
             llm_evaluation_score=0.0,
             instruction_adherence_score=0.0,
-            improvement_history=[],
-            best_score=0.0,
-            improvement_attempts=0,
         )
 
     # Session State Holder (Reference to the current run's state)
@@ -316,13 +302,96 @@ class AgentContext(BaseModel):
             return self.metrics_manager.get_metrics()
         return {}  # Return empty if metrics disabled
 
-    def update_system_prompt(self):
+    def update_system_prompt(self, next_step: Optional[str] = None):
+        """Update system prompt with dynamic context including next step."""
         if self.session.messages and self.session.messages[0]["role"] == "system":
-            self.session.messages[0]["content"] = self._get_initial_system_prompt()
+            # Store next step in session if provided
+            if next_step:
+                self.session.current_next_step = next_step
+                self.session.next_step_timestamp = time.time()
+            # Generate dynamic prompt
+            dynamic_prompt = self._generate_dynamic_system_prompt()
+            self.session.messages[0]["content"] = dynamic_prompt
 
-    def save_memory_if_enabled(self):
-        if self.memory_manager:
-            self.memory_manager.save_memory()
+    def _generate_dynamic_system_prompt(self) -> str:
+        """Generate a dynamic system prompt with current context."""
+        session = self.session
+        return DYNAMIC_SYSTEM_PROMPT_TEMPLATE.format(
+            role=self.role,
+            instructions=self.instructions,
+            role_specific_instructions=self.role_instructions,
+            task=session.current_task,
+            iteration=session.iterations,
+            max_iterations=self.max_iterations or "∞",
+            task_status=str(session.task_status),
+            context_sections=self._build_context_sections(),
+            next_step_section=self._build_next_step_section(),
+            progress_summary=self._build_progress_summary(),
+        )
+
+    def _build_context_sections(self) -> str:
+        session = self.session
+        sections = []
+        if session.min_required_tools:
+            sections.append(f"Required Tools: {', '.join(session.min_required_tools)}")
+        if session.successful_tools:
+            sections.append(f"Completed Tools: {', '.join(session.successful_tools)}")
+        if session.reasoning_log:
+            recent_reasoning = session.reasoning_log[-3:]
+            sections.append(f"Recent Reasoning:\n" + "\n".join(recent_reasoning))
+        if session.task_nudges:
+            sections.append(f"Task Reminders:\n" + "\n".join(session.task_nudges))
+        return "\n\n".join(sections) if sections else "No additional context available."
+
+    def _build_next_step_section(self) -> str:
+        if (
+            not self.session.current_next_step
+            or self.session.current_next_step == "None"
+        ):
+            return "NEXT STEP: Provide final answer using final_answer(<your_answer>)"
+        source_info = (
+            f" (from {self.session.next_step_source})"
+            if self.session.next_step_source
+            else ""
+        )
+        return f"""
+CRITICAL NEXT STEP TO EXECUTE{source_info}:
+{self.session.current_next_step}
+
+You MUST execute this exact step now. Do not deviate from this instruction.
+"""
+
+    def _build_progress_summary(self) -> str:
+        session = self.session
+        summary_parts = []
+        summary_parts.append(f"Completion Score: {session.completion_score:.2f}")
+        if session.successful_tools:
+            summary_parts.append(f"Tools Used: {len(session.successful_tools)}")
+        if session.task_progress:
+            recent_progress = session.task_progress[-2:]
+            summary_parts.append(f"Recent Progress: {'; '.join(recent_progress)}")
+        return (
+            "\n".join(summary_parts) if summary_parts else "No progress data available."
+        )
+
+    def prune_context_if_needed(self, max_messages: int = 20):
+        messages = self.session.messages
+        if len(messages) <= max_messages:
+            return
+        system_message = messages[0] if messages[0]["role"] == "system" else None
+        recent_messages = (
+            messages[-max_messages + 1 :]
+            if system_message
+            else messages[-max_messages:]
+        )
+        if system_message:
+            self.session.messages = [system_message] + recent_messages
+        else:
+            self.session.messages = recent_messages
+        if self.agent_logger:
+            self.agent_logger.info(
+                f"Pruned context from {len(messages)} to {len(self.session.messages)} messages"
+            )
 
 
 # --- Rebuild Models to Resolve Forward References ---

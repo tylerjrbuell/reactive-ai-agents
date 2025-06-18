@@ -180,22 +180,22 @@ Output JSON Format:
 
 Rules:
 1. next_step:
-   - If task is complete (final_answer used successfully), return "None"
+   - If task is complete use the final_answer(<answer>) tool to provide the final answer
    - Otherwise, specify single concrete tool call needed
 
 2. reason:
-   - If task complete: "Task completed successfully with final_answer"
+   - If task complete (including final_answer): "Task completed successfully with final_answer"
    - Otherwise: Brief explanation of next step needed
 
 3. completed_tools:
-   - Copy tools_used_successfully exactly
+   - Copy used_tools exactly
 
 4. instruction_adherence:
    - Evaluate instruction following
 
 Task Completion Criteria:
 A task is considered complete when:
-1. final_answer tool has been used successfully
+1. final_answer tool has been used successfully and is included in used_tools
 2. The answer directly addresses the original task
 3. All required tools have been used appropriately
 
@@ -339,4 +339,32 @@ TOOL_SUMMARY_CONTEXT_PROMPT = """
     <tool_call>Tool Name: '{tool_name}' with parameters '{params}'</tool_call>
     <tool_call_result>{result_str}</tool_call_result>
 </context>
+"""
+
+DYNAMIC_SYSTEM_PROMPT_TEMPLATE = """
+Role: {role}
+Instructions: {instructions}
+Role-specific instructions: {role_specific_instructions}
+
+=== CURRENT TASK ===
+Goal: {task}
+Iteration: {iteration}/{max_iterations}
+Status: {task_status}
+
+=== CURRENT CONTEXT ===
+{context_sections}
+
+=== IMMEDIATE NEXT STEP ===
+{next_step_section}
+
+=== PROGRESS SUMMARY ===
+{progress_summary}
+
+Guidelines:
+1. Execute the next step exactly as specified above
+2. If next_step suggests a tool, use that tool with suggested parameters
+3. If next_step is "None", provide the final answer
+4. Follow instructions strictly
+5. Use tools efficiently
+6. Provide clear reasoning for actions
 """

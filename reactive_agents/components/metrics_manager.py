@@ -5,8 +5,8 @@ from typing import Dict, Any, TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from context.agent_context import AgentContext
-    from loggers.base import Logger
+    from reactive_agents.context.agent_context import AgentContext
+    from reactive_agents.loggers.base import Logger
 
 
 class MetricsManager(BaseModel):
@@ -121,9 +121,9 @@ class MetricsManager(BaseModel):
 
         self.metrics["model_calls"] += 1
 
-        # Update token counts
-        prompt_tokens = model_call_data.get("prompt_tokens", 0)
-        completion_tokens = model_call_data.get("completion_tokens", 0)
+        # Update token counts - handle None values by defaulting to 0
+        prompt_tokens = model_call_data.get("prompt_tokens", 0) or 0
+        completion_tokens = model_call_data.get("completion_tokens", 0) or 0
 
         self.metrics["tokens"]["prompt"] += prompt_tokens
         self.metrics["tokens"]["completion"] += completion_tokens
@@ -131,9 +131,10 @@ class MetricsManager(BaseModel):
             self.metrics["tokens"]["prompt"] + self.metrics["tokens"]["completion"]
         )
 
-        # Update model latency
+        # Update model latency - handle None values by defaulting to 0
         if "time" in model_call_data:
-            self.metrics["latency"]["model_time"] += model_call_data["time"]
+            time_value = model_call_data["time"] or 0
+            self.metrics["latency"]["model_time"] += time_value
 
     def finalize_run_metrics(self):
         """Updates final metrics like end_time, total_time, and status."""
@@ -193,11 +194,5 @@ class MetricsManager(BaseModel):
                     if total_cache_calls > 0
                     else 0.0
                 )
-
-        # Calculate aggregate latency metrics (optional, could be done on retrieval)
-        # avg_tool_latency = self.metrics["latency"]["tool_time"] / self.metrics["tool_calls"] if self.metrics["tool_calls"] > 0 else 0
-        # avg_model_latency = self.metrics["latency"]["model_time"] / self.metrics["model_calls"] if self.metrics["model_calls"] > 0 else 0
-        # self.metrics["latency"]["avg_tool_latency"] = avg_tool_latency
-        # self.metrics["latency"]["avg_model_latency"] = avg_model_latency
 
         return self.metrics

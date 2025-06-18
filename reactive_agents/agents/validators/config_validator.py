@@ -4,7 +4,6 @@ Handles validation and processing of agent configurations.
 """
 
 from typing import Dict, Any, Optional, List
-from pydantic import BaseModel, Field, model_validator
 from reactive_agents.config.mcp_config import MCPConfig
 from reactive_agents.agent_mcp.client import MCPClient
 from reactive_agents.common.types.confirmation_types import (
