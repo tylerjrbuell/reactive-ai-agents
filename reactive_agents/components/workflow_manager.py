@@ -47,22 +47,8 @@ class WorkflowManager(BaseModel):
 
     def __init__(self, **data):
         super().__init__(**data)
-        # Initialize self in workflow context if needed
-        if (
-            self.workflow_context is not None
-            and self.context.agent_name not in self.workflow_context
-        ):
-            self.workflow_context[self.context.agent_name] = {
-                "status": str(TaskStatus.INITIALIZED),  # Use string value
-                "current_progress": "",
-                "iterations": 0,
-                "dependencies_met": True,  # Assume true initially
-                "reflections": [],
-                "last_updated": "",
-            }
-            self.agent_logger.debug(
-                f"Initialized workflow context entry for {self.context.agent_name}"
-            )
+        # Defer initialization to avoid circular reference
+        # The workflow context entry will be initialized when first accessed
 
     @property
     def agent_logger(self) -> Logger:
@@ -71,6 +57,9 @@ class WorkflowManager(BaseModel):
 
     def check_dependencies(self) -> bool:
         """Checks if all defined workflow dependencies for this agent are met."""
+        # Ensure workflow context entry exists
+        self._ensure_workflow_context_entry()
+
         if not self.workflow_dependencies or self.workflow_context is None:
             return True  # No dependencies or no context = dependencies met
 
@@ -108,6 +97,9 @@ class WorkflowManager(BaseModel):
             result: The current progress or final result.
             **kwargs: Additional data to add (e.g., error, completion_score, reflection_data).
         """
+        # Ensure workflow context entry exists
+        self._ensure_workflow_context_entry()
+
         if self.workflow_context is None:
             self.agent_logger.debug("No workflow context provided, skipping update.")
             return
@@ -205,3 +197,22 @@ class WorkflowManager(BaseModel):
     def get_full_context(self) -> Optional[Dict[str, Any]]:
         """Returns the entire shared workflow context dictionary."""
         return self.workflow_context
+
+    def _ensure_workflow_context_entry(self):
+        """Ensure this agent has an entry in the workflow context."""
+        if (
+            self.workflow_context is not None
+            and self.context.agent_name not in self.workflow_context
+        ):
+            self.workflow_context[self.context.agent_name] = {
+                "status": str(TaskStatus.INITIALIZED),  # Use string value
+                "current_progress": "",
+                "iterations": 0,
+                "dependencies_met": True,  # Assume true initially
+                "reflections": [],
+                "last_updated": "",
+            }
+            if hasattr(self.context, "agent_logger") and self.context.agent_logger:
+                self.context.agent_logger.debug(
+                    f"Initialized workflow context entry for {self.context.agent_name}"
+                )

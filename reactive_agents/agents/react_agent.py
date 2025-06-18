@@ -154,19 +154,22 @@ class ReactAgentConfig(BaseModel):
 
     @model_validator(mode="before")
     def capture_extra_kwargs(cls, values: Dict[str, Any]) -> Dict[str, Any]:
-        # Exclude workflow_context_shared from being captured as extra kwarg
-        known_fields = {
-            f
-            for f in cls.model_fields
-            if f not in {"kwargs", "workflow_context_shared"}
-        }
+        # Get all known fields from the model
+        known_fields = set(cls.model_fields.keys())
+
+        # Fields that should be processed normally (not captured as extra kwargs)
+        normal_fields = known_fields - {"kwargs"}
+
         extra_kwargs = {}
         processed_values = {}
+
         for key, value in values.items():
-            if key in known_fields:
+            if key in normal_fields:
                 processed_values[key] = value
             else:
                 extra_kwargs[key] = value
+
+        # Add the extra kwargs to the processed values
         processed_values["kwargs"] = extra_kwargs
         return processed_values
 
