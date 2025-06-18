@@ -84,176 +84,75 @@ class ReflectionManager(BaseModel):
         return self.context.tool_manager
 
     async def generate_reflection(
-        self, last_step_result: Optional[Dict[str, Any]]
+        self, think_act_result: Any
     ) -> Optional[Dict[str, Any]]:
-        """
-        Generates a reflection on the current task progress based on the last result.
-
-        Args:
-            last_step_result: The dictionary result from the last agent execution step (e.g., model response).
-
-        Returns:
-            A dictionary containing reflection data (score, next_step, etc.), or None if reflection fails.
-        """
-        if not self.context.reflect_enabled:
-            self.agent_logger.debug("Reflection disabled, skipping generation.")
+        """Generate reflection on the current state."""
+        if not self.context.reflect_enabled or not self.context.model_provider:
             return None
 
-        self.agent_logger.info("🤔 Reflecting on task progress...")
-
         try:
-            # --- Prepare Context for Reflection ---
-            result_content = ""
-            if last_step_result:
-                # Extract content intelligently from various possible structures
-                if isinstance(last_step_result, dict):
-                    message = last_step_result.get("message", {})
-                    if isinstance(message, dict):
-                        content = message.get("content")
-                        if content:
-                            result_content = str(content)
-                        else:  # Check for tool calls as result proxy? Unlikely useful here.
-                            result_content = (
-                                f"Assistant proposed actions: {message.get('tool_calls')}"
-                                if message.get("tool_calls")
-                                else str(message)
-                            )
-                    else:  # If message is not a dict
-                        result_content = str(message)
-                elif isinstance(last_step_result, str):
-                    result_content = last_step_result
-                else:  # Fallback for other types
-                    result_content = str(last_step_result)
-
-            # Get tool info from ToolManager
-            available_tool_names = [tool.name for tool in self.tool_manager.tools]
-            successfully_used_tools = list(set(self.context.session.successful_tools))
-
-            # Get the last tool history entry
-            last_tool_action = (
-                self.context.tool_manager.get_last_tool_action()
+            # Get tool history
+            tool_history = (
+                self.context.tool_manager.tool_history
                 if self.context.tool_manager
-                else None
+                else []
+            )
+            tools_used = [t.get("name") for t in tool_history if t.get("name")]
+            tools_used_successfully = [
+                t.get("name")
+                for t in tool_history
+                if t.get("name") and not t.get("error", False)
+            ]
+
+            # Get last tool action
+            last_tool_action = ""
+            if tool_history:
+                last_tool = tool_history[-1]
+                last_tool_action = f"Tool: {last_tool.get('name')}\nParams: {json.dumps(last_tool.get('params', {}), indent=2)}\nResult: {last_tool.get('result', 'No result')}"
+
+            # Get min_required_tools from session or use empty list
+            min_required_tools = (
+                getattr(self.context.session, "min_required_tools", set()) or set()
             )
 
-            reflection_input_context = {
+            # Format the reflection prompt
+            reflection_context = {
                 "task": self.context.session.current_task,
-                "min_required_tools": (
-                    list(self.context.session.min_required_tools)
-                    if self.context.session.min_required_tools
-                    else []
-                ),
-                "last_result": (
-                    result_content[:3000] + "..."
-                    if len(result_content) > 3000
-                    else result_content
-                ),
-                "tools_available": available_tool_names,
-                "tools_used_successfully": successfully_used_tools,
-                "current_iteration": self.context.session.iterations,
-                "max_iterations": self.context.max_iterations,
-                "previous_reflections": self.reflections[-3:],
-                "task_progress_summary": self.context.session.task_progress[-1000:],
+                "instructions": self.context.instructions,
+                "min_required_tools": list(min_required_tools),
+                "tools_used": tools_used,
+                "last_result": think_act_result,
                 "last_tool_action": last_tool_action,
             }
-            self.agent_logger.debug(
-                f"Reflection Tool Use context: {reflection_input_context['tools_used_successfully']}"
-            )
-            # --- Call Model using centralized prompts ---
-            # Double-curly braces {{}} are used for escaping in f-strings if needed, but not required here
-            # Format the system prompt directly (assuming no nested f-string issues)
+
+            # Get reflection from model
             system_prompt_formatted = REFLECTION_SYSTEM_PROMPT.format(
-                task=reflection_input_context["task"],
-                min_required_tools=reflection_input_context["min_required_tools"],
-                tools_used_successfully=reflection_input_context[
-                    "tools_used_successfully"
-                ],
-                last_result=reflection_input_context["last_result"],
-                last_tool_action_str=json.dumps(
-                    reflection_input_context["last_tool_action"], indent=2, default=str
-                ),
+                **reflection_context
+            )
+            response = await self.context.model_provider.get_completion(
+                system=system_prompt_formatted,
+                prompt="Evaluate the current state and determine the next step.",
             )
 
-            reflection_context_prompt = REFLECTION_CONTEXT_PROMPT.format(
-                reflection_input_context_json=json.dumps(
-                    reflection_input_context, indent=2, default=str
-                )
-            )
-            model_response = await self.model_provider.get_completion(
-                system=system_prompt_formatted,  # Use the directly formatted system prompt
-                prompt=reflection_context_prompt,  # Pass the rest via context prompt
-                format=(
-                    ReflectionFormat.model_json_schema()
-                    if self.model_provider.name == "ollama"
-                    else "json"  # Adapt based on provider capabilities
-                ),
-            )
-
-            if not model_response or not model_response.get("response"):
-                self.agent_logger.warning(
-                    "Reflection model call failed or returned empty response."
-                )
-                return None
-
-            # --- Parse and Store Reflection ---
-            try:
-                response_data = model_response["response"]
-                reflection_data = (
-                    json.loads(response_data)
-                    if isinstance(response_data, str)
-                    else response_data
-                )
-
-                # Validate with Pydantic model (now simpler)
-                validated_reflection = ReflectionFormat(**reflection_data).dict()
-
-                # Ensure completed_tools from LLM exactly matches input
-                if set(validated_reflection.get("completed_tools", [])) != set(
-                    successfully_used_tools
-                ):
-                    self.agent_logger.warning(
-                        f"Reflection LLM modified completed_tools! Input: {successfully_used_tools}, "
-                        f"Output: {validated_reflection.get('completed_tools')}. Forcing match."
-                    )
-                    validated_reflection["completed_tools"] = successfully_used_tools
-
-                # Add next_step to nudges if it exists
-                if (
-                    validated_reflection.get("next_step")
-                    and validated_reflection["next_step"].lower() != "none"
-                    and f"Reflection Suggestion: {validated_reflection['next_step']}"
-                    not in self.context.session.task_nudges
-                ):
-                    self.context.session.task_nudges.append(
-                        f"Reflection Suggestion: {validated_reflection['next_step']}"
-                    )
-
-                validated_reflection["timestamp"] = datetime.now().isoformat()
-                self.reflections.append(validated_reflection)
-                self.agent_logger.info(
-                    f"Reflection generated. Next Step: {validated_reflection['next_step']}"
-                )
-                self.agent_logger.debug(f"Reflection details: {validated_reflection}")
-
-                return validated_reflection
-
-            except (json.JSONDecodeError, TypeError) as e:
-                self.agent_logger.error(
-                    f"Error parsing reflection JSON response: {e}\nResponse: {model_response.get('response')}"
-                )
-                return None
-            except Exception as e:  # Catch Pydantic validation errors etc.
-                self.agent_logger.error(
-                    f"Error validating reflection data: {e}\nData: {reflection_data}"
-                )
-                # Still add the raw data? Maybe not.
-                return None
+            if response and response.get("response"):
+                try:
+                    reflection_data = json.loads(response["response"])
+                    self.reflections.append(reflection_data)
+                    return reflection_data
+                except json.JSONDecodeError as e:
+                    if self.context.agent_logger:
+                        self.context.agent_logger.error(
+                            f"Error parsing reflection JSON: {e}"
+                        )
+                    return None
+            return None
 
         except Exception as e:
-            tb_str = traceback.format_exc()
-            self.agent_logger.error(
-                f"Unexpected error during reflection generation: {e}\n{tb_str}"
-            )
+            if self.context.agent_logger:
+                self.context.agent_logger.error(
+                    f"Unexpected error during reflection generation: {e}"
+                )
+            traceback.print_exc()
             return None
 
     def get_last_reflection(self) -> Optional[Dict[str, Any]]:

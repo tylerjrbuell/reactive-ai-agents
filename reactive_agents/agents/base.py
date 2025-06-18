@@ -1,6 +1,6 @@
 from __future__ import annotations
 import traceback
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
 
 # Removed Logger, BaseModelProvider, MCPClient, ToolProtocol, ToolResult, MCPToolWrapper etc.
 # Removed ModelProviderFactory, prompts
@@ -16,7 +16,11 @@ import time  # Keep time for metric tracking
 # Removed time import if not used directly
 
 # Import shared types from the new location
-from reactive_agents.common.types import TaskStatus
+from reactive_agents.common.types.status_types import TaskStatus
+from reactive_agents.common.types.session_types import AgentSession
+
+if TYPE_CHECKING:
+    from reactive_agents.agents.execution_engine import AgentExecutionEngine
 
 
 class Agent:
@@ -25,6 +29,9 @@ class Agent:
     """
 
     context: AgentContext  # Agent now holds a context instance
+    execution_engine: Optional["AgentExecutionEngine"] = (
+        None  # Will be set by concrete implementations
+    )
 
     def __init__(self, context: AgentContext):
         """
@@ -186,11 +193,11 @@ class Agent:
 
     async def _process_tool_calls(self, tool_calls: List[Dict[str, Any]]) -> None:
         """
-        Processes tool calls using the ToolManager from the context and appends results to context messages.
+        Processes tool calls using the execution engine to handle pause/stop/terminate states.
         """
-        if not self.context.tool_manager:
+        if not self.execution_engine:
             self.agent_logger.error(
-                "Tool processing requested but ToolManager is not available in context."
+                "Tool processing requested but execution engine is not available."
             )
             return
 
@@ -214,8 +221,8 @@ class Agent:
                 )
                 continue
 
-            # Use the ToolManager to execute the tool
-            tool_result = await self.context.tool_manager.use_tool(tool_call=tool_call)
+            # Use the execution engine to execute the tool
+            tool_result = await self.execution_engine._execute_tool_call(tool_call)
 
             # Append result to context message list
             if tool_result is not None:

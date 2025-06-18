@@ -1,52 +1,55 @@
-from .base import BaseModelProvider, model_providers
-import importlib, os
-from pathlib import Path
+from .base import BaseModelProvider
+from typing import Dict, Type, Optional, TYPE_CHECKING
 
-non_provider_files = ["__init__.py", "base.py", "factory.py"]
+if TYPE_CHECKING:
+    from reactive_agents.context.agent_context import AgentContext
 
 
 class ModelProviderFactory:
+    """Factory for creating model providers."""
 
-    supported_providers = ["ollama", "groq"]
+    _providers: Dict[str, Type[BaseModelProvider]] = {}
 
-    @staticmethod
-    def get_model_provider(provider_model: str) -> BaseModelProvider:
+    @classmethod
+    def register_provider(cls, provider_class: Type[BaseModelProvider]) -> None:
+        """Register a model provider class."""
+        provider_name = provider_class.__name__.replace("ModelProvider", "").lower()
+        cls._providers[provider_name] = provider_class
+
+    @classmethod
+    def get_model_provider(
+        cls,
+        model_name: str,
+        options: Optional[Dict] = None,
+        context: Optional["AgentContext"] = None,
+    ) -> BaseModelProvider:
         """
-        Get the model provider class instance based on the provider:model string ID provided
-        Example provider_model: 'ollama:llama3.1'
+        Get a model provider instance.
 
         Args:
-            provider_model (str): The provider:model string ID
-
-        Raises:
-            ValueError: Invalid provider:model ID
+            model_name: The name of the model provider to get (format: "provider:model")
+            options: Optional configuration options for the provider
+            context: The agent context for error tracking and logging
 
         Returns:
-            BaseModelProvider: The model provider class instance
+            A model provider instance
         """
-        if not provider_model or ":" not in provider_model:
+        if not model_name or ":" not in model_name:
             raise ValueError(
-                f"Invalid model provider: {provider_model}, use the format provider:model"
+                f"Invalid model provider: {model_name}, use the format provider:model"
             )
 
-        provider = provider_model.split(":")[0].lower()
-        model = provider_model.split(":", 1)[1].lower()
-        if provider not in ModelProviderFactory.supported_providers:
+        # Extract provider name and model from the provider:model string
+        provider_name = model_name.split(":")[0].lower()
+        model = model_name.split(":", 1)[1].lower()
+
+        # Sync providers from BaseModelProvider
+        cls._providers.update(BaseModelProvider._providers)
+
+        if provider_name not in cls._providers:
             raise ValueError(
-                f"Invalid model provider: {provider}, supported providers: {ModelProviderFactory.supported_providers}"
+                f"Unknown model provider: {provider_name}, supported providers: {list(cls._providers.keys())}"
             )
-        try:
-            valid_providers = [
-                f.replace(".py", "")
-                for f in os.listdir(Path(__file__).parent)
-                if os.path.isfile(os.path.join(Path(__file__).parent, f))
-                and f not in non_provider_files
-            ]
-            if provider not in valid_providers:
-                raise ValueError(f"Invalid model provider id: {provider}")
-            importlib.import_module(f"reactive_agents.model_providers.{provider}")
-            if not model_providers.get(provider):
-                raise ValueError(f"Invalid model provider id: {provider}")
-            return model_providers[provider](model)
-        except ImportError:
-            raise ValueError(f"Invalid model provider id: {provider} not found")
+
+        provider_class = cls._providers[provider_name]
+        return provider_class(model=model, options=options, context=context)

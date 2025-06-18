@@ -25,7 +25,7 @@ from reactive_agents.prompts.agent_prompts import (
     TOOL_ACTION_SUMMARY_PROMPT,
     TOOL_SUMMARY_CONTEXT_PROMPT,
 )
-from reactive_agents.common.types import (
+from reactive_agents.common.types.confirmation_types import (
     ConfirmationCallbackProtocol,
     ConfirmationConfig,
     ConfirmationResult,
@@ -605,7 +605,7 @@ class ToolManager(BaseModel):
 
             # Add summary to context's reasoning log and update task progress
             self.context.session.reasoning_log.append(tool_action_summary)
-            self.context.session.task_progress += f"\n- {tool_action_summary}"
+            self.context.session.task_progress.append(tool_action_summary)
             return tool_action_summary
 
         except Exception as e:
@@ -614,7 +614,7 @@ class ToolManager(BaseModel):
             )
             fallback_summary = f"Successfully executed tool '{tool_name}'."
             self.context.session.reasoning_log.append(fallback_summary)
-            self.context.session.task_progress += f"\n- {fallback_summary}"
+            self.context.session.task_progress.append(fallback_summary)
             return fallback_summary
 
     def _generate_tool_signatures(self):

@@ -12,10 +12,12 @@ from typing import (
     runtime_checkable,
     Awaitable,
     cast,
+    Set,
 )
 import asyncio
-
-from reactive_agents.context.agent_observer import AgentStateEvent
+import time
+from reactive_agents.common.types.event_types import AgentStateEvent
+from reactive_agents.context.agent_observer import AgentStateObserver
 
 
 # Type definitions for different event data structures
@@ -185,7 +187,7 @@ EventDataMapping = {
 
 
 # Define generic type for event data
-T = TypeVar("T", bound=BaseEventData)
+T = TypeVar("T", bound=BaseEventData, contravariant=True)
 
 
 @runtime_checkable
@@ -354,7 +356,7 @@ class AgentEventManager:
     a fluent API for event subscriptions.
     """
 
-    def __init__(self, observer):
+    def __init__(self, observer: Optional[AgentStateObserver]):
         """
         Initialize the event manager with an AgentStateObserver.
 
@@ -421,56 +423,88 @@ class AgentEventManager:
                 self._observer._callbacks[event_type] = []
                 self._observer._async_callbacks[event_type] = []
 
-        subscription.unsubscribe_all = unsubscribe_all  # type: ignore[reportGeneralTypeIssues]
+        subscription.unsubscribe_all = unsubscribe_all
 
         return subscription
 
     def on_session_started(self) -> EventSubscription[SessionStartedEventData]:
         """Subscribe to session started events"""
-        return self.events(AgentStateEvent.SESSION_STARTED)  # type: ignore[reportGeneralTypeIssues]
+        return self.events(AgentStateEvent.SESSION_STARTED)
 
     def on_session_ended(self) -> EventSubscription[SessionEndedEventData]:
         """Subscribe to session ended events"""
-        return self.events(AgentStateEvent.SESSION_ENDED)  # type: ignore[reportGeneralTypeIssues]
+        return self.events(AgentStateEvent.SESSION_ENDED)
 
     def on_task_status_changed(self) -> EventSubscription[TaskStatusChangedEventData]:
         """Subscribe to task status changed events"""
-        return self.events(AgentStateEvent.TASK_STATUS_CHANGED)  # type: ignore[reportGeneralTypeIssues]
+        return self.events(AgentStateEvent.TASK_STATUS_CHANGED)
 
     def on_iteration_started(self) -> EventSubscription[IterationStartedEventData]:
         """Subscribe to iteration started events"""
-        return self.events(AgentStateEvent.ITERATION_STARTED)  # type: ignore[reportGeneralTypeIssues]
+        return self.events(AgentStateEvent.ITERATION_STARTED)
 
     def on_iteration_completed(self) -> EventSubscription[IterationCompletedEventData]:
         """Subscribe to iteration completed events"""
-        return self.events(AgentStateEvent.ITERATION_COMPLETED)  # type: ignore[reportGeneralTypeIssues]
+        return self.events(AgentStateEvent.ITERATION_COMPLETED)
 
     def on_tool_called(self) -> EventSubscription[ToolCalledEventData]:
         """Subscribe to tool called events"""
-        return self.events(AgentStateEvent.TOOL_CALLED)  # type: ignore[reportGeneralTypeIssues]
+        return self.events(AgentStateEvent.TOOL_CALLED)
 
     def on_tool_completed(self) -> EventSubscription[ToolCompletedEventData]:
         """Subscribe to tool completed events"""
-        return self.events(AgentStateEvent.TOOL_COMPLETED)  # type: ignore[reportGeneralTypeIssues]
+        return self.events(AgentStateEvent.TOOL_COMPLETED)
 
     def on_tool_failed(self) -> EventSubscription[ToolFailedEventData]:
         """Subscribe to tool failed events"""
-        return self.events(AgentStateEvent.TOOL_FAILED)  # type: ignore[reportGeneralTypeIssues]
+        return self.events(AgentStateEvent.TOOL_FAILED)
 
     def on_reflection_generated(
         self,
     ) -> EventSubscription[ReflectionGeneratedEventData]:
         """Subscribe to reflection generated events"""
-        return self.events(AgentStateEvent.REFLECTION_GENERATED)  # type: ignore[reportGeneralTypeIssues]
+        return self.events(AgentStateEvent.REFLECTION_GENERATED)
 
     def on_final_answer_set(self) -> EventSubscription[FinalAnswerSetEventData]:
         """Subscribe to final answer set events"""
-        return self.events(AgentStateEvent.FINAL_ANSWER_SET)  # type: ignore[reportGeneralTypeIssues]
+        return self.events(AgentStateEvent.FINAL_ANSWER_SET)
 
     def on_metrics_updated(self) -> EventSubscription[MetricsUpdatedEventData]:
         """Subscribe to metrics updated events"""
-        return self.events(AgentStateEvent.METRICS_UPDATED)  # type: ignore[reportGeneralTypeIssues]
+        return self.events(AgentStateEvent.METRICS_UPDATED)
 
     def on_error_occurred(self) -> EventSubscription[ErrorOccurredEventData]:
         """Subscribe to error occurred events"""
-        return self.events(AgentStateEvent.ERROR_OCCURRED)  # type: ignore[reportGeneralTypeIssues]
+        return self.events(AgentStateEvent.ERROR_OCCURRED)
+
+    def on_pause_requested(self) -> EventSubscription[PauseRequestedEventData]:
+        """Subscribe to pause requested events"""
+        return self.events(AgentStateEvent.PAUSE_REQUESTED)
+
+    def on_paused(self) -> EventSubscription[PausedEventData]:
+        """Subscribe to paused events"""
+        return self.events(AgentStateEvent.PAUSED)
+
+    def on_resume_requested(self) -> EventSubscription[ResumeRequestedEventData]:
+        """Subscribe to resume requested events"""
+        return self.events(AgentStateEvent.RESUME_REQUESTED)
+
+    def on_resumed(self) -> EventSubscription[ResumedEventData]:
+        """Subscribe to resumed events"""
+        return self.events(AgentStateEvent.RESUMED)
+
+    def on_terminate_requested(self) -> EventSubscription[TerminateRequestedEventData]:
+        """Subscribe to terminate requested events"""
+        return self.events(AgentStateEvent.TERMINATE_REQUESTED)
+
+    def on_terminated(self) -> EventSubscription[TerminatedEventData]:
+        """Subscribe to terminated events"""
+        return self.events(AgentStateEvent.TERMINATED)
+
+    def on_stop_requested(self) -> EventSubscription[StopRequestedEventData]:
+        """Subscribe to stop requested events"""
+        return self.events(AgentStateEvent.STOP_REQUESTED)
+
+    def on_stopped(self) -> EventSubscription[StoppedEventData]:
+        """Subscribe to stopped events"""
+        return self.events(AgentStateEvent.STOPPED)

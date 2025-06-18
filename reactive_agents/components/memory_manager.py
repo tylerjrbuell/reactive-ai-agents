@@ -7,8 +7,9 @@ from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 # Import shared types from the new location
-from reactive_agents.common.types import AgentMemory, TaskStatus
-from reactive_agents.context.session import AgentSession
+from reactive_agents.common.types.memory_types import AgentMemory
+from reactive_agents.common.types.status_types import TaskStatus
+from reactive_agents.common.types.session_types import AgentSession
 
 # Need to import AgentMemory from its original location or move it
 # Assuming AgentMemory is defined in react_agent for now
@@ -28,8 +29,8 @@ from reactive_agents.context.session import AgentSession
 
 
 if TYPE_CHECKING:
-    from context.agent_context import AgentContext
-    from loggers.base import Logger
+    from reactive_agents.context.agent_context import AgentContext
+    from reactive_agents.loggers.base import Logger
 
 
 class MemoryManager(BaseModel):
@@ -172,7 +173,10 @@ class MemoryManager(BaseModel):
             status_str = str(session_data.task_status)
             iterations = session_data.iterations
             evaluation = session_data.evaluation
-            adherence_score = evaluation.get("adherence_score")
+            if evaluation is not None:
+                adherence_score = evaluation.get("adherence_score")
+            else:
+                adherence_score = None
             initial_task = session_data.initial_task
             final_result_summary = (
                 str(session_data.final_answer)[:200] + "..."

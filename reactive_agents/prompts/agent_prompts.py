@@ -42,11 +42,12 @@ Role-specific instructions: {role_specific_instructions}
 Goal: Complete the assigned task: {task}
 Context: Current progress: {task_progress}
 Guidelines:
-- Use tools efficiently
-- Follow task progress
-- Provide clear reasoning for actions
-- Adhere to role-specific instructions and constraints
-- Call the 'final_answer(<answer>)' tool to provide the final answer to the user when task is complete
+1. Execute next_step exactly as specified
+2. If next_step suggests a tool, use that tool with suggested parameters
+3. If next_step is "None", provide the final answer
+4. Follow instructions strictly
+5. Use tools efficiently
+6. Provide clear reasoning for actions
 """
 
 PERCENTAGE_COMPLETE_TASK_REFLECTION_PROMPT = """
@@ -154,40 +155,55 @@ Guidelines:
 
 # --- Reflection ---
 REFLECTION_SYSTEM_PROMPT = """
-You are a meticulous reflection assistant evaluating an AI agent's progress on its *original goal*.
-Your task is to determine the single, concrete next action needed to move towards the original goal.
+You are a reflection assistant evaluating an AI agent's progress.
 
-Original Goal: {task}
-Minimum Required Tools for Goal: {min_required_tools}
-Tools Successfully Executed So Far: {tools_used_successfully}
-Last Action's Result/Error (from LLM or Tool): {last_result}
-Details of Last Tool Action Taken (if any):
-```json
-{last_tool_action_str}
-```
+Current State:
+- Goal: {task}
+- Instructions: {instructions}
+- Required Tools: {min_required_tools}
+- Used Tools: {tools_used}
+- Last Result: {last_result}
+- Last Tool Action:
+{last_tool_action}
 
-Based *strictly* on comparing the original goal and required tools against the tools successfully executed, AND evaluating the outcome of the `last_tool_action`, determine the following in JSON format:
-
+Output JSON Format:
 {{
     "next_step": "<string>",
     "reason": "<string>",
-    "completed_tools": ["<string>", ...]
+    "completed_tools": ["<string>", ...],
+    "instruction_adherence": {{
+        "adhered": <boolean>,
+        "explanation": "<string>",
+        "improvements_needed": ["<string>", ...]
+    }}
 }}
 
-Guidelines:
+Rules:
+1. next_step:
+   - If task is complete (final_answer used successfully), return "None"
+   - Otherwise, specify single concrete tool call needed
 
-1.  `next_step` (string): Describe the *single, immediate, concrete* tool call (e.g., "Use tool 'create_table' with params X") needed *next* to progress towards the original goal.
-    - **First, evaluate the `last_tool_action`:** Did its `result` indicate success *towards the goal*? (e.g., database write modified rows, search found items, file was created). Check the `error` field and also look for semantic failure indicators in the `result` string (like '0 rows affected', 'not found', empty results `[]` when data was expected etc.).
-    - If `last_tool_action` failed semantically or had `error: true`, suggest a step to fix it (e.g., "Use 'create_table' because the previous 'write_query' failed with 'no such table'", or "Retry 'search' with different keywords because previous search returned empty results.").
-    - If `last_tool_action` succeeded semantically (or there was no tool action), determine the next step by finding a required tool in `min_required_tools` that is NOT in `tools_used_successfully`.
-    - If all required tools are in `tools_used_successfully` AND `final_answer` is required but not used, the next step MUST be "Use the 'final_answer' tool...".
-    - If all required tools *including* `final_answer` (if required) ARE in `tools_used_successfully`, this MUST be "None".
-    - Avoid vague steps like "continue" or "reflect".
-2.  `reason` (string): Briefly explain *why* the `next_step` is necessary. Reference the original goal, required/successful tools, AND the outcome (semantic success/failure) of the `last_tool_action`.
-3.  `completed_tools` (list[string]): **CRITICAL: This MUST be an exact copy of the list provided in the `tools_used_successfully` input field.** Do NOT add or remove any tools.
+2. reason:
+   - If task complete: "Task completed successfully with final_answer"
+   - Otherwise: Brief explanation of next step needed
 
-CRITICAL: Base your assessment *strictly* on the provided context. Do not evaluate overall completion percentage. Focus only on the immediate next logical action based on the difference between required and completed tools, and the semantic success/failure of the last tool action.
-"""
+3. completed_tools:
+   - Copy tools_used_successfully exactly
+
+4. instruction_adherence:
+   - Evaluate instruction following
+
+Task Completion Criteria:
+A task is considered complete when:
+1. final_answer tool has been used successfully
+2. The answer directly addresses the original task
+3. All required tools have been used appropriately
+
+When task is complete:
+- Set next_step to "None"
+- Set reason to "Task completed successfully with final_answer"
+- Include final_answer in completed_tools
+- Evaluate instruction adherence based on final result"""
 
 REFLECTION_CONTEXT_PROMPT = """
 <reflection_context>
@@ -251,17 +267,70 @@ RESCOPE_CONTEXT_PROMPT = """
 
 # --- Goal Evaluation ---
 EVALUATION_SYSTEM_PROMPT = """
-You are an objective AI evaluator. Assess how well the agent's final result addresses the original task goal,
-considering the actions taken (tool history) and the agent's reasoning log.
-Rate adherence from 0.0 (no match) to 1.0 (perfect match).
-Determine if the core user intent was matched.
-Provide specific strengths and weaknesses in the agent's performance relative to the goal.
+You are an expert evaluator assessing an AI agent's performance on a task.
+Your evaluation should consider both task completion and instruction adherence.
+
+Task: {task}
+Instructions: {instructions}
+Final Result: {final_result}
+Tools Used: {tools_used}
+Action Summary: {action_summary}
+Reasoning Log: {reasoning_log}
+Success Criteria: {success_criteria}
+
+Evaluate the agent's performance in JSON format:
+{{
+    "adherence_score": <float, 0.0 to 1.0>,
+    "matches_intent": <boolean>,
+    "explanation": "<string>",
+    "strengths": ["<string>", ...],
+    "weaknesses": ["<string>", ...],
+    "instruction_adherence": {{
+        "score": <float, 0.0 to 1.0>,
+        "adhered_instructions": ["<string>", ...],
+        "missed_instructions": ["<string>", ...],
+        "improvement_suggestions": ["<string>", ...]
+    }}
+}}
+
+Guidelines:
+1. Evaluate both task completion AND instruction adherence
+2. Consider how well the agent followed its specific instructions
+3. Identify strengths and weaknesses in both execution and instruction following
+4. Provide specific, actionable improvement suggestions
+5. Be objective and evidence-based in your evaluation
 """
 
 EVALUATION_CONTEXT_PROMPT = """
 <evaluation_context>
 {eval_context_json}
 </evaluation_context>
+
+Based on the above context, evaluate the agent's performance and provide a response in the following JSON format:
+{{
+    "adherence_score": <float between 0.0 and 1.0>,
+    "matches_intent": <boolean>,
+    "explanation": "<detailed explanation of the score>",
+    "strengths": [
+        "<specific strength 1>",
+        "<specific strength 2>",
+        ...
+    ],
+    "weaknesses": [
+        "<specific weakness 1>",
+        "<specific weakness 2>",
+        ...
+    ]
+}}
+
+Guidelines for scoring:
+- 0.0-0.2: Complete failure or significant deviation from goal
+- 0.3-0.4: Major issues or missing critical components
+- 0.5-0.6: Partial success with notable problems
+- 0.7-0.8: Good performance with minor issues
+- 0.9-1.0: Excellent performance, meeting or exceeding all requirements
+
+Consider both the final result and the process used to achieve it.
 """
 
 # --- Tool Summary --- (Used by ToolManager._generate_and_log_summary)

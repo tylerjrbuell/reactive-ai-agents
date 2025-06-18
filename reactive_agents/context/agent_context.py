@@ -13,6 +13,7 @@ from typing import (
 )
 
 from pydantic import BaseModel, Field
+import time
 
 # Placeholder imports - will be replaced with actual component classes
 # from components.metrics_manager import MetricsManager
@@ -26,7 +27,7 @@ from reactive_agents.model_providers.base import BaseModelProvider
 from reactive_agents.agent_mcp.client import MCPClient
 from reactive_agents.prompts.agent_prompts import REACT_AGENT_SYSTEM_PROMPT
 from reactive_agents.tools.abstractions import ToolProtocol
-from reactive_agents.common.types import TaskStatus
+from reactive_agents.common.types.status_types import TaskStatus
 
 # Forward references for type hinting (No longer strictly needed with direct imports, but can keep for clarity)
 # MetricsManager = Any # Now imported
@@ -43,10 +44,11 @@ from reactive_agents.components.workflow_manager import WorkflowManager
 from reactive_agents.components.tool_manager import ToolManager
 
 # --- Import AgentSession from its new location ---
-from .session import AgentSession
+from reactive_agents.common.types.session_types import AgentSession
 
 # --- Import AgentStateObserver ---
-from .agent_observer import AgentStateObserver, AgentStateEvent
+from .agent_observer import AgentStateObserver
+from reactive_agents.common.types.event_types import AgentStateEvent
 
 
 # Now define AgentContext
@@ -115,8 +117,31 @@ class AgentContext(BaseModel):
     state_observer: Optional[AgentStateObserver] = None
     enable_state_observation: bool = True
 
+    @staticmethod
+    def _create_default_session() -> AgentSession:
+        return AgentSession(
+            initial_task="",
+            current_task="",
+            start_time=time.time(),
+            task_status=TaskStatus.INITIALIZED,
+            reasoning_log=[],
+            task_progress=[],
+            task_nudges=[],
+            successful_tools=[],
+            metrics={},
+            completion_score=0.0,
+            tool_usage_score=0.0,
+            progress_score=0.0,
+            answer_quality_score=0.0,
+            llm_evaluation_score=0.0,
+            instruction_adherence_score=0.0,
+            improvement_history=[],
+            best_score=0.0,
+            improvement_attempts=0,
+        )
+
     # Session State Holder (Reference to the current run's state)
-    session: AgentSession = Field(default_factory=AgentSession)
+    session: AgentSession = Field(default_factory=_create_default_session)
 
     # !! REMOVED FIELDS previously here (initial_task, final_answer, messages, etc.) !!
 
@@ -194,7 +219,9 @@ class AgentContext(BaseModel):
             from reactive_agents.model_providers.factory import ModelProviderFactory
 
             self.model_provider = ModelProviderFactory.get_model_provider(
-                self.provider_model_name
+                self.provider_model_name,
+                options=self.model_provider_options,
+                context=self,
             )
             self.agent_logger.info(
                 f"Model Provider Initialized: {self.model_provider.name}:{self.model_provider.model}"
@@ -207,7 +234,7 @@ class AgentContext(BaseModel):
             instructions=self.instructions,
             role_specific_instructions=self.role_instructions,
             task=self.session.current_task,
-            task_progress=self.session.task_progress,
+            task_progress="\n".join(self.session.task_progress),
         )
         return prompt
 

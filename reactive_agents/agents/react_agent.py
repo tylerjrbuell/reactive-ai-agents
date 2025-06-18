@@ -2,29 +2,76 @@ from __future__ import annotations
 import json
 import traceback
 import asyncio
-from typing import List, Any, Literal, Optional, Dict, Set, Tuple
-import time
+from typing import (
+    List,
+    Any,
+    Literal,
+    Optional,
+    Dict,
+    Set,
+    Tuple,
+    Callable,
+    TYPE_CHECKING,
+)
 
 from pydantic import BaseModel, Field, model_validator
 from reactive_agents.config.mcp_config import MCPConfig
 from reactive_agents.prompts.agent_prompts import (
     MISSING_TOOLS_PROMPT,
     TOOL_FEASIBILITY_CONTEXT_PROMPT,
-    SUMMARY_SYSTEM_PROMPT,
-    SUMMARY_CONTEXT_PROMPT,
     RESCOPE_SYSTEM_PROMPT,
     RESCOPE_CONTEXT_PROMPT,
-    EVALUATION_SYSTEM_PROMPT,
-    EVALUATION_CONTEXT_PROMPT,
 )
 from reactive_agents.agents.base import Agent
-from reactive_agents.context.agent_context import AgentContext, AgentSession
+from reactive_agents.common.types.session_types import AgentSession
+from reactive_agents.context.agent_context import AgentContext
 from reactive_agents.agent_mcp.client import MCPClient
-from reactive_agents.context.agent_observer import AgentStateEvent
-from reactive_agents.context.agent_events import AgentEventManager
+from reactive_agents.common.types.event_types import AgentStateEvent
+from reactive_agents.context.agent_events import (
+    EventCallback,
+    SessionStartedEventData,
+    SessionEndedEventData,
+    TaskStatusChangedEventData,
+    IterationStartedEventData,
+    IterationCompletedEventData,
+    ToolCalledEventData,
+    ToolCompletedEventData,
+    ToolFailedEventData,
+    ReflectionGeneratedEventData,
+    FinalAnswerSetEventData,
+    MetricsUpdatedEventData,
+    ErrorOccurredEventData,
+    PauseRequestedEventData,
+    PausedEventData,
+    ResumeRequestedEventData,
+    ResumedEventData,
+    TerminateRequestedEventData,
+    TerminatedEventData,
+    StopRequestedEventData,
+    StoppedEventData,
+)
+from reactive_agents.common.types.status_types import TaskStatus
+from reactive_agents.common.types.confirmation_types import (
+    ConfirmationCallbackProtocol,
+    ConfirmationResult,
+    ConfirmationResultAwaitable,
+    ConfirmationConfig,
+)
+from reactive_agents.common.types.memory_types import AgentMemory
+from reactive_agents.common.types.agent_types import (
+    PlanFormat,
+    ToolAnalysisFormat,
+    RescopeFormat,
+    EvaluationFormat,
+)
+from reactive_agents.agents.task_executor import TaskExecutor
+from reactive_agents.loggers.base import Logger
+from reactive_agents.agents.tool_processor import ToolProcessor
+from reactive_agents.agents.event_manager import EventManager
+from reactive_agents.agents.config_validator import ConfigValidator
 
-# Import TaskStatus directly from the original module to avoid conflicts
-from reactive_agents.common.types import TaskStatus, ConfirmationCallbackProtocol
+if TYPE_CHECKING:
+    from reactive_agents.agents.execution_engine import AgentExecutionEngine
 
 
 # --- Agent Configuration Model ---
@@ -144,54 +191,10 @@ class ReactAgent(Agent):
     A ReAct-style agent that uses reflection and planning within an AgentContext.
     """
 
-    class PlanFormat(BaseModel):
-        next_step: str
-        rationale: str
-        suggested_tools: List[str] = []
-
-    class ToolAnalysisFormat(BaseModel):
-        required_tools: List[str] = Field(
-            ..., description="List of tools essential for this task"
-        )
-        optional_tools: List[str] = Field(
-            [], description="List of tools helpful but not essential"
-        )
-        explanation: str = Field(
-            ..., description="Brief explanation of the tool requirements"
-        )
-
-    class RescopeFormat(BaseModel):
-        rescoped_task: Optional[str] = Field(
-            None,
-            description="A simplified, achievable task, or null if no rescope possible.",
-        )
-        explanation: str = Field(
-            ..., description="Why this task was/wasn't rescoped and justification."
-        )
-        expected_tools: List[str] = Field(
-            [], description="Tools expected for the rescoped task (if any)."
-        )
-
-    class EvaluationFormat(BaseModel):
-        adherence_score: float = Field(
-            ...,
-            ge=0.0,
-            le=1.0,
-            description="Score 0.0-1.0: how well the result matches the goal",
-        )
-        strengths: List[str] = Field(
-            [], description="Ways the result successfully addressed the goal"
-        )
-        weaknesses: List[str] = Field(
-            [], description="Ways the result fell short of the goal"
-        )
-        explanation: str = Field(..., description="Overall explanation of the rating")
-        matches_intent: bool = Field(
-            ...,
-            description="Whether the result fundamentally addresses the user's core intent",
-        )
-
-    # --- End Pydantic models in class ---
+    execution_engine: "AgentExecutionEngine"
+    event_manager: EventManager
+    task_executor: TaskExecutor
+    tool_processor: ToolProcessor
 
     def __init__(
         self,
@@ -203,45 +206,67 @@ class ReactAgent(Agent):
         Args:
             config: The ReactAgentConfig object containing all settings.
         """
-        # Process custom tools to ensure they're properly wrapped
-        processed_tools = self._process_custom_tools(config.custom_tools)
+        # Import here to avoid circular imports
+        from reactive_agents.agents.execution_engine import AgentExecutionEngine
 
-        context = AgentContext(
+        # Initialize config validator with string log level
+        self.config_validator = ConfigValidator(str(config.log_level or "info"))
+
+        # Validate configuration
+        validated_config = self.config_validator.validate_agent_config(
             agent_name=config.agent_name,
-            role=config.role,
             provider_model_name=config.provider_model_name,
             model_provider_options=config.model_provider_options,
+            role=config.role,
             mcp_client=config.mcp_client,
+            mcp_config=config.mcp_config,
+            mcp_server_filter=config.mcp_server_filter,
             min_completion_score=config.min_completion_score,
             instructions=config.instructions,
             max_iterations=config.max_iterations,
             reflect_enabled=config.reflect_enabled,
-            log_level=config.log_level,
-            initial_task=config.initial_task or "",
+            log_level=str(config.log_level or "info"),  # Convert to string
+            initial_task=config.initial_task,
             tool_use_enabled=config.tool_use_enabled,
-            tools=processed_tools,  # Pass processed tools to context
+            custom_tools=config.custom_tools,
             use_memory_enabled=config.use_memory_enabled,
             collect_metrics_enabled=config.collect_metrics_enabled,
             check_tool_feasibility=config.check_tool_feasibility,
             enable_caching=config.enable_caching,
             confirmation_callback=config.confirmation_callback,
             confirmation_config=config.confirmation_config,
-            **config.kwargs,
+            workflow_context_shared=config.workflow_context_shared,
         )
+
+        # Create the context
+        context = AgentContext(**validated_config)
+
+        # Initialize the base Agent class
         super().__init__(context)
-        # Store the config for potential reference, though context holds the state
+
+        # Initialize the tool processor first
+        self.tool_processor = ToolProcessor(self)
+
+        # Process custom tools to ensure they're properly wrapped
+        processed_tools = self.tool_processor.process_custom_tools(
+            validated_config["custom_tools"]
+        )
+
+        # Update context with processed tools
+        self.context.tools = processed_tools
+
+        # Initialize the execution engine
+        self.execution_engine = AgentExecutionEngine(self)
+
+        # Initialize the event manager
+        self.event_manager = EventManager(self)
+
+        # Initialize the task executor last, after execution engine is ready
+        self.task_executor = TaskExecutor(self)
+
+        # Store the config for potential reference
         self.config = config
         self._closed = False
-
-        # Initialize event manager for subscription interface
-        self._event_manager = AgentEventManager(self.context.state_observer)
-
-        # --- Control state for pause/terminate ---
-        self._paused = False
-        self._pause_event = asyncio.Event()
-        self._pause_event.set()  # Initially not paused
-        self._terminate_requested = False
-        self._stop_requested = False
 
     async def __aenter__(self):
         await self.initialize()
@@ -284,749 +309,27 @@ class ReactAgent(Agent):
             print("Error initializing MCPClient:", e)
             raise e
 
-    def _process_custom_tools(self, tools):
-        """
-        Process custom tools to ensure they match the ToolProtocol interface.
-
-        Args:
-            tools: List of tools, which could be functions decorated with @tool
-
-        Returns:
-            List of tools that all comply with the ToolProtocol interface
-        """
-        from reactive_agents.tools.base import Tool
-        from reactive_agents.tools.abstractions import ToolResult
-
-        processed_tools = []
-
-        for tool in tools:
-            # Skip None values
-            if tool is None:
-                continue
-
-            # If it's already a proper Tool class instance, use it as is
-            if isinstance(tool, Tool):
-                processed_tools.append(tool)
-            # If it has a tool_definition attribute (likely a decorated function)
-            elif hasattr(tool, "tool_definition"):
-                # Create a wrapper class that implements the Tool interface
-                class DecoratedFunctionWrapper(Tool):
-                    # Use the function's attributes
-                    name = tool.__name__
-                    tool_definition = tool.tool_definition
-
-                    def __init__(self, func):
-                        self.func = func
-
-                    async def use(self, params):
-                        # Call the original function
-                        result = await self.func(**params)
-                        return ToolResult(result)
-
-                # Create a wrapper instance and add it
-                processed_tools.append(DecoratedFunctionWrapper(tool))
-            # Otherwise it's not a compatible tool
-            else:
-                raise ValueError(
-                    f"Custom tool {tool} is not compatible with ToolProtocol"
-                )
-
-        return processed_tools
-
     async def run(
         self,
-        initial_task: Optional[str] = None,
+        initial_task: str,
         cancellation_event: Optional[asyncio.Event] = None,
     ) -> Dict[str, Any]:
         """
-        Run the ReAct agent loop for the given task.
+        Run the ReAct agent loop for the given task using the AgentExecutionEngine.
 
         Args:
-            initial_task: The task description. If None, uses the initial_task passed during initialization.
+            initial_task: The task description (required).
             cancellation_event: An optional asyncio.Event to signal cancellation.
 
         Returns:
             A dictionary containing the final status, result, and other execution details.
         """
-
-        # --- Use initial_task from run() if provided, otherwise context cannot provide it anymore ---
-        # Config might hold an initial task if provided at agent init, but run() arg takes precedence.
-        current_initial_task = initial_task
-        if not current_initial_task:
-            # Maybe fetch from config if stored there? For now, raise error.
-            # config_initial_task = getattr(self.config, 'initial_task', None)
-            # current_initial_task = config_initial_task
-            # if not current_initial_task:
-            raise ValueError(
-                # "An initial task must be provided either during agent config or when calling run()."
-                "An initial task must be provided when calling run()."
-            )
-
-        # 1. --- Initialization and Context Setup ---
-        # Create a new session for this run
-        self.context.session = AgentSession(
-            initial_task=current_initial_task,
-            current_task=current_initial_task,
-            start_time=time.time(),  # Override default start time
+        return await self.execution_engine.execute(
+            initial_task=initial_task,
+            cancellation_event=cancellation_event,
+            # self_improve=True,
+            # max_improvement_attempts=3,
         )
-        # Reset metrics manager if it exists
-        if self.context.metrics_manager:
-            self.context.metrics_manager.reset()
-        # Reset reflection manager if it exists
-        if self.context.reflection_manager:
-            # Reset internal state if needed, reflections might be loaded from memory later
-            self.context.reflection_manager.reset()
-
-        # Emit session start event
-        self.context.emit_event(
-            AgentStateEvent.SESSION_STARTED,
-            {
-                "initial_task": self.context.session.initial_task,
-                "session_id": self.context.session.session_id,
-            },
-        )
-
-        # Log the correct initial task from the session
-        self.agent_logger.info(
-            f"ReactAgent run starting for task: {self.context.session.initial_task}"
-        )
-
-        # Local state for run management (some might move to session later if needed)
-        last_error: Optional[str] = None
-        rescoped_task: Optional[str] = None  # Keep local? Or move to session?
-        final_result_content: Optional[str] = None  # Keep local to build final result
-        max_failures = self.context.max_task_retries
-        failure_count = 0
-        active_tasks: Set[asyncio.Task] = set()
-        last_plan = None  # Keep local for loop guidance injection
-
-        try:
-            # 2. --- Pre-run Checks (Dependencies, Tool Feasibility) ---
-            if not self._check_dependencies():
-                # Emit error event
-                self.context.emit_event(
-                    AgentStateEvent.ERROR_OCCURRED,
-                    {
-                        "error": "Dependencies not met",
-                        "details": "Agent dependencies check failed",
-                    },
-                )
-                # Prepare result using session status (rescoped_task is None here)
-                return self._prepare_final_result(rescoped_task=None)
-
-            # Use session's initial_task for feasibility check
-            if self.context.check_tool_feasibility:
-                feasibility = await self.check_tool_feasibility(
-                    self.context.session.initial_task
-                )
-                if feasibility and feasibility.get("required_tools") is not None:
-                    self.context.session.min_required_tools = set(
-                        feasibility["required_tools"]
-                    )
-                    self.agent_logger.debug(
-                        f"Stored initial required tools in session: {self.context.session.min_required_tools}"
-                    )
-
-                if not feasibility["feasible"]:
-                    self.agent_logger.warning(
-                        f"Missing required tools: {feasibility['missing_tools']}"
-                    )
-                    self.context.session.task_status = TaskStatus.MISSING_TOOLS
-                    self.context.session.reasoning_log.append(
-                        f"Cannot complete task: Missing Tools - {feasibility.get('explanation', '')}"
-                    )
-
-                    # Emit missing tools event
-                    self.context.emit_event(
-                        AgentStateEvent.ERROR_OCCURRED,
-                        {
-                            "error": "Missing required tools",
-                            "missing_tools": feasibility["missing_tools"],
-                            "explanation": feasibility.get("explanation", ""),
-                        },
-                    )
-
-                    if self.context.workflow_manager:
-                        self.context.workflow_manager.update_context(
-                            TaskStatus.MISSING_TOOLS,
-                            missing_tools=feasibility["missing_tools"],
-                            explanation=feasibility["explanation"],
-                        )
-                    # Prepare result using session status (rescoped_task is None)
-                    return self._prepare_final_result(
-                        rescoped_task=None, feasibility=feasibility
-                    )
-
-            # 3. --- Set Status to Running ---
-            self.context.session.task_status = TaskStatus.RUNNING
-
-            # Emit status changed event
-            self.context.emit_event(
-                AgentStateEvent.TASK_STATUS_CHANGED,
-                {"previous_status": "initialized", "new_status": "running"},
-            )
-
-            if self.context.workflow_manager:
-                self.context.workflow_manager.update_context(TaskStatus.RUNNING)
-
-            # 4. --- Execution Loop ---
-            while self._should_continue():
-                # --- STOP CONTROL ---
-                if self._stop_requested:
-                    self.agent_logger.info(
-                        "Stop requested. Will stop after this iteration."
-                    )
-                    # Let the current step finish, then break after iteration
-                # --- END STOP CONTROL ---
-
-                # --- PAUSE/TERMINATE CONTROL ---
-                if self._terminate_requested:
-                    self.agent_logger.info("Terminate requested. Exiting run loop.")
-                    self.context.emit_event(
-                        AgentStateEvent.TERMINATED,
-                        {"message": "Agent terminated by user request."},
-                    )
-                    self.context.session.task_status = TaskStatus.CANCELLED
-                    break
-                if self._paused:
-                    self.agent_logger.info("Agent paused. Waiting for resume...")
-                    self.context.emit_event(
-                        AgentStateEvent.PAUSED, {"message": "Agent is now paused."}
-                    )
-                    await self._pause_event.wait()
-                    self.agent_logger.info("Agent resumed from pause.")
-                    self.context.emit_event(
-                        AgentStateEvent.RESUMED, {"message": "Agent resumed by user."}
-                    )
-                # --- END PAUSE/TERMINATE CONTROL ---
-
-                if cancellation_event and cancellation_event.is_set():
-                    self.agent_logger.info("Task execution cancelled by user.")
-                    self.context.session.task_status = TaskStatus.CANCELLED
-
-                    # Emit cancellation event
-                    self.context.emit_event(
-                        AgentStateEvent.TASK_STATUS_CHANGED,
-                        {"previous_status": "running", "new_status": "cancelled"},
-                    )
-
-                    break
-
-                self.context.session.iterations += 1
-                self.agent_logger.info(
-                    f"🔄 ITERATION {self.context.session.iterations}/{self.context.max_iterations or 'unlimited'}"
-                )
-
-                # Emit iteration started event
-                self.context.emit_event(
-                    AgentStateEvent.ITERATION_STARTED,
-                    {
-                        "iteration": self.context.session.iterations,
-                        "max_iterations": self.context.max_iterations,
-                    },
-                )
-
-                if self.context.workflow_manager:
-                    self.context.workflow_manager.update_context(
-                        self.context.session.task_status
-                    )
-
-                # Inject guidance from the previous iteration's plan
-                if (
-                    last_plan
-                    and last_plan.get("next_step")
-                    and last_plan.get("rationale")
-                ):
-                    guidance_message = {
-                        "role": "user",
-                        "content": f"Based on the previous plan, the next concrete step to take is: {last_plan['next_step']}. Rationale: {last_plan['rationale']}. Please proceed with this action.",
-                    }
-                    self.context.session.messages.append(guidance_message)
-                    self.agent_logger.debug(
-                        f"Injecting plan guidance: {guidance_message['content']}"
-                    )
-
-                current_task_for_iteration = (
-                    rescoped_task or self.context.session.current_task
-                )
-
-                # --- Inner try/except for iteration-specific errors ---
-                try:
-                    self.agent_logger.info(
-                        f"🔄 Iteration {self.context.session.iterations} current task: {current_task_for_iteration}"
-                    )
-                    iteration_content, new_plan = await self._run_task_iteration(
-                        task=current_task_for_iteration
-                    )
-                    self.agent_logger.info(f"🔄 Content Preview: {iteration_content}")
-                    last_plan = new_plan
-                    if iteration_content:
-                        final_result_content = iteration_content
-
-                    # Emit iteration completed event
-                    self.context.emit_event(
-                        AgentStateEvent.ITERATION_COMPLETED,
-                        {
-                            "iteration": self.context.session.iterations,
-                            "has_result": iteration_content is not None,
-                            "has_plan": new_plan is not None,
-                        },
-                    )
-
-                    # Add metrics update after each completed iteration
-                    if self.context.metrics_manager:
-                        metrics = self.context.metrics_manager.get_metrics()
-                        self.context.emit_event(
-                            AgentStateEvent.METRICS_UPDATED, {"metrics": metrics}
-                        )
-
-                    if self.context.session.final_answer:
-                        self.agent_logger.info(
-                            "✅ Final answer received during task execution."
-                        )
-                        self.context.session.task_status = TaskStatus.COMPLETE
-
-                        # Emit final answer event
-                        self.context.emit_event(
-                            AgentStateEvent.FINAL_ANSWER_SET,
-                            {
-                                "answer": self.context.session.final_answer,
-                                "iteration": self.context.session.iterations,
-                            },
-                        )
-
-                        # Emit status changed event
-                        self.context.emit_event(
-                            AgentStateEvent.TASK_STATUS_CHANGED,
-                            {"previous_status": "running", "new_status": "complete"},
-                        )
-
-                        break
-
-                    self.context.update_system_prompt()
-                    failure_count = 0
-
-                except Exception as iter_error:
-                    failure_count += 1
-                    last_error = str(iter_error)
-                    tb_str = traceback.format_exc()
-                    self.agent_logger.error(
-                        f"❌ Iteration {self.context.session.iterations} Error: {last_error}\n{tb_str}"
-                    )
-                    self.context.session.reasoning_log.append(
-                        f"ERROR in iteration {self.context.session.iterations}: {last_error}"
-                    )
-
-                    # Emit error event
-                    self.context.emit_event(
-                        AgentStateEvent.ERROR_OCCURRED,
-                        {
-                            "error": "Iteration error",
-                            "details": last_error,
-                            "iteration": self.context.session.iterations,
-                            "failure_count": failure_count,
-                        },
-                    )
-
-                    if failure_count >= max_failures:
-                        self.agent_logger.warning(
-                            f"Reached max failures ({max_failures}). Attempting to rescope task."
-                        )
-                        error_context = f"Multiple ({failure_count}) failures during execution. Last error: {last_error}"
-                        rescope_result = await self.rescope_goal(
-                            self.context.session.initial_task, error_context
-                        )
-
-                        if rescope_result["rescoped_task"]:
-                            potential_rescope = rescope_result["rescoped_task"]
-                            if isinstance(potential_rescope, str):
-                                rescoped_task = potential_rescope  # Update local var
-                                self.context.session.current_task = rescoped_task
-                                self.agent_logger.info(
-                                    f"Task rescoped to: {rescoped_task}"
-                                )
-                                self.context.session.reasoning_log.append(
-                                    f"Task rescoped: {rescope_result['explanation']}"
-                                )
-
-                                # Emit task rescope event
-                                self.context.emit_event(
-                                    AgentStateEvent.TASK_STATUS_CHANGED,
-                                    {
-                                        "previous_status": str(
-                                            self.context.session.task_status
-                                        ),
-                                        "new_status": "rescoped",
-                                        "rescoped_task": rescoped_task,
-                                        "original_task": self.context.session.initial_task,
-                                        "explanation": rescope_result["explanation"],
-                                    },
-                                )
-
-                                failure_count = 0
-                                if rescope_result.get("expected_tools") is not None:
-                                    self.context.session.min_required_tools = set(
-                                        rescope_result["expected_tools"]
-                                    )
-                                    self.agent_logger.debug(
-                                        f"Updated required tools for rescoped task in session: {self.context.session.min_required_tools}"
-                                    )
-                                else:
-                                    self.context.session.min_required_tools = None
-                                    self.agent_logger.debug(
-                                        "Reset required tools in session as rescope did not specify expected tools."
-                                    )
-                                if self.context.workflow_manager:
-                                    self.context.workflow_manager.update_context(
-                                        self.context.session.task_status,
-                                        rescoped=True,
-                                        original_task=self.context.session.initial_task,
-                                        rescoped_task=rescoped_task,
-                                    )
-                                continue  # Continue loop with rescoped task
-                            else:
-                                self.agent_logger.error(
-                                    "Rescoping failed unexpectedly: rescoped_task was not a string."
-                                )
-                                self.context.session.task_status = TaskStatus.ERROR
-
-                                # Emit error event
-                                self.context.emit_event(
-                                    AgentStateEvent.ERROR_OCCURRED,
-                                    {
-                                        "error": "Rescoping failed",
-                                        "details": "Rescoped task was not a string",
-                                    },
-                                )
-
-                                # Emit status changed event
-                                self.context.emit_event(
-                                    AgentStateEvent.TASK_STATUS_CHANGED,
-                                    {
-                                        "previous_status": "running",
-                                        "new_status": "error",
-                                    },
-                                )
-
-                                break  # Exit loop
-                        # Rescoping failed or not possible
-                        self.agent_logger.error(
-                            "Could not rescope task after multiple failures."
-                        )
-                        self.context.session.task_status = TaskStatus.ERROR
-                        self.context.session.reasoning_log.append(
-                            "Failed to rescope task after multiple errors."
-                        )
-
-                        # Emit error event
-                        self.context.emit_event(
-                            AgentStateEvent.ERROR_OCCURRED,
-                            {
-                                "error": "Rescoping failed",
-                                "details": "Could not rescope task after multiple failures",
-                            },
-                        )
-
-                        # Emit status changed event
-                        self.context.emit_event(
-                            AgentStateEvent.TASK_STATUS_CHANGED,
-                            {"previous_status": "running", "new_status": "error"},
-                        )
-
-                        break  # Exit loop
-                # --- End Inner try/except ---
-
-                # If stop was requested, emit STOPPED and break after this iteration
-                if self._stop_requested:
-                    self.agent_logger.info(
-                        "Graceful stop: emitting STOPPED and breaking loop."
-                    )
-                    self.context.emit_event(
-                        AgentStateEvent.STOPPED,
-                        {"message": "Agent stopped gracefully by user request."},
-                    )
-                    self.context.session.task_status = TaskStatus.CANCELLED
-                    break
-            # --- End While Loop ---
-
-            # 5. --- Determine Final Status After Loop ---
-            # Status should be set if loop ended via break (COMPLETE, CANCELLED, ERROR)
-            # If loop ended because _should_continue returned false, check conditions:
-            if (
-                self.context.session.task_status == TaskStatus.RUNNING
-            ):  # Only update if still running
-                if self.context.session.iterations >= (
-                    self.context.max_iterations or float("inf")
-                ):
-                    self.context.session.task_status = TaskStatus.MAX_ITERATIONS
-
-                    # Emit status changed event
-                    self.context.emit_event(
-                        AgentStateEvent.TASK_STATUS_CHANGED,
-                        {
-                            "previous_status": "running",
-                            "new_status": "max_iterations_reached",
-                        },
-                    )
-
-                elif not self.context.session.final_answer:
-                    # If loop ended normally but no final answer, likely MAX_ITERATIONS or logic error
-                    self.agent_logger.warning(
-                        "Loop ended via _should_continue but final_answer is not set. Setting status to MAX_ITERATIONS or ERROR."
-                    )
-                    self.context.session.task_status = (
-                        TaskStatus.MAX_ITERATIONS
-                        if self.context.session.iterations
-                        >= (self.context.max_iterations or float("inf"))
-                        else TaskStatus.ERROR
-                    )
-
-                    # Emit status changed event
-                    previous_status = "running"
-                    new_status = str(self.context.session.task_status)
-                    self.context.emit_event(
-                        AgentStateEvent.TASK_STATUS_CHANGED,
-                        {"previous_status": previous_status, "new_status": new_status},
-                    )
-
-                    if (
-                        self.context.session.task_status == TaskStatus.ERROR
-                        and not last_error
-                    ):
-                        last_error = "Loop ended unexpectedly without final answer."
-
-                        # Emit error event
-                        self.context.emit_event(
-                            AgentStateEvent.ERROR_OCCURRED,
-                            {"error": "Execution error", "details": last_error},
-                        )
-                else:
-                    # Should not happen if _should_continue logic is correct
-                    self.agent_logger.warning(
-                        "Loop ended unexpectedly, assuming completion."
-                    )
-                    self.context.session.task_status = TaskStatus.COMPLETE
-
-                    # Emit status changed event
-                    self.context.emit_event(
-                        AgentStateEvent.TASK_STATUS_CHANGED,
-                        {"previous_status": "running", "new_status": "complete"},
-                    )
-
-            self.agent_logger.info(
-                f"🏁 Determined final status: {self.context.session.task_status}"
-            )
-
-            # Set error message if status is ERROR and last_error has content
-            if self.context.session.task_status == TaskStatus.ERROR and last_error:
-                final_result_content = f"Error: {last_error}"
-            elif self.context.session.task_status == TaskStatus.CANCELLED:
-                final_result_content = "Task cancelled by user."
-
-            # 6. --- Post-run Processing (Summary, Evaluation) ---
-            self.context.session.summary = await self.generate_summary()
-            self.context.session.evaluation = (
-                await self.generate_goal_result_evaluation()
-            )
-
-            # Emit metrics updated event if metrics available
-            if self.context.metrics_manager:
-                metrics = self.context.metrics_manager.get_metrics()
-                self.context.emit_event(
-                    AgentStateEvent.METRICS_UPDATED, {"metrics": metrics}
-                )
-
-        # --- Outer Exception Handler for broader errors ---
-        except Exception as run_error:
-            tb_str = traceback.format_exc()
-            self.agent_logger.error(
-                f"Unhandled error during agent run: {run_error}\n{tb_str}"
-            )
-
-            # Emit error event
-            self.context.emit_event(
-                AgentStateEvent.ERROR_OCCURRED,
-                {"error": "Unhandled error", "details": str(run_error)},
-            )
-
-            # Ensure session exists before modifying
-            if hasattr(self.context, "session") and self.context.session:
-                self.context.session.task_status = TaskStatus.ERROR
-                self.context.session.evaluation = {
-                    "adherence_score": 0.0,
-                    "matches_intent": False,
-                    "explanation": f"Critical error: {run_error}",
-                    "strengths": [],
-                    "weaknesses": ["Agent run failed critically."],
-                }
-
-                # Emit status changed event
-                self.context.emit_event(
-                    AgentStateEvent.TASK_STATUS_CHANGED,
-                    {
-                        "previous_status": str(self.context.session.task_status),
-                        "new_status": "error",
-                    },
-                )
-
-            # Set local vars for finally block
-            last_error = str(run_error)
-            final_result_content = f"Critical error during agent run: {run_error}"
-
-        # --- Finally block executes regardless of exceptions ---
-        finally:
-            # 7. --- Cleanup and Result Preparation ---
-            current_session_status = TaskStatus.ERROR  # Default if session missing
-            session_final_answer = None
-            session_evaluation = {}
-
-            # Safely access session attributes
-            if hasattr(self.context, "session") and self.context.session:
-                current_session_status = self.context.session.task_status
-                session_final_answer = self.context.session.final_answer
-                session_evaluation = self.context.session.evaluation
-                self.context.session.end_time = time.time()
-                self.context.session.error = (
-                    last_error if current_session_status == TaskStatus.ERROR else None
-                )
-                if not self.context.session.final_answer:
-                    # Determine final result string carefully
-                    result_to_use_for_package = (
-                        final_result_content  # Content determined before/during finally
-                        or "Task completed without explicit result."
-                    )
-                    self.context.session.final_answer = result_to_use_for_package
-                else:
-                    # If final_answer was set by tool, use that for the package
-                    result_to_use_for_package = self.context.session.final_answer
-            else:
-                # Session missing, use defaults and captured error info
-                result_to_use_for_package = (
-                    final_result_content or f"Agent failed critically: {last_error}"
-                )
-                session_evaluation = {
-                    "adherence_score": 0.0,
-                    "matches_intent": False,
-                    "explanation": f"Critical error occurred before session completion: {last_error}",
-                    "strengths": [],
-                    "weaknesses": ["Agent run failed critically."],
-                }
-
-            # Cleanup tasks
-            if active_tasks:
-                self.agent_logger.debug(
-                    f"Cleaning up {len(active_tasks)} background tasks..."
-                )
-                for task in active_tasks:
-                    if not task.done():
-                        task.cancel()
-                active_tasks.clear()
-
-            # Prepare the final result package
-            final_result_package = self._prepare_final_result(
-                rescoped_task=rescoped_task,  # Pass local rescoped_task
-                result_content=result_to_use_for_package,  # Use derived result string
-                summary=getattr(
-                    self.context.session, "summary", "Summary not generated."
-                ),  # Safely get summary
-                evaluation=session_evaluation,  # Use derived evaluation
-            )
-
-            # Update workflow context safely
-            if self.context.workflow_manager:
-                self.context.workflow_manager.update_context(
-                    current_session_status,
-                    result=result_to_use_for_package,
-                    adherence_score=session_evaluation.get("adherence_score"),
-                    matches_intent=session_evaluation.get("matches_intent"),
-                    rescoped=(rescoped_task is not None),
-                    error=(
-                        last_error
-                        if current_session_status == TaskStatus.ERROR
-                        else None
-                    ),
-                )
-
-            # Finalize metrics and add to package/session
-            if self.context.metrics_manager:
-                self.context.metrics_manager.finalize_run_metrics()
-                metrics_data = self.context.metrics_manager.get_metrics()
-                final_result_package["metrics"] = metrics_data
-                if hasattr(self.context, "session") and self.context.session:
-                    self.context.session.metrics = metrics_data
-
-            # Save memory (using session safely)
-            if self.context.memory_manager:
-                if hasattr(self.context, "session") and self.context.session:
-                    self.context.memory_manager.update_session_history(
-                        self.context.session
-                    )
-                    self.context.memory_manager.save_memory()
-                else:
-                    self.agent_logger.warning(
-                        "Cannot save memory, session object missing."
-                    )
-
-            # Emit session end event
-            elapsed_time = 0
-            if hasattr(self.context, "session") and self.context.session:
-                elapsed_time = time.time() - self.context.session.start_time
-
-            self.context.emit_event(
-                AgentStateEvent.SESSION_ENDED,
-                {
-                    "session_id": getattr(self.context.session, "session_id", None),
-                    "final_status": str(current_session_status),
-                    "elapsed_time": elapsed_time,
-                    "iterations": getattr(self.context.session, "iterations", 0),
-                },
-            )
-
-            self.agent_logger.info(
-                f"ReactAgent run finished with status: {current_session_status}"
-            )
-        # --- End Finally Block ---
-
-        return final_result_package
-
-    def _prepare_final_result(
-        self,
-        rescoped_task: Optional[str],
-        result_content: Optional[str] = None,
-        summary: Optional[str] = None,
-        evaluation: Optional[Dict] = None,
-        feasibility: Optional[Dict] = None,
-    ) -> Dict[str, Any]:
-        """Helper to construct the final return dictionary."""
-        # Fetch data from the session
-        min_req_tools_list = (
-            list(self.context.session.min_required_tools)
-            if self.context.session.min_required_tools is not None
-            else None
-        )
-        return {
-            "status": str(self.context.session.task_status),  # Use session status
-            "result": result_content  # Use explicitly passed result content
-            or self.context.session.final_answer  # Fallback to session final_answer
-            or "No textual result produced.",
-            "iterations": self.context.session.iterations,  # Use session iterations
-            "summary": summary or "Summary not generated.",  # Passed in
-            "reasoning_log": self.context.session.reasoning_log,  # Use session log
-            "evaluation": evaluation  # Passed in
-            or {
-                "adherence_score": self.context.session.completion_score,  # Use session score as fallback default
-                "matches_intent": False,
-                "explanation": "Evaluation not performed.",
-                "strengths": [],
-                "weaknesses": [],
-            },
-            "rescoped": rescoped_task is not None,  # Passed in
-            "original_task": self.context.session.initial_task,  # Use session initial_task
-            "rescoped_task": rescoped_task,  # Passed in
-            "min_required_tools": min_req_tools_list,  # Use locally derived list
-            "metrics": self.context.session.metrics,  # Use session metrics
-            **(feasibility if feasibility else {}),  # Passed in
-        }
 
     def _check_dependencies(self) -> bool:
         """Delegates dependency check to the WorkflowManager."""
@@ -1212,7 +515,7 @@ class ReactAgent(Agent):
                 system=system_prompt,
                 prompt=prompt,
                 format=(
-                    self.ToolAnalysisFormat.model_json_schema()
+                    ToolAnalysisFormat.model_json_schema()
                     if self.model_provider.name == "ollama"
                     else "json"
                 ),
@@ -1235,7 +538,7 @@ class ReactAgent(Agent):
                     if isinstance(analysis_data, str)
                     else analysis_data
                 )
-                validated_analysis = self.ToolAnalysisFormat(**parsed_analysis)
+                validated_analysis = ToolAnalysisFormat(**parsed_analysis)
 
                 required_tools_set = set(validated_analysis.required_tools)
                 missing_tools = list(required_tools_set - available_tools)
@@ -1285,53 +588,12 @@ class ReactAgent(Agent):
             }
 
     async def generate_summary(self) -> str:
-        """Generates a summary of the agent's actions using ToolManager history."""
-        self.agent_logger.debug("📜 Generating execution summary...")
-        if not self.context.tool_manager:
-            return "Summary unavailable: ToolManager missing."
+        """Delegates summary generation to the execution engine."""
+        return await self.execution_engine._generate_summary()
 
-        tool_history = self.context.tool_manager.tool_history
-        if not tool_history:
-            return "No tool actions were taken during this run."
-
-        try:
-            tools_used_names = list(
-                set(t.get("name", "unknown") for t in tool_history if t.get("name"))
-            )
-            history_for_prompt = tool_history[-10:]
-
-            summary_context = {
-                "task": self.context.session.initial_task,
-                "tools_used_count": len(tools_used_names),
-                "tools_used_names": tools_used_names,
-                "total_actions": len(tool_history),
-                "recent_actions": history_for_prompt,
-                "final_status": str(self.context.session.task_status),
-                "final_result_preview": str(self.context.session.final_answer or "N/A")[
-                    :200
-                ]
-                + "...",
-            }
-
-            # Use centralized prompts
-            summary_prompt = SUMMARY_CONTEXT_PROMPT.format(
-                summary_context_json=json.dumps(summary_context, indent=2, default=str)
-            )
-            response = await self.model_provider.get_completion(
-                system=SUMMARY_SYSTEM_PROMPT, prompt=summary_prompt
-            )
-
-            if response and response.get("response"):
-                return response["response"]
-            else:
-                self.agent_logger.warning(
-                    "Summary generation failed: No response from model."
-                )
-                return f"Agent completed task '{self.context.session.initial_task[:50]}...' with status {self.context.session.task_status} after {self.context.session.iterations} iterations, using {len(tools_used_names)} tools."
-
-        except Exception as e:
-            self.agent_logger.error(f"Error generating summary: {e}")
-            return f"Error generating summary: {e}"
+    async def generate_goal_result_evaluation(self) -> Dict[str, Any]:
+        """Delegates goal result evaluation to the execution engine."""
+        return await self.execution_engine._generate_goal_result_evaluation()
 
     async def rescope_goal(
         self, original_task: str, error_context: str
@@ -1363,7 +625,7 @@ class ReactAgent(Agent):
                 system=RESCOPE_SYSTEM_PROMPT,
                 prompt=rescope_prompt,
                 format=(
-                    self.RescopeFormat.model_json_schema()
+                    RescopeFormat.model_json_schema()
                     if self.model_provider.name == "ollama"
                     else "json"
                 ),
@@ -1386,7 +648,7 @@ class ReactAgent(Agent):
                     if isinstance(rescope_data, str)
                     else rescope_data
                 )
-                validated_rescope = self.RescopeFormat(**parsed_rescope)
+                validated_rescope = RescopeFormat(**parsed_rescope)
 
                 self.agent_logger.info(
                     f"Rescoping result: New task = {validated_rescope.rescoped_task}"
@@ -1421,306 +683,54 @@ class ReactAgent(Agent):
                 "original_task": original_task,
             }
 
-    async def generate_goal_result_evaluation(self) -> Dict[str, Any]:
-        """Evaluates how well the final result matches the initial task goal."""
-        self.agent_logger.info("🔎 Generating goal VS result evaluation...")
-        default_eval = {
-            "adherence_score": 0.0,
-            "matches_intent": False,
-            "explanation": "Evaluation could not be performed.",
-            "strengths": [],
-            "weaknesses": ["Evaluation failed."],
-        }
-
-        if not self.context.tool_manager:
-            self.agent_logger.warning("Cannot evaluate goal: ToolManager missing.")
-            return default_eval
-
-        tool_history = self.context.tool_manager.tool_history
-        if not tool_history and not self.context.session.final_answer:
-            self.agent_logger.info("Evaluation: No actions taken, score 0.0.")
-            return {
-                "adherence_score": 0.0,
-                "matches_intent": False,
-                "explanation": "No actions were taken and no final answer provided.",
-                "strengths": [],
-                "weaknesses": ["No progress made."],
-            }
-
-        try:
-            # ... (build eval_context dict) ...
-            tool_names_used = list(
-                set(t.get("name", "unknown") for t in tool_history if t.get("name"))
-            )
-            final_result_str = (
-                self.context.session.final_answer  # Use session
-                or "No explicit final textual answer provided by agent."
-            )
-            eval_context = {
-                "original_goal": self.context.session.initial_task,  # Use session
-                "final_result": (
-                    final_result_str[:3000] + "..."
-                    if len(final_result_str) > 3000
-                    else final_result_str
-                ),
-                "final_status": str(self.context.session.task_status),  # Use session
-                "tools_used": tool_names_used,
-                "action_summary": self.context.session.summary,  # Use session summary
-                "reasoning_log": self.context.session.reasoning_log[
-                    -5:
-                ],  # Use session log
-            }
-
-            # Get the deterministic score calculated during the run
-            deterministic_score = (
-                self.context.session.completion_score
-            )  # Use session score
-            self.agent_logger.info(
-                f"Using deterministic score for final evaluation: {deterministic_score:.2f}"
-            )
-
-            # Use centralized prompts
-            eval_prompt = EVALUATION_CONTEXT_PROMPT.format(
-                eval_context_json=json.dumps(eval_context, indent=2, default=str)
-            )
-            response = await self.model_provider.get_completion(
-                system=EVALUATION_SYSTEM_PROMPT,
-                prompt=eval_prompt,
-                format=(
-                    self.EvaluationFormat.model_json_schema()
-                    if self.model_provider.name == "ollama"
-                    else "json"
-                ),
-            )
-
-            if not response or not response.get("response"):
-                self.agent_logger.warning(
-                    "Goal evaluation failed: No response from model."
-                )
-                # Fallback using deterministic score
-                return {
-                    "adherence_score": deterministic_score,  # Use deterministic score
-                    "matches_intent": deterministic_score > 0.5,  # Simple heuristic
-                    "explanation": "Basic evaluation based on tool completion score; LLM evaluation failed.",
-                    "strengths": ["Used required tools proportionally to score."],
-                    "weaknesses": ["LLM evaluation call failed."],
-                }
-
-            try:
-                eval_data = response["response"]
-                parsed_eval = (
-                    json.loads(eval_data) if isinstance(eval_data, str) else eval_data
-                )
-                validated_eval_dict = self.EvaluationFormat(**parsed_eval).dict()
-
-                # <<< OVERRIDE LLM Score >>>
-                original_llm_score = validated_eval_dict.get("adherence_score")
-                validated_eval_dict["adherence_score"] = deterministic_score
-                # <<< End Override >>>
-
-                self.agent_logger.info(
-                    f"📄 Goal evaluation result: Adherence Score={deterministic_score:.2f} (overridden from LLM score: {original_llm_score:.2f}), "
-                    f"Matches Intent={validated_eval_dict.get('matches_intent')}"
-                )
-                # Use session reasoning log
-                self.context.session.reasoning_log.append(
-                    f"Goal Adherence Evaluation (Score: {deterministic_score:.2f}): {validated_eval_dict.get('explanation')}"
-                )
-                return validated_eval_dict
-
-            except (json.JSONDecodeError, TypeError) as e:
-                self.agent_logger.error(
-                    f"Error parsing evaluation JSON: {e}\nResponse: {response.get('response')}"
-                )
-                return default_eval | {"explanation": f"Error parsing evaluation: {e}"}
-            except Exception as e:
-                self.agent_logger.error(
-                    f"Error validating evaluation: {e}\nData: {parsed_eval}"
-                )
-                return default_eval | {
-                    "explanation": f"Error validating evaluation: {e}"
-                }
-
-        except Exception as e:
-            tb_str = traceback.format_exc()
-            self.agent_logger.error(f"Error during goal evaluation: {e}\n{tb_str}")
-            return default_eval
-
-    async def _run_task_iteration(
-        self, task: str
-    ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    async def _run_task_iteration(self, task: str) -> Optional[str]:
         """
-        Executes one iteration of the ReAct loop: Think/Act -> Reflect -> Plan.
-        Overrides the base Agent method.
-        Returns a tuple: (last_content, plan)
-        """
+        Runs a single iteration of the task execution loop.
+        Delegates to TaskExecutor for the actual execution.
 
-        # --- 1. Think/Act Step ---
-        self.agent_logger.info("🧠 Thinking/Acting...")
-        # Use the robust await helper for immediate pause/terminate
-        think_act_result_dict = await self._await_with_control(
-            super()._run_task(task=task)
+        Args:
+            task: The current task to execute
+
+        Returns:
+            Optional[str]: The result of the iteration
+        """
+        self.context.session.iterations += 1
+        self.agent_logger.info(
+            f"Running Iteration: {self.context.session.iterations}/{self.context.max_iterations}"
         )
-        last_content = None
-        if (
-            think_act_result_dict
-            and isinstance(think_act_result_dict, dict)
-            and think_act_result_dict.get("message")
-        ):
-            msg = think_act_result_dict["message"]
-            msg_content = msg.get("content")
-            if msg_content:
-                last_content = msg_content
-                # Use session reasoning log
-                self.context.session.reasoning_log.append(
-                    f"Assistant Thought/Response: {last_content[:200]}..."
-                )
-            elif msg.get("tool_calls"):
-                # Use session reasoning log
-                self.context.session.reasoning_log.append(
-                    f"Assistant Action: Called tools."
-                )
 
-                # Emit tool called event
-                tool_calls = msg.get("tool_calls", [])
-                for tool_call in tool_calls:
-                    self.context.emit_event(
-                        AgentStateEvent.TOOL_CALLED,
-                        {
-                            "tool_name": tool_call.get("name", "unknown"),
-                            "tool_id": tool_call.get("id", "unknown"),
-                            "parameters": tool_call.get("parameters", {}),
-                        },
-                    )
-        elif isinstance(think_act_result_dict, str):
-            last_content = think_act_result_dict
-            # Use session reasoning log
-            self.context.session.reasoning_log.append(
-                f"Step Result (non-dict): {last_content[:200]}..."
+        # Check if we already have a final answer
+        if self.context.session.final_answer:
+            self.agent_logger.info("Final answer already set, returning it.")
+            return self.context.session.final_answer
+
+        # Execute the iteration using TaskExecutor
+        result = await self.task_executor.execute_iteration(task)
+
+        if not result:
+            self.agent_logger.warning(
+                f"Iteration {self.context.session.iterations} failed or produced no result."
             )
+            return None
 
-        # Use session final_answer
-        if self.context.session.final_answer is not None:
-            self.agent_logger.info("Final answer set during Think/Act step.")
+        # Check if we have a final answer in the result
+        if result.get("final_answer"):
+            self.context.session.final_answer = result["final_answer"]
+            self.agent_logger.info("Final answer set from iteration result.")
+            return self.context.session.final_answer
 
-            # Emit final answer event
-            self.context.emit_event(
-                AgentStateEvent.FINAL_ANSWER_SET,
-                {"answer": self.context.session.final_answer},
+        # Check if we should continue
+        if not self.task_executor.should_continue():
+            # If we're not continuing and have a think_act result, use that as the final answer
+            think_act_result = (
+                result.get("think_act", {}).get("message", {}).get("content")
             )
+            if think_act_result:
+                self.context.session.final_answer = think_act_result
+                self.agent_logger.info("Setting final answer from think_act result.")
+                return think_act_result
 
-            # Ensure plan is None if final answer is set here
-            return self.context.session.final_answer, None
-
-        if think_act_result_dict is None:
-            self.agent_logger.warning("Think/Act step failed to produce a result.")
-            # Ensure plan is None if think/act failed
-            return None, None
-
-        # --- 2. Reflect Step ---
-        last_reflection = None
-        if self.context.reflect_enabled:
-            if self.context.reflection_manager:
-                # Ensure the argument is a dict or None
-                reflection_input = think_act_result_dict
-                if isinstance(reflection_input, str):
-                    reflection_input = {"message": {"content": reflection_input}}
-                # Use the robust await helper for immediate pause/terminate
-                reflection = await self._await_with_control(
-                    self.context.reflection_manager.generate_reflection(
-                        reflection_input
-                    )
-                )
-                if reflection:
-                    last_reflection = reflection
-                    # Use session reasoning log
-                    self.context.session.reasoning_log.append(
-                        f"Reflection:  Reason={reflection['reason']}"
-                    )
-
-                    # Emit reflection generated event
-                    self.context.emit_event(
-                        AgentStateEvent.REFLECTION_GENERATED,
-                        {
-                            "reason": reflection["reason"],
-                            "next_step": reflection.get("next_step", "None"),
-                            "required_tools": reflection.get("required_tools", []),
-                        },
-                    )
-                else:
-                    self.agent_logger.warning("Reflection step failed.")
-            else:
-                self.agent_logger.warning(
-                    "Reflection enabled but ReflectionManager missing."
-                )
-
-        # --- 3. Plan Step (Use Reflection's Next Step) ---
-        plan = None
-        if (
-            last_reflection
-            and last_reflection.get("next_step")
-            and last_reflection["next_step"].lower() != "none"
-        ):
-            next_step_from_reflection = last_reflection["next_step"]
-            self.agent_logger.info(
-                f"Using next step from reflection: {next_step_from_reflection}"
-            )
-            # Construct a plan dictionary compatible with the rest of the logic
-            plan = {
-                "next_step": next_step_from_reflection,
-                "rationale": f"Based on reflection: {last_reflection.get('reason', 'Proceed as per reflection.')}",
-                "suggested_tools": last_reflection.get("required_tools", []),
-            }
-            # Use session reasoning log
-            self.context.session.reasoning_log.append(
-                f"Plan (from Reflection): {plan['rationale']} -> {plan['next_step']}"
-            )
-        elif not self.context.reflect_enabled:
-            # Handle case where reflection is disabled
-            self.agent_logger.debug("Reflection disabled, using default plan.")
-            plan = {  # Default plan if reflection disabled
-                "next_step": "Continue direct task execution.",  # Changed default step
-                "rationale": "Direct execution mode, reflection disabled.",
-                "suggested_tools": [],
-            }
-            # Use session reasoning log
-            self.context.session.reasoning_log.append(
-                f"Plan (Default): {plan['rationale']} -> {plan['next_step']}"
-            )
-        else:
-            self.agent_logger.info(
-                "Reflection suggested 'None' or failed, no further plan generated."
-            )
-            # Plan remains None
-
-        # Return both the last content generated during think/act and the derived plan
-        # Use session final_answer
-        return self.context.session.final_answer or last_content, plan
-
-    async def _await_with_control(self, coro):
-        """Await a coroutine, handling pause/terminate immediately after completion."""
-        self._current_async_task = asyncio.create_task(coro)
-        try:
-            result = await self._current_async_task
-        except asyncio.CancelledError:
-            # Handle cancellation if needed
-            raise
-        finally:
-            self._current_async_task = None
-        if self._terminate_requested:
-            self.agent_logger.info("Terminate requested during await. Exiting.")
-            raise Exception("Terminated")
-        if self._paused:
-            self.agent_logger.info("Agent paused after await. Waiting for resume...")
-            self.context.emit_event(
-                AgentStateEvent.PAUSED, {"message": "Agent is now paused."}
-            )
-            await self._pause_event.wait()
-            self.agent_logger.info("Agent resumed from pause.")
-            self.context.emit_event(
-                AgentStateEvent.RESUMED, {"message": "Agent resumed by user."}
-            )
-        return result
+        return None
 
     # === Event Subscription Interface ===
 
@@ -1729,339 +739,131 @@ class ReactAgent(Agent):
         """
         Access the event subscription interface for this agent.
 
-        This property provides a fluent API for subscribing to agent events.
-        It allows subscribing to events in a type-safe manner without having
-        to directly access the underlying observer.
-
-        The events property is both a property accessor and callable:
-
         Returns:
-            AgentEventManager: An interface for subscribing to events
-
-        Example:
-            ```python
-            # Subscribe to specific events using helper methods
-            agent.events.on_tool_called().subscribe(
-                lambda event: print(f"Tool called: {event['tool_name']}")
-            )
-
-            # Subscribe to any event directly using the callable interface
-            agent.events(AgentStateEvent.ERROR_OCCURRED).subscribe(
-                lambda event: print(f"Error: {event['error']}")
-            )
-
-            # Subscribe to multiple events with the same callback
-            def log_event(event):
-                print(f"Event: {event['event_type']}")
-
-            agent.events.on_tool_called().subscribe(log_event)
-            agent.events.on_tool_completed().subscribe(log_event)
-            ```
+            EventManager: An interface for subscribing to events
         """
-        return self._event_manager
-
-    # Shorthand methods for common event subscriptions
-
-    def on_session_started(self, callback):
-        """
-        Subscribe to session started events.
-
-        Args:
-            callback: Function to call when a session starts
-                      Receives SessionStartedEventData
-
-        Returns:
-            The event subscription for method chaining
-        """
-        return self.events.on_session_started().subscribe(callback)
-
-    def on_session_ended(self, callback):
-        """
-        Subscribe to session ended events.
-
-        Args:
-            callback: Function to call when a session ends
-                      Receives SessionEndedEventData
-
-        Returns:
-            The event subscription for method chaining
-        """
-        return self.events.on_session_ended().subscribe(callback)
-
-    def on_task_status_changed(self, callback):
-        """
-        Subscribe to task status changed events.
-
-        Args:
-            callback: Function to call when task status changes
-                      Receives TaskStatusChangedEventData
-
-        Returns:
-            The event subscription for method chaining
-        """
-        return self.events.on_task_status_changed().subscribe(callback)
-
-    def on_iteration_started(self, callback):
-        """
-        Subscribe to iteration started events.
-
-        Args:
-            callback: Function to call when an iteration starts
-                      Receives IterationStartedEventData
-
-        Returns:
-            The event subscription for method chaining
-        """
-        return self.events.on_iteration_started().subscribe(callback)
-
-    def on_iteration_completed(self, callback):
-        """
-        Subscribe to iteration completed events.
-
-        Args:
-            callback: Function to call when an iteration completes
-                      Receives IterationCompletedEventData
-
-        Returns:
-            The event subscription for method chaining
-        """
-        return self.events.on_iteration_completed().subscribe(callback)
-
-    def on_tool_called(self, callback):
-        """
-        Subscribe to tool called events.
-
-        Args:
-            callback: Function to call when a tool is called
-                      Receives ToolCalledEventData
-
-        Returns:
-            The event subscription for method chaining
-        """
-        return self.events.on_tool_called().subscribe(callback)
-
-    def on_tool_completed(self, callback):
-        """
-        Subscribe to tool completed events.
-
-        Args:
-            callback: Function to call when a tool completes
-                      Receives ToolCompletedEventData
-
-        Returns:
-            The event subscription for method chaining
-        """
-        return self.events.on_tool_completed().subscribe(callback)
-
-    def on_tool_failed(self, callback):
-        """
-        Subscribe to tool failed events.
-
-        Args:
-            callback: Function to call when a tool fails
-                      Receives ToolFailedEventData
-
-        Returns:
-            The event subscription for method chaining
-        """
-        return self.events.on_tool_failed().subscribe(callback)
-
-    def on_reflection_generated(self, callback):
-        """
-        Subscribe to reflection generated events.
-
-        Args:
-            callback: Function to call when a reflection is generated
-                      Receives ReflectionGeneratedEventData
-
-        Returns:
-            The event subscription for method chaining
-        """
-        return self.events.on_reflection_generated().subscribe(callback)
-
-    def on_final_answer_set(self, callback):
-        """
-        Subscribe to final answer set events.
-
-        Args:
-            callback: Function to call when a final answer is set
-                      Receives FinalAnswerSetEventData
-
-        Returns:
-            The event subscription for method chaining
-        """
-        return self.events.on_final_answer_set().subscribe(callback)
-
-    def on_metrics_updated(self, callback):
-        """
-        Subscribe to metrics updated events.
-
-        Args:
-            callback: Function to call when metrics are updated
-                      Receives MetricsUpdatedEventData
-
-        Returns:
-            The event subscription for method chaining
-        """
-        return self.events.on_metrics_updated().subscribe(callback)
-
-    def on_error_occurred(self, callback):
-        """
-        Subscribe to error occurred events.
-
-        Args:
-            callback: Function to call when an error occurs
-                      Receives ErrorOccurredEventData
-
-        Returns:
-            The event subscription for method chaining
-        """
-        return self.events.on_error_occurred().subscribe(callback)
+        return self.event_manager
 
     # --- Agent Control Methods ---
     async def pause(self):
         """Request the agent to pause at the next safe point."""
-        if not self._paused:
-            self._paused = True
-            self._pause_event.clear()
-            self.context.emit_event(
-                AgentStateEvent.PAUSE_REQUESTED, {"message": "Pause requested by user."}
-            )
+        await self.execution_engine.pause()
 
     async def resume(self):
         """Resume the agent if it is paused."""
-        if self._paused:
-            self._paused = False
-            self._pause_event.set()
-            self.context.emit_event(
-                AgentStateEvent.RESUME_REQUESTED,
-                {"message": "Resume requested by user."},
-            )
+        await self.execution_engine.resume()
 
     async def terminate(self):
         """Request the agent to terminate as soon as possible."""
-        if not self._terminate_requested:
-            self._terminate_requested = True
-            self.context.emit_event(
-                AgentStateEvent.TERMINATE_REQUESTED,
-                {"message": "Terminate requested by user."},
-            )
-            # Cancel any in-progress async task for immediate effect
-            if hasattr(self, "_current_async_task") and self._current_async_task:
-                self._current_async_task.cancel()
-            self._pause_event.set()  # Wake up if paused
-
-    # --- Agent Control Event Subscriptions ---
-    def on_pause_requested(self, callback):
-        """
-        Subscribe to pause requested events.
-
-        Args:
-            callback: Function to call when pause is requested
-                      Receives PauseRequestedEventData
-
-        Returns:
-            The event subscription for method chaining
-        """
-        return self.events(AgentStateEvent.PAUSE_REQUESTED).subscribe(callback)
-
-    def on_paused(self, callback):
-        """
-        Subscribe to paused events.
-
-        Args:
-            callback: Function to call when agent is paused
-                      Receives PausedEventData
-
-        Returns:
-            The event subscription for method chaining
-        """
-        return self.events(AgentStateEvent.PAUSED).subscribe(callback)
-
-    def on_resume_requested(self, callback):
-        """
-        Subscribe to resume requested events.
-
-        Args:
-            callback: Function to call when resume is requested
-                      Receives ResumeRequestedEventData
-
-        Returns:
-            The event subscription for method chaining
-        """
-        return self.events(AgentStateEvent.RESUME_REQUESTED).subscribe(callback)
-
-    def on_resumed(self, callback):
-        """
-        Subscribe to resumed events.
-
-        Args:
-            callback: Function to call when agent is resumed
-                      Receives ResumedEventData
-
-        Returns:
-            The event subscription for method chaining
-        """
-        return self.events(AgentStateEvent.RESUMED).subscribe(callback)
-
-    def on_terminate_requested(self, callback):
-        """
-        Subscribe to terminate requested events.
-
-        Args:
-            callback: Function to call when terminate is requested
-                      Receives TerminateRequestedEventData
-
-        Returns:
-            The event subscription for method chaining
-        """
-        return self.events(AgentStateEvent.TERMINATE_REQUESTED).subscribe(callback)
-
-    def on_terminated(self, callback):
-        """
-        Subscribe to terminated events.
-
-        Args:
-            callback: Function to call when agent is terminated
-                      Receives TerminatedEventData
-
-        Returns:
-            The event subscription for method chaining
-        """
-        return self.events(AgentStateEvent.TERMINATED).subscribe(callback)
-
-    def on_stop_requested(self, callback):
-        """
-        Subscribe to stop requested events.
-
-        Args:
-            callback: Function to call when stop is requested
-                      Receives StopRequestedEventData
-
-        Returns:
-            The event subscription for method chaining
-        """
-        return self.events(AgentStateEvent.STOP_REQUESTED).subscribe(callback)
-
-    def on_stopped(self, callback):
-        """
-        Subscribe to stopped events.
-
-        Args:
-            callback: Function to call when agent is stopped
-                      Receives StoppedEventData
-
-        Returns:
-            The event subscription for method chaining
-        """
-        return self.events(AgentStateEvent.STOPPED).subscribe(callback)
+        await self.execution_engine.terminate()
 
     async def stop(self):
         """Request the agent to gracefully stop after the current step."""
-        if not self._stop_requested:
-            self._stop_requested = True
-            self.context.emit_event(
-                AgentStateEvent.STOP_REQUESTED,
-                {"message": "Stop requested by user (graceful)."},
-            )
-            self._pause_event.set()  # Wake up if paused
+        await self.execution_engine.stop()
+
+    # --- Agent Control Event Subscriptions ---
+    def on_pause_requested(
+        self, callback: EventCallback[PauseRequestedEventData]
+    ) -> None:
+        """Register callback for pause requested event."""
+        self.event_manager.on_pause_requested(callback)
+
+    def on_paused(self, callback: EventCallback[PausedEventData]) -> None:
+        """Register callback for paused event."""
+        self.event_manager.on_paused(callback)
+
+    def on_resume_requested(
+        self, callback: EventCallback[ResumeRequestedEventData]
+    ) -> None:
+        """Register callback for resume requested event."""
+        self.event_manager.on_resume_requested(callback)
+
+    def on_resumed(self, callback: EventCallback[ResumedEventData]) -> None:
+        """Register callback for resumed event."""
+        self.event_manager.on_resumed(callback)
+
+    def on_terminate_requested(
+        self, callback: EventCallback[TerminateRequestedEventData]
+    ) -> None:
+        """Register callback for terminate requested event."""
+        self.event_manager.on_terminate_requested(callback)
+
+    def on_terminated(self, callback: EventCallback[TerminatedEventData]) -> None:
+        """Register callback for terminated event."""
+        self.event_manager.on_terminated(callback)
+
+    def on_stop_requested(
+        self, callback: EventCallback[StopRequestedEventData]
+    ) -> None:
+        """Register callback for stop requested event."""
+        self.event_manager.on_stop_requested(callback)
+
+    def on_stopped(self, callback: EventCallback[StoppedEventData]) -> None:
+        """Register callback for stopped event."""
+        self.event_manager.on_stopped(callback)
+
+    def on_session_started(
+        self, callback: EventCallback[SessionStartedEventData]
+    ) -> None:
+        """Register callback for session started event."""
+        self.event_manager.on_session_started(callback)
+
+    def on_session_ended(self, callback: EventCallback[SessionEndedEventData]) -> None:
+        """Register callback for session ended event."""
+        self.event_manager.on_session_ended(callback)
+
+    def on_iteration_started(
+        self, callback: EventCallback[IterationStartedEventData]
+    ) -> None:
+        """Register callback for iteration started event."""
+        self.event_manager.on_iteration_started(callback)
+
+    def on_iteration_completed(
+        self, callback: EventCallback[IterationCompletedEventData]
+    ) -> None:
+        """Register callback for iteration completed event."""
+        self.event_manager.on_iteration_completed(callback)
+
+    def on_task_status_changed(
+        self, callback: EventCallback[TaskStatusChangedEventData]
+    ) -> None:
+        """Register callback for task status changed event."""
+        self.event_manager.on_task_status_changed(callback)
+
+    def on_tool_called(self, callback: EventCallback[ToolCalledEventData]) -> None:
+        """Register callback for tool called event."""
+        self.event_manager.on_tool_called(callback)
+
+    def on_tool_completed(
+        self, callback: EventCallback[ToolCompletedEventData]
+    ) -> None:
+        """Register callback for tool completed event."""
+        self.event_manager.on_tool_completed(callback)
+
+    def on_tool_failed(self, callback: EventCallback[ToolFailedEventData]) -> None:
+        """Register callback for tool failed event."""
+        self.event_manager.on_tool_failed(callback)
+
+    def on_error_occurred(
+        self, callback: EventCallback[ErrorOccurredEventData]
+    ) -> None:
+        """Register callback for error occurred event."""
+        self.event_manager.on_error_occurred(callback)
+
+    def on_reflection_generated(
+        self, callback: EventCallback[ReflectionGeneratedEventData]
+    ) -> None:
+        """Register callback for reflection generated event."""
+        self.event_manager.on_reflection_generated(callback)
+
+    def on_final_answer_set(
+        self, callback: EventCallback[FinalAnswerSetEventData]
+    ) -> None:
+        """Register callback for final answer set event."""
+        self.event_manager.on_final_answer_set(callback)
+
+    def on_metrics_updated(
+        self, callback: EventCallback[MetricsUpdatedEventData]
+    ) -> None:
+        """Register callback for metrics updated event."""
+        self.event_manager.on_metrics_updated(callback)

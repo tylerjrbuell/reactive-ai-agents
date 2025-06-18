@@ -6,7 +6,7 @@ from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 # Import shared types from the new location
-from reactive_agents.common.types import TaskStatus
+from reactive_agents.common.types.status_types import TaskStatus
 
 # Assuming TaskStatus is available (e.g., from react_agent or a common types file)
 # try:
@@ -27,8 +27,8 @@ from reactive_agents.common.types import TaskStatus
 
 
 if TYPE_CHECKING:
-    from context.agent_context import AgentContext
-    from loggers.base import Logger
+    from reactive_agents.context.agent_context import AgentContext
+    from reactive_agents.loggers.base import Logger
 
 
 class WorkflowManager(BaseModel):
@@ -91,7 +91,7 @@ class WorkflowManager(BaseModel):
         # Update own status in workflow context if waiting
         if not all_met:
             self.update_context(TaskStatus.WAITING_DEPENDENCIES)
-        elif self.context.task_status == TaskStatus.WAITING_DEPENDENCIES:
+        elif self.context.session.task_status == TaskStatus.WAITING_DEPENDENCIES:
             # If dependencies were previously unmet but now are, reset status
             self.update_context(TaskStatus.INITIALIZED)  # Or RUNNING if appropriate?
 
@@ -127,7 +127,7 @@ class WorkflowManager(BaseModel):
             # Basic info updated on most calls
             context_update: Dict[str, Any] = {
                 "status": status_str,
-                "iterations": self.context.iterations,
+                "iterations": self.context.session.iterations,
                 "dependencies_met": self.check_dependencies(),  # Re-check for current status
                 "last_updated": datetime.now().isoformat(),
             }
@@ -181,7 +181,7 @@ class WorkflowManager(BaseModel):
             if agent_name in self.workflow_context:
                 self.workflow_context[agent_name].update(context_update)
                 self.agent_logger.debug(
-                    f"Updated workflow context for {agent_name}: Status={status_str}, Iter={self.context.iterations}"
+                    f"Updated workflow context for {agent_name}: Status={status_str}, Iter={self.context.session.iterations}"
                 )
             else:
                 # This case should ideally be handled by the init, but as a safeguard:

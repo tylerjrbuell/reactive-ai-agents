@@ -165,9 +165,7 @@ async def main():
     """
     try:
         # For confirmation callbacks
-        async def confirmation_callback(
-            action_description: str, details: Dict[str, Any]
-        ) -> bool:
+        async def confirm(action_description: str, details: Dict[str, Any]) -> bool:
             print(f"\n--- Tool Confirmation Request ---")
             print(f"Tool: {details.get('tool', 'unknown')}")
             print(f"Parameters: {json.dumps(details.get('params', {}), indent=2)}")
@@ -198,15 +196,15 @@ async def main():
                 .with_model(PROVIDER_MODEL)
                 .with_tool_use()
                 .with_tool_caching()
-                .with_model_provider_options(options={"num_ctx": 4000, "num_gpus": 256})
+                .with_model_provider_options({"num_ctx": 4000, "num_gpus": 256})
                 .with_mcp_tools(["time", "brave-search"])
                 .with_instructions("Answer questions using MCP tools.")
-                .with_confirmation(confirmation_callback, confirmation_config)
+                .with_confirmation(confirm, confirmation_config)
                 .with_log_level(LogLevel.DEBUG)
                 .build()
             )
 
-        examples.append((1, task1, build_agent1, confirmation_callback, 60))
+        examples.append((1, task1, build_agent1, confirm, 60))
 
         # Example 2: Using only custom tools
         task2 = "What's the weather in Tokyo and London? Also, what is the current price of Bitcoin and Ethereum?"
@@ -238,7 +236,7 @@ async def main():
 
             return await builder.build()
 
-        examples.append((2, task2, build_agent2, confirmation_callback, 60))
+        examples.append((2, task2, build_agent2, confirm, 60))
 
         # Example 3: Using both MCP and custom tools
         task3 = "What time is it in New York? What's the weather in Tokyo? What's the price of Solana?"
@@ -289,7 +287,7 @@ async def main():
 
             return agent
 
-        examples.append((3, task3, build_agent3, confirmation_callback, 60))
+        examples.append((3, task3, build_agent3, confirm, 60))
 
         # Example 4: Using the factory method with custom tools added
         task4 = "Research when Bitcoin was created and what its current price is"
@@ -303,7 +301,7 @@ async def main():
                 agent, [crypto_price_simulator]
             )
 
-        examples.append((4, task4, build_agent4, confirmation_callback, 60))
+        examples.append((4, task4, build_agent4, confirm, 60))
 
         # Example 5: Demonstrate pause, resume, stop, and terminate
         task5 = "Get the weather in New York, London, Tokyo, and Sydney, and the price of Bitcoin, Ethereum, Solana, and Cardano."
@@ -315,20 +313,19 @@ async def main():
                 .with_model(PROVIDER_MODEL)
                 .with_custom_tools([custom_weather_tool, crypto_price_simulator])
                 .with_instructions("Demonstrate pause, resume, stop, and terminate.")
-                .with_log_level(LogLevel.INFO)
+                .with_log_level(LogLevel.DEBUG)
                 .build()
             )
             # Subscribe to control events
-            agent.on_pause_requested(lambda e: print("[EVENT] Pause requested."))
-            agent.on_paused(lambda e: print("[EVENT] Agent paused."))
-            agent.on_resume_requested(lambda e: print("[EVENT] Resume requested."))
-            agent.on_resumed(lambda e: print("[EVENT] Agent resumed."))
-            agent.on_terminate_requested(
-                lambda e: print("[EVENT] Terminate requested.")
-            )
-            agent.on_terminated(lambda e: print("[EVENT] Agent terminated."))
-            agent.on_stop_requested(lambda e: print("[EVENT] Stop requested."))
-            agent.on_stopped(lambda e: print("[EVENT] Agent stopped (graceful)."))
+            agent.on_pause_requested(lambda e: print(e.get("message")))
+            agent.on_paused(lambda e: print(e.get("message")))
+            agent.on_resume_requested(lambda e: print(e.get("message")))
+            agent.on_resumed(lambda e: print(e.get("message")))
+            agent.on_terminate_requested(lambda e: print(e.get("message")))
+            agent.on_terminated(lambda e: print(e.get("message")))
+            agent.on_stop_requested(lambda e: print(e.get("message")))
+            agent.on_stopped(lambda e: print(e.get("message")))
+            agent.on_tool_called(lambda e: print("Tool called:", e))
             return agent
 
         async def pause_resume_terminate_demo():
@@ -338,15 +335,15 @@ async def main():
             await asyncio.sleep(1)  # Let the agent start
             print("[CONTROL] Pausing agent...")
             await agent.pause()
-            await asyncio.sleep(12)
+            await asyncio.sleep(20)
             print("[CONTROL] Resuming agent...")
             await agent.resume()
             await asyncio.sleep(2)
-            print("[CONTROL] Stopping agent (graceful)...")
-            await agent.stop()
+            # print("[CONTROL] Stopping agent (graceful)...")
+            # await agent.stop()
             await asyncio.sleep(5)
-            # print("[CONTROL] Terminating agent...")
-            # await agent.terminate()
+            print("[CONTROL] Terminating agent...")
+            await agent.terminate()
             result = await run_task
             print("\n--- Example 5 Result ---")
             print(json.dumps(result, indent=4, default=str))
@@ -354,15 +351,22 @@ async def main():
             await agent.close()
 
         # Add Example 5 to the run sequence
-        async def noop_confirmation_callback(*args, **kwargs):
-            print("[CONTROL] Noop confirmation callback called.", args, kwargs)
-            return True
+        async def confirmation_callback(*args, **kwargs):
+            print(
+                "[CONTROL] confirmation callback called: ",
+                f"Args: {args}",
+                f"Kwargs: {kwargs}",
+            )
+            return (
+                input("Confirm this action? [y]es/[n]o/[f]eedback: ").lower().strip()
+                == "y"
+            )
 
-        examples.append((5, task5, build_agent5, noop_confirmation_callback, 30))
-
+        examples.append((5, task5, build_agent5, confirmation_callback, 30))
+        await pause_resume_terminate_demo()
         # Run the examples one at a time
-        for example in examples:
-            await run_example(*example)
+        # for example in examples:
+        #     await run_example(*example)
     except Exception as e:
         print(f"\nAn error occurred in main: {e}")
         traceback.print_exc()
@@ -374,6 +378,13 @@ async def classic_main():
 
     This demonstrates creating a minimal ReactAgent using ReactAgentConfig with custom tools.
     """
+
+    def confirmation_callback(*args, **kwargs):
+        print("[CONTROL] confirmation callback called.", args, kwargs)
+
+        confirmation = input(f"Confirm {args[0]}? [y]es/[n]o/[f]eedback: ")
+        return confirmation.casefold() == "y"
+
     mcp_config = MCPConfig(
         mcpServers={
             "time": MCPServerConfig(
@@ -386,20 +397,23 @@ async def classic_main():
         config=ReactAgentConfig(
             agent_name="Legacy Agent",
             role="Task Execution Agent",
-            instructions="Use your tools to solve problems. Always take steps to confirm your actions are correct.",
+            instructions="Use tools to solve complex tasks. Always take steps to confirm your actions are correct.",
             provider_model_name=PROVIDER_MODEL,
             model_provider_options={
-                "num_ctx": 4000,
+                "num_ctx": 10000,
                 "num_gpu": 256,
                 "temperature": 0,
                 "think": False,
             },
+            reflect_enabled=True,
+            max_iterations=5,
             log_level="info",
-            mcp_config=mcp_config,
-            mcp_server_filter=[],
+            # mcp_config=mcp_config,
+            mcp_server_filter=["time"],
+            confirmation_callback=confirmation_callback,
         )
     ).initialize()
-    result = await agent.run(initial_task="What is the current time in New York?")
+    result = await agent.run(initial_task="What day of the week is it today?")
     print(json.dumps(result, indent=4, default=str))
     await agent.close()
 
@@ -432,6 +446,6 @@ if __name__ == "__main__":
     # 👇 Run the builder pattern examples
     asyncio.run(main())
     # 👇 Run the class based minimal agent example
-    asyncio.run(classic_main())
+    # asyncio.run(classic_main())
     # 👇 Run the context managed agent example
-    asyncio.run(context_managed_main())
+    # asyncio.run(context_managed_main())

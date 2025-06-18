@@ -1,52 +1,8 @@
 from __future__ import annotations
 from typing import Dict, List, Any, Callable, Set
-from enum import Enum
+from reactive_agents.common.types.event_types import AgentStateEvent
 import asyncio
 import time
-
-
-class AgentStateEvent(str, Enum):
-    """Events that can be observed in the agent's lifecycle"""
-
-    # Session lifecycle events
-    SESSION_STARTED = "session_started"
-    SESSION_ENDED = "session_ended"
-
-    # Task status events
-    TASK_STATUS_CHANGED = "task_status_changed"
-
-    # Iteration events
-    ITERATION_STARTED = "iteration_started"
-    ITERATION_COMPLETED = "iteration_completed"
-
-    # Tool events
-    TOOL_CALLED = "tool_called"
-    TOOL_COMPLETED = "tool_completed"
-    TOOL_FAILED = "tool_failed"
-
-    # Reflection events
-    REFLECTION_GENERATED = "reflection_generated"
-
-    # Result events
-    FINAL_ANSWER_SET = "final_answer_set"
-
-    # Metrics events
-    METRICS_UPDATED = "metrics_updated"
-
-    # Error events
-    ERROR_OCCURRED = "error_occurred"
-
-    # --- Agent control events (pause/resume/stop/terminate) ---
-    PAUSE_REQUESTED = "pause_requested"
-    PAUSED = "paused"
-    RESUME_REQUESTED = "resume_requested"
-    RESUMED = "resumed"
-    # --- Graceful stop events ---
-    STOP_REQUESTED = "stop_requested"
-    STOPPED = "stopped"
-    # --- Forceful stop events ---
-    TERMINATE_REQUESTED = "terminate_requested"
-    TERMINATED = "terminated"
 
 
 # Define callback type

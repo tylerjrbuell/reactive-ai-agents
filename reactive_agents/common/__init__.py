@@ -2,9 +2,8 @@
 Common types and utilities for reactive-agents package
 """
 
-from reactive_agents.common.types import (
-    AgentMemory,
-    TaskStatus,
+from reactive_agents.common.types.status_types import TaskStatus
+from reactive_agents.common.types.confirmation_types import (
     ConfirmationConfig,
     ConfirmationResult,
     ConfirmationResultAwaitable,
@@ -12,7 +11,6 @@ from reactive_agents.common.types import (
 )
 
 __all__ = [
-    "AgentMemory",
     "TaskStatus",
     "ConfirmationConfig",
     "ConfirmationResult",
