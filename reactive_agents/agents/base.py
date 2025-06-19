@@ -294,22 +294,23 @@ class Agent:
     async def _process_tool_calls(self, tool_calls: List[Dict[str, Any]]) -> None:
         """
         Processes tool calls using the execution engine to handle pause/stop/terminate states.
+        Now runs tool calls in parallel for speed optimization.
         """
+        import asyncio
+
         if not self.execution_engine:
             self.agent_logger.error(
                 "Tool processing requested but execution engine is not available."
             )
             return
 
-        # Could potentially run in parallel if ToolManager supports it and tools are independent
-        # For now, process sequentially
         processed_tool_call_ids = set()  # Track by ID if available
+        tool_call_tasks = []
+        tool_call_contexts = []  # To keep track of tool_call and its result
 
         for tool_call in tool_calls:
             tool_call_id = tool_call.get("id")
-            # Simple check to avoid reprocessing identical calls in the same batch (if IDs aren't present)
-            # A more robust check might involve hashing the call details
-            call_repr = str(tool_call)  # Simple representation for de-duplication
+            call_repr = str(tool_call)
             if tool_call_id and tool_call_id in processed_tool_call_ids:
                 self.tool_logger.debug(
                     f"Tool call ID {tool_call_id} already processed in this batch."
@@ -320,15 +321,22 @@ class Agent:
                     f"Duplicate tool call signature processed in this batch: {tool_call.get('function', {}).get('name')}"
                 )
                 continue
+            # Schedule tool call for parallel execution
+            tool_call_tasks.append(self.execution_engine._execute_tool_call(tool_call))
+            tool_call_contexts.append((tool_call, tool_call_id, call_repr))
 
-            # Use the execution engine to execute the tool
-            tool_result = await self.execution_engine._execute_tool_call(tool_call)
+        # Run all tool calls in parallel
+        results = await asyncio.gather(*tool_call_tasks, return_exceptions=True)
 
-            # Append result to context message list
+        for idx, tool_result in enumerate(results):
+            tool_call, tool_call_id, call_repr = tool_call_contexts[idx]
+            if isinstance(tool_result, Exception):
+                self.tool_logger.warning(
+                    f"Tool call {tool_call.get('function', {}).get('name')} raised exception: {tool_result}"
+                )
+                continue
             if tool_result is not None:
-                # Result should be formatted as string for the model
                 result_content = str(tool_result)
-
                 tool_result_message = {
                     "role": "tool",
                     "name": tool_call.get("function", {}).get("name", "unknown_tool"),
@@ -339,7 +347,6 @@ class Agent:
                 self.agent_logger.debug(
                     f"Added tool result message to context for {tool_result_message['name']}."
                 )
-
                 if tool_call_id:
                     processed_tool_call_ids.add(tool_call_id)
                 else:
