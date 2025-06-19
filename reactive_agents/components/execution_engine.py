@@ -653,7 +653,7 @@ class AgentExecutionEngine:
                 )
                 response_text = response["response"].strip()
 
-                if response_text.startswith("<think>"):
+                if response_text.startswith("<think>") or thinking_enabled:
                     # Extract thinking from summary response
                     think_start = response_text.find("<think>")
                     think_end = response_text.find("</think>")

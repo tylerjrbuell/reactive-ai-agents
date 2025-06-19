@@ -1,41 +1,23 @@
-from __future__ import annotations
-import json
+from typing import Any, Dict, List, Optional, Union, Tuple, TYPE_CHECKING
 import time
+import json
 import asyncio
 import inspect
-from typing import (
-    List,
-    Dict,
-    Any,
-    Optional,
-    TYPE_CHECKING,
-    Union,
-    Tuple,
-)
-
-from reactive_agents.tools.base import Tool
 from pydantic import BaseModel, Field
-
-from reactive_agents.loggers.base import Logger
-from reactive_agents.tools.abstractions import ToolProtocol, ToolResult, MCPToolWrapper
-from reactive_agents.model_providers.base import (
-    BaseModelProvider,
-)  # Needed for summary generation
+from reactive_agents.common.types.confirmation_types import ConfirmationCallbackProtocol
+from reactive_agents.common.types.event_types import AgentStateEvent
+from reactive_agents.components.data_extractor import DataExtractor, SearchDataManager
 from reactive_agents.prompts.agent_prompts import (
     TOOL_ACTION_SUMMARY_PROMPT,
     TOOL_SUMMARY_CONTEXT_PROMPT,
 )
-from reactive_agents.common.types.confirmation_types import (
-    ConfirmationCallbackProtocol,
-)
-from reactive_agents.common.types.event_types import AgentStateEvent
+from reactive_agents.tools.base import Tool
+from reactive_agents.tools.abstractions import MCPToolWrapper, ToolProtocol, ToolResult
+from reactive_agents.loggers.base import Logger
+from reactive_agents.model_providers.base import BaseModelProvider
 
 if TYPE_CHECKING:
-    from reactive_agents.common.types.confirmation_types import (
-        ConfirmationConfig,
-        ConfirmationResult,
-    )
-    from reactive_agents.context.agent_context import AgentContext  # Keep import here
+    from reactive_agents.context.agent_context import AgentContext
 
 
 class FinalAnswerTool(Tool):
@@ -97,6 +79,10 @@ class ToolManager(BaseModel):
     tool_cache: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     cache_hits: int = 0
     cache_misses: int = 0
+
+    # Data extraction components
+    data_extractor: DataExtractor = Field(default_factory=DataExtractor)
+    search_data_manager: SearchDataManager = Field(default_factory=SearchDataManager)
 
     class Config:
         arbitrary_types_allowed = True
@@ -667,7 +653,7 @@ class ToolManager(BaseModel):
                 result_str[:2000] + "..." if len(result_str) > 2000 else result_str
             )
 
-            # Use centralized context prompt
+            # Use the enhanced TOOL_SUMMARY_CONTEXT_PROMPT from agent_prompts.py
             summary_context_prompt = TOOL_SUMMARY_CONTEXT_PROMPT.format(
                 tool_name=tool_name,
                 params=str(params),  # Ensure params are stringified safely
@@ -676,7 +662,7 @@ class ToolManager(BaseModel):
 
             summary_result = await self.model_provider.get_completion(
                 system=TOOL_ACTION_SUMMARY_PROMPT,  # Keep existing system prompt
-                prompt=summary_context_prompt,
+                prompt=summary_context_prompt,  # Use the enhanced prompt from agent_prompts.py
             )
             tool_action_summary = summary_result.get(
                 "response", f"Executed tool {tool_name}."
@@ -717,7 +703,23 @@ class ToolManager(BaseModel):
                     )
                     tool_action_summary = tool_action_summary.strip()
 
+            # Enhanced logging for debugging
             self.tool_logger.debug(f"Tool Action Summary: {tool_action_summary}")
+
+            # Store structured data for search tools
+            if "search" in tool_name and result:
+                self.search_data_manager.store_search_data(
+                    tool_name, params, result, self.data_extractor
+                )
+
+            # Validate tool result usage
+            validation = self.validate_tool_result_usage(tool_name, params, result)
+            if not validation["valid"]:
+                self.tool_logger.warning(
+                    f"Tool result validation failed for {tool_name}: {validation['warnings']}"
+                )
+                if validation["suggestions"]:
+                    self.tool_logger.info(f"Suggestions: {validation['suggestions']}")
 
             # Add summary to context's reasoning log and update task progress
             self.context.session.reasoning_log.append(tool_action_summary)
@@ -732,6 +734,144 @@ class ToolManager(BaseModel):
             self.context.session.reasoning_log.append(fallback_summary)
             self.context.session.task_progress.append(fallback_summary)
             return fallback_summary
+
+    def validate_tool_result_usage(
+        self, tool_name: str, params: dict, result: Any
+    ) -> Dict[str, Any]:
+        """Validate that tool results are being used correctly and not ignored."""
+        validation = {
+            "valid": True,
+            "warnings": [],
+            "suggestions": [],
+            "extracted_data": {},
+        }
+
+        try:
+            # Get extracted data from search results using the new manager
+            extracted_data = self.search_data_manager.get_extracted_data(tool_name)
+            if extracted_data:
+                validation["extracted_data"] = extracted_data
+
+                # Check for various data types
+                for data_type, values in extracted_data.items():
+                    if values:
+                        validation["suggestions"].append(
+                            f"Found {data_type}: {values[:3]}..."
+                        )  # Show first 3 items
+
+            # Tool-specific validation
+            if tool_name in ["brave_web_search", "brave_local_search"]:
+                result_str = str(result)
+
+                # Check if search returned meaningful results
+                if any(
+                    phrase in result_str.lower()
+                    for phrase in ["not available", "no results", "not found", "error"]
+                ):
+                    validation["warnings"].append(
+                        "Search returned no meaningful results"
+                    )
+
+                # Check for placeholder indicators
+                placeholder_indicators = [
+                    "placeholder",
+                    "example",
+                    "sample",
+                    "test data",
+                    "dummy",
+                ]
+                if any(
+                    indicator in result_str.lower()
+                    for indicator in placeholder_indicators
+                ):
+                    validation["warnings"].append(
+                        "Search results contain placeholder indicators"
+                    )
+
+            elif tool_name == "write_file":
+                content = params.get("content", "")
+
+                # Check for placeholder content
+                placeholder_indicators = [
+                    "placeholder",
+                    "example",
+                    "sample",
+                    "test",
+                    "dummy",
+                    "TODO",
+                    "FIXME",
+                ]
+                if any(
+                    indicator in content.lower() for indicator in placeholder_indicators
+                ):
+                    validation["warnings"].append(
+                        "File content appears to contain placeholder data"
+                    )
+
+                # Check if content matches extracted data from searches using the new manager
+                all_search_data = self.search_data_manager.get_all_search_data()
+                for search_tool, search_info in all_search_data.items():
+                    extracted_data = search_info.get("extracted_data", {})
+
+                    # Use the data extractor's validation method
+                    data_validation = self.data_extractor.validate_data_usage(
+                        content, self.data_extractor.extract_all("")
+                    )
+                    if not data_validation["valid"]:
+                        validation["warnings"].extend(data_validation["warnings"])
+                        validation["suggestions"].extend(data_validation["suggestions"])
+
+            elif tool_name in ["read_file", "read_multiple_files"]:
+                # Validate file reading operations
+                result_str = str(result)
+                if "error" in result_str.lower() or "not found" in result_str.lower():
+                    validation["warnings"].append("File read operation may have failed")
+
+            elif tool_name in ["create_directory", "move_file", "edit_file"]:
+                # Validate file operations
+                result_str = str(result)
+                if "error" in result_str.lower() or "failed" in result_str.lower():
+                    validation["warnings"].append("File operation may have failed")
+                elif "success" in result_str.lower():
+                    validation["suggestions"].append(
+                        "File operation completed successfully"
+                    )
+
+            # General validation for any tool
+            result_str = str(result)
+
+            # Check for error indicators
+            error_indicators = [
+                "error",
+                "failed",
+                "exception",
+                "timeout",
+                "not found",
+                "unauthorized",
+            ]
+            if any(indicator in result_str.lower() for indicator in error_indicators):
+                validation["warnings"].append(
+                    "Tool execution may have encountered an error"
+                )
+
+            # Check for success indicators
+            success_indicators = ["success", "completed", "done", "ok", "successful"]
+            if any(indicator in result_str.lower() for indicator in success_indicators):
+                validation["suggestions"].append(
+                    "Tool execution completed successfully"
+                )
+
+            # Check for empty or minimal results
+            if len(result_str.strip()) < 10 and tool_name not in ["final_answer"]:
+                validation["warnings"].append("Tool returned minimal or empty result")
+
+            if validation["warnings"]:
+                validation["valid"] = False
+
+        except Exception as e:
+            self.tool_logger.debug(f"Error in result validation: {e}")
+
+        return validation
 
     def _generate_tool_signatures(self):
         """Generates tool signatures from the schemas of available tools."""

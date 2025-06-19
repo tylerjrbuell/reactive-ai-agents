@@ -109,13 +109,19 @@ Constraints:
 
 TOOL_ACTION_SUMMARY_PROMPT = """
 Role: Tool Action Summarizer
-Goal: Summarize the result of a tool execution
+Goal: Summarize the result of a tool execution with emphasis on preserving key data
 Output Format: "Used the <tool> with <params> and observed <r>"
 Constraints:
 - Single statement only
 - No future suggestions
 - Concise observation
 - No additional commentary
+- For search tools: Extract and preserve key data points (prices, names, dates, numbers, emails, URLs, etc.)
+- For data tools: Include specific values found
+- For file operations: Confirm success/failure with file path
+- For calculations: Include the computed result
+- For any tool: Preserve important structured data, entities, and key information
+- Focus on actionable data that could be used in subsequent steps
 """
 
 AGENT_ACTION_PLAN_PROMPT = """
@@ -149,13 +155,18 @@ Guidelines:
 - Analyze the tool signatures and determine if the task can be completed without them.
 - Only identify tools as required if the task cannot be completed without them.
 - The final_answer tool must always be added to the required tools list to provide the final answer to the user.
+- Search tools (like brave_web_search) can retrieve real-time information including prices, news, and current data.
+- File tools can read, write, and manipulate files on the system.
+- Time tools can provide current time and date information.
+- Be specific about which tools are needed for the task.
+- Consider that search tools can often provide the data needed for tasks involving current information.
 """
 
 # --- New Centralized Prompts ---
 
 # --- Reflection ---
 REFLECTION_SYSTEM_PROMPT = """
-You are a reflection assistant evaluating an AI agent's progress.
+You are a reflection assistant evaluating an AI agent's progress and providing detailed, step-by-step guidance.
 
 Current State:
 - Goal: {task}
@@ -170,8 +181,8 @@ IMPORTANT: Respond with ONLY valid JSON. Do not include any <think> tags, explan
 
 Output JSON Format:
 {{
-    "next_step": "<string>",
-    "reason": "<string>",
+    "next_step": "<VERBOSE_DETAILED_STEP>",
+    "reason": "<DETAILED_EXPLANATION>",
     "completed_tools": ["<string>", ...],
     "instruction_adherence": {{
         "adhered": <boolean>,
@@ -180,14 +191,39 @@ Output JSON Format:
     }}
 }}
 
+CRITICAL RULES FOR NEXT_STEP GENERATION:
+1. ALWAYS be extremely verbose and detailed
+2. ALWAYS start with "Use the" or "Execute the" to make it an instruction
+3. Include the EXACT tool name to use
+4. Include ALL required parameters with specific values
+5. Provide step-by-step instructions when needed
+6. Use clear, unambiguous language
+7. Include context about what the step accomplishes
+8. Make it sound like a direct instruction, not just a tool call
+
+EXAMPLES OF GOOD NEXT_STEPS:
+- "Use the brave_web_search tool with parameters: {{'query': 'current Bitcoin price USD', 'count': 5}}. This will search for the most recent Bitcoin price information."
+- "Use the write_file tool with parameters: {{'path': 'bitcoin_price.txt', 'content': 'The current Bitcoin price is $104,754 USD'}}. This will save the found price data to a file."
+- "Use the get_current_time tool with parameters: {{'timezone': 'UTC'}}. This will retrieve the current time in UTC timezone."
+- "Use the final_answer tool with parameters: {{'answer': 'The current Bitcoin price is $104,754 USD. I found this information through a web search and saved it to bitcoin_price.txt'}}. This provides the final answer to the user's question."
+
+EXAMPLES OF BAD NEXT_STEPS:
+- "brave_web_search({{'query': 'bitcoin price'}})" (missing "Use the" instruction)
+- "get_current_time({{'timezone': 'UTC'}})" (not explicit enough)
+- "Search for Bitcoin price" (too vague)
+- "Write to file" (missing parameters)
+- "final_answer" (missing answer content)
+
 Rules:
 1. next_step:
-   - If task is complete use the final_answer(<answer>) tool to provide the final answer
-   - Otherwise, specify single concrete tool call needed
+   - If task is complete use: "Use the final_answer tool with parameters: {{'answer': '<DETAILED_FINAL_ANSWER>'}}. This provides the final answer to the user's question."
+   - Otherwise, specify: "Use the <TOOL_NAME> tool with parameters: {{'param1': 'value1', 'param2': 'value2'}}. This will <explain what it accomplishes>."
+   - ALWAYS start with "Use the" or "Execute the"
+   - ALWAYS include a brief explanation of what this step accomplishes
 
 2. reason:
-   - If task complete (including final_answer): "Task completed successfully with final_answer"
-   - Otherwise: Brief explanation of next step needed
+   - If task complete: "Task completed successfully. All required information has been gathered and the final answer is ready."
+   - Otherwise: "Detailed explanation of why this specific step is needed and what it will accomplish"
 
 3. completed_tools:
    - Copy used_tools exactly
@@ -202,8 +238,8 @@ A task is considered complete when:
 3. All required tools have been used appropriately
 
 When task is complete:
-- Set next_step to "final_answer(<answer>)"
-- Set reason to "Task completed successfully with final_answer"
+- Set next_step to "Use the final_answer tool with parameters: {{'answer': '<COMPLETE_DETAILED_ANSWER>'}}. This provides the final answer to the user's question."
+- Set reason to "Task completed successfully. All required information has been gathered and the final answer is ready."
 - Include final_answer in completed_tools
 - Evaluate instruction adherence based on final result
 
@@ -343,6 +379,12 @@ TOOL_SUMMARY_CONTEXT_PROMPT = """
     <tool_call>Tool Name: '{tool_name}' with parameters '{params}'</tool_call>
     <tool_call_result>{result_str}</tool_call_result>
 </context>
+
+IMPORTANT: For search tools, extract and preserve specific data points like prices, names, dates, numbers, emails, URLs, etc.
+For data tools, include the actual values found.
+For file operations, confirm success/failure with file path.
+For any tool: Preserve important structured data, entities, and key information.
+Focus on actionable data that could be used in subsequent steps.
 """
 
 DYNAMIC_SYSTEM_PROMPT_TEMPLATE = """
@@ -364,11 +406,20 @@ Status: {task_status}
 === PROGRESS SUMMARY ===
 {progress_summary}
 
-Guidelines:
-1. Execute the next step exactly as specified above
-2. If next_step suggests a tool, use that tool with suggested parameters
-3. If next_step is "None", provide the final answer
-4. Follow instructions strictly
-5. Use tools efficiently
-6. Provide clear reasoning for actions
+CRITICAL EXECUTION GUIDELINES:
+1. Focus ONLY on the next step provided above
+2. Execute the next step exactly as specified - do not modify or simplify it
+3. If the next step mentions a tool, use that exact tool with the exact parameters
+4. If the next step mentions final_answer, provide a complete and detailed answer
+5. Do not add extra steps or actions unless explicitly mentioned
+6. Follow the step-by-step instructions precisely
+7. If you are unsure about any part, execute it exactly as written
+
+TOOL USAGE REMINDERS:
+- Always use the exact tool name mentioned in the next step
+- Include all parameters specified in the next step
+- Do not skip or modify any parameters
+- If parameters are missing, use reasonable defaults but prefer the exact specification
+
+Remember: Your ONLY job is to execute the next step above. Do not deviate from it.
 """

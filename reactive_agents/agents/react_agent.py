@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 import traceback
 import asyncio
+import time
 from typing import (
     List,
     Any,
@@ -485,6 +486,14 @@ class ReactAgent(Agent):
                 "explanation": "ToolManager unavailable.",
             }
 
+        # Performance optimization: Cache feasibility checks for similar tasks
+        task_hash = hash(task.lower().strip())
+        if hasattr(self, "_feasibility_cache") and task_hash in self._feasibility_cache:
+            cached_result = self._feasibility_cache[task_hash]
+            if time.time() - cached_result.get("timestamp", 0) < 300:  # 5 minute cache
+                self.agent_logger.debug("Using cached tool feasibility result")
+                return cached_result["result"]
+
         try:
             available_tools = self.context.get_available_tool_names()
             tool_signatures = self.context.get_tool_signatures()
@@ -522,50 +531,61 @@ class ReactAgent(Agent):
                     "explanation": "Could not analyze tool requirements via LLM.",
                 }
 
-            try:
-                analysis_data = response["response"]
-                parsed_analysis = (
-                    json.loads(analysis_data)
-                    if isinstance(analysis_data, str)
-                    else analysis_data
-                )
-                validated_analysis = ToolAnalysisFormat(**parsed_analysis)
+            # Parse the simplified response
+            response_text = response["response"]
+            lines = response_text.split("\n")
 
-                required_tools_set = set(validated_analysis.required_tools)
-                missing_tools = list(required_tools_set - available_tools)
+            required_tools = []
+            optional_tools = []
+            explanation = "Analysis completed"
 
-                is_feasible = not bool(missing_tools)
-                self.agent_logger.info(
-                    f"Tool feasibility check result: Feasible={is_feasible}, Missing={missing_tools}"
-                )
+            for line in lines:
+                if line.startswith("Required tools:"):
+                    required_tools = [
+                        t.strip()
+                        for t in line.replace("Required tools:", "").split(",")
+                        if t.strip()
+                    ]
+                elif line.startswith("Optional tools:"):
+                    optional_tools = [
+                        t.strip()
+                        for t in line.replace("Optional tools:", "").split(",")
+                        if t.strip()
+                    ]
+                elif line.startswith("Explanation:"):
+                    explanation = line.replace("Explanation:", "").strip()
 
-                return {
-                    "feasible": is_feasible,
-                    "missing_tools": missing_tools,
-                    "required_tools": validated_analysis.required_tools,
-                    "optional_tools": validated_analysis.optional_tools,
-                    "explanation": validated_analysis.explanation,
-                    "available_tools": list(available_tools),
-                }
+            # Ensure final_answer is always required
+            if "final_answer" not in required_tools:
+                required_tools.append("final_answer")
 
-            except (json.JSONDecodeError, TypeError) as e:
-                self.agent_logger.error(
-                    f"Error parsing tool feasibility analysis JSON: {e}\nResponse: {response.get('response')}"
-                )
-                return {
-                    "feasible": True,
-                    "missing_tools": [],
-                    "explanation": f"Error parsing analysis: {e}",
-                }
-            except Exception as e:
-                self.agent_logger.error(
-                    f"Error validating tool feasibility analysis: {e}\nData: {parsed_analysis}"
-                )
-                return {
-                    "feasible": True,
-                    "missing_tools": [],
-                    "explanation": f"Error validating analysis: {e}",
-                }
+            missing_tools = [
+                tool for tool in required_tools if tool not in available_tools
+            ]
+            is_feasible = not bool(missing_tools)
+
+            self.agent_logger.info(
+                f"Tool feasibility check result: Feasible={is_feasible}, Missing={missing_tools}"
+            )
+
+            result = {
+                "feasible": is_feasible,
+                "missing_tools": missing_tools,
+                "required_tools": required_tools,
+                "optional_tools": optional_tools,
+                "explanation": explanation,
+                "available_tools": list(available_tools),
+            }
+
+            # Cache the result
+            if not hasattr(self, "_feasibility_cache"):
+                self._feasibility_cache = {}
+            self._feasibility_cache[task_hash] = {
+                "result": result,
+                "timestamp": time.time(),
+            }
+
+            return result
 
         except Exception as e:
             tb_str = traceback.format_exc()

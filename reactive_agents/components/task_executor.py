@@ -135,6 +135,9 @@ class TaskExecutor:
                 "🤔 Reflection disabled or no reflection manager available"
             )
             return None
+        if self.context.session.final_answer:
+            self.agent_logger.info("🤔 Final Answer was set, no need for reflection")
+            return None
         self.agent_logger.info("🤔 Generating reflection on current state...")
         reflection_input = think_act_result
         if isinstance(reflection_input, str):
