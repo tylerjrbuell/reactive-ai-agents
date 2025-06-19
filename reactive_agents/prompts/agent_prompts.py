@@ -166,6 +166,8 @@ Current State:
 - Last Tool Action:
 {last_tool_action}
 
+IMPORTANT: Respond with ONLY valid JSON. Do not include any <think> tags, explanations, or other formatting outside the JSON structure.
+
 Output JSON Format:
 {{
     "next_step": "<string>",
@@ -200,10 +202,12 @@ A task is considered complete when:
 3. All required tools have been used appropriately
 
 When task is complete:
-- Set next_step to "None"
+- Set next_step to "final_answer(<answer>)"
 - Set reason to "Task completed successfully with final_answer"
 - Include final_answer in completed_tools
-- Evaluate instruction adherence based on final result"""
+- Evaluate instruction adherence based on final result
+
+CRITICAL: Return ONLY the JSON object, no other text or formatting."""
 
 REFLECTION_CONTEXT_PROMPT = """
 <reflection_context>

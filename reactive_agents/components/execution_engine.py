@@ -14,6 +14,7 @@ from typing import (
     Tuple,
 )
 import json
+from pydantic import BaseModel
 
 from reactive_agents.common.types.status_types import TaskStatus
 from reactive_agents.common.types.session_types import AgentSession
@@ -291,14 +292,6 @@ class AgentExecutionEngine:
         # Generate plan if not provided by TaskExecutor
         if not plan and reflection:
             plan = await self._generate_plan(reflection, last_plan)
-
-            # Log the final plan
-            if self.context.agent_logger:
-                self.context.agent_logger.debug("\n=== FINAL PLAN ===")
-                self.context.agent_logger.debug(
-                    f"Plan: {json.dumps(plan, indent=2) if plan else 'None'}"
-                )
-                self.context.agent_logger.debug("=================\n")
 
         return content, plan
 
@@ -652,7 +645,47 @@ class AgentExecutionEngine:
             )
 
             if response and response.get("response"):
-                return response["response"]
+                # Check if thinking is enabled and extract thinking content
+                thinking_enabled = (
+                    self.context.model_provider_options.get("think", False)
+                    if self.context.model_provider_options
+                    else False
+                )
+                response_text = response["response"].strip()
+
+                if response_text.startswith("<think>"):
+                    # Extract thinking from summary response
+                    think_start = response_text.find("<think>")
+                    think_end = response_text.find("</think>")
+
+                    if (
+                        think_start != -1
+                        and think_end != -1
+                        and think_end > think_start
+                    ):
+                        thinking_content = response_text[
+                            think_start + 7 : think_end
+                        ].strip()
+                        # Store thinking with summary context
+                        if hasattr(self.context, "session") and thinking_content:
+                            thinking_entry = {
+                                "timestamp": time.time(),
+                                "call_context": "summary_generation",
+                                "thinking": thinking_content,
+                            }
+                            self.context.session.thinking_log.append(thinking_entry)
+                            if self.context.agent_logger:
+                                self.context.agent_logger.debug(
+                                    f"Stored summary thinking: {thinking_content[:100]}..."
+                                )
+
+                        # Remove thinking tags from response
+                        response_text = (
+                            response_text[:think_start] + response_text[think_end + 8 :]
+                        )
+                        response_text = response_text.strip()
+
+                return response_text
             else:
                 if self.context.agent_logger:
                     self.context.agent_logger.warning(
@@ -1021,9 +1054,10 @@ class AgentExecutionEngine:
                 "use_memory_enabled": self.context.use_memory_enabled,
                 "collect_metrics_enabled": self.context.collect_metrics_enabled,
             },
-            # Detailed logs
+            # Logs and reasoning
             "logs": {
                 "reasoning": session.reasoning_log,
+                "thinking": session.thinking_log,  # Include thinking log in final result
                 "tool_history": (
                     self.context.tool_manager.tool_history
                     if self.context.tool_manager

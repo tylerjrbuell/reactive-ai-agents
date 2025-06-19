@@ -66,6 +66,58 @@ class Agent:
         assert self.context.model_provider is not None
         return self.context.model_provider
 
+    def _extract_thinking_and_clean_content(
+        self, content: str, call_context: str = "unknown"
+    ) -> tuple[str, Optional[str]]:
+        """
+        Extract thinking content from <think> tags and clean the content.
+
+        Args:
+            content: The raw content from the model response
+            call_context: The context of the call (e.g., "summary_generation", "reflection", etc.)
+
+        Returns:
+            tuple: (cleaned_content, thinking_content)
+        """
+        if not content:
+            return "", None
+
+        # Look for <think> tags
+        think_start = content.find("<think>")
+        think_end = content.find("</think>")
+
+        if think_start != -1 and think_end != -1 and think_end > think_start:
+            # Extract thinking content
+            thinking_content = content[think_start + 7 : think_end].strip()
+
+            # Remove thinking tags from content
+            cleaned_content = content[:think_start] + content[think_end + 8 :]
+            cleaned_content = cleaned_content.strip()
+
+            return cleaned_content, thinking_content
+        else:
+            # No thinking tags found, return content as is
+            return content.strip(), None
+
+    def _store_thinking(self, thinking_content: str, call_context: str) -> None:
+        """
+        Store thinking content in the session with call context.
+
+        Args:
+            thinking_content: The extracted thinking content
+            call_context: The context of the call
+        """
+        if thinking_content and hasattr(self.context, "session"):
+            thinking_entry = {
+                "timestamp": time.time(),
+                "call_context": call_context,
+                "thinking": thinking_content,
+            }
+            self.context.session.thinking_log.append(thinking_entry)
+            self.agent_logger.debug(
+                f"Stored thinking for {call_context}: {thinking_content[:100]}..."
+            )
+
     # --- End Convenience properties ---
 
     async def _think(self, **kwargs) -> dict | None:
@@ -177,6 +229,26 @@ class Agent:
             message = result["message"]
             message_content: str = message.get("content")
             tool_calls: List[Dict[str, Any]] = message.get("tool_calls")
+
+            # Check if thinking is enabled and extract thinking content
+            thinking_enabled = (
+                self.context.model_provider_options.get("think", False)
+                if self.context.model_provider_options
+                else False
+            )
+            call_context = "think_chain"
+
+            if thinking_enabled and message_content:
+                cleaned_content, thinking_content = (
+                    self._extract_thinking_and_clean_content(
+                        message_content, call_context
+                    )
+                )
+                if thinking_content:
+                    self._store_thinking(thinking_content, call_context)
+                message_content = cleaned_content
+                # Update the message content with cleaned version
+                message["content"] = cleaned_content
 
             if message_content.strip() and remember_messages:
                 # Add assistant response to context's message history

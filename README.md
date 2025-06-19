@@ -7,7 +7,7 @@
 
 A custom reactive AI Agent framework that allows for creating reactive agents to carry out tasks using tools. The framework provides a flexible system for creating AI agents that can use different LLM providers (Ollama, Groq) and reflect on their actions and improve iteratively.
 
-## Quick Start
+## 🚀 Quick Start
 
 The simplest way to create a reactive agent using the recommended Builder pattern:
 
@@ -46,7 +46,7 @@ async def main():
 asyncio.run(main())
 ```
 
-## Context Management Support (New)
+## 🔄 Context Management Support
 
 `ReactAgentBuilder` and the resulting agent instances support Python's async context management protocol, making resource management even easier. This is the recommended way to use agents when possible:
 
@@ -75,6 +75,39 @@ asyncio.run(main())
 - Use the `ReactAgentBuilder`'s `.build()` method, preferably within an `async with` block, for automatic initialization and cleanup.
 - If you need to manage the agent lifecycle manually after building (less recommended), remember to `await agent.close()` when done.
 
+## 🏗️ Architecture Overview
+
+The framework has been refactored with a clean component-based architecture:
+
+### Core Components
+
+- **`AgentExecutionEngine`** (`components/execution_engine.py`): Handles the main execution loop, task coordination, and result preparation
+- **`TaskExecutor`** (`components/task_executor.py`): Manages individual task iterations and execution flow
+- **`ToolProcessor`** (`components/tool_processor.py`): Handles tool registration, validation, and execution
+- **`EventManager`** (`components/event_manager.py`): Manages event subscriptions and emission
+- **`ToolManager`** (`components/tool_manager.py`): Manages MCP and custom tool integration
+- **`MemoryManager`** (`components/memory_manager.py`): Handles persistent memory and session history
+- **`ReflectionManager`** (`components/reflection_manager.py`): Manages agent reflection and self-improvement
+- **`MetricsManager`** (`components/metrics_manager.py`): Tracks performance metrics and evaluation scores
+- **`WorkflowManager`** (`components/workflow_manager.py`): Manages multi-agent workflows and dependencies
+
+### Type System
+
+All types are centralized in `reactive_agents/common/types/`:
+
+- **`status_types.py`**: Task status enums and execution states
+- **`session_types.py`**: Agent session models and data structures
+- **`memory_types.py`**: Memory-related types and persistence models
+- **`confirmation_types.py`**: Confirmation callback protocols
+- **`agent_types.py`**: Agent-specific data models and formats
+- **`event_types.py`**: Event system types and data structures
+
+### Agent Classes
+
+- **`ReactAgent`** (`agents/react_agent.py`): Main reactive agent implementation with simplified interface
+- **`Agent`** (`agents/base.py`): Base agent class with core functionality
+- **`ReactAgentBuilder`** (`agents/builders.py`): Fluent builder interface for easy agent creation
+
 ## Overview
 
 The main purpose of this project is to create a custom AI Agent Framework that allows AI Agents driven by Large Language Models (LLMs) to make real-time decisions and take action to solve real-world tasks. Key features include:
@@ -86,6 +119,8 @@ The main purpose of this project is to create a custom AI Agent Framework that a
 - **Model Context Protocol (MCP)**: Supports distributed tool execution through MCP servers, allowing agents to use tools from multiple sources.
 - **Workflow Management**: Supports creating complex agent workflows with dependencies and parallel execution.
 - **Strong Type Hinting**: Uses Pydantic models for configuration to ensure type safety and better developer experience.
+- **Component Architecture**: Clean separation of concerns with modular, reusable components.
+- **Event System**: Comprehensive event subscription system for monitoring agent lifecycle.
 
 ## Installation
 
@@ -102,6 +137,43 @@ poetry add reactive-agents
 ```
 
 For development installation:
+
+### Simplified Agent Interface
+
+The `ReactAgent` class now has a cleaner interface with delegated operations:
+
+```python
+# Old way (v0.2.0)
+agent = ReactAgent(config)
+await agent.initialize()
+result = await agent.run(task)
+await agent.close()
+
+# New way (v0.3.0) - Recommended
+async with ReactAgentBuilder().with_name("Agent").with_model("ollama:qwen2:7b").build() as agent:
+    result = await agent.run(task)
+
+# Or manual way (still supported)
+agent = ReactAgent(config)
+await agent.initialize()
+result = await agent.run(task)
+await agent.close()
+```
+
+### Component Access
+
+If you need direct access to components, they're now available as properties:
+
+```python
+# Access execution engine
+execution_engine = agent.execution_engine
+
+# Access event manager
+event_manager = agent.event_manager
+
+# Access task executor
+task_executor = agent.task_executor
+```
 
 ## Installation Instructions
 
@@ -469,6 +541,8 @@ async def main():
 asyncio.run(main())
 ```
 
+**Note**: In the new component architecture, the `ReactAgent` class now delegates most operations to specialized components like `AgentExecutionEngine`, `TaskExecutor`, and `EventManager`. These components are accessible as properties on the agent instance if you need direct access to their functionality.
+
 ### 8. Agent Event Subscription
 
 You can monitor and react to agent lifecycle events in real-time using the event subscription system. The framework provides two main approaches for event subscription:
@@ -698,6 +772,121 @@ async def main():
     workflow = create_workflow()
     result = await workflow.run("Research Bitcoin price and store in database")
     print(f"Workflow result: {result}")
+
+asyncio.run(main())
+```
+
+## 🔧 Working with Components (Advanced)
+
+For advanced users who need direct access to the component architecture, you can work with individual components:
+
+### Execution Engine
+
+The `AgentExecutionEngine` handles the main execution loop and task coordination:
+
+```python
+import asyncio
+from reactive_agents.agents import ReactAgentBuilder
+
+async def main():
+    agent = await ReactAgentBuilder().with_name("Component Agent").with_model("ollama:qwen2:7b").build()
+
+    # Access the execution engine directly
+    execution_engine = agent.execution_engine
+
+    # Generate a summary of the current session
+    summary = await execution_engine._generate_summary()
+    print(f"Session summary: {summary}")
+
+    # Generate goal result evaluation
+    evaluation = await execution_engine._generate_goal_result_evaluation()
+    print(f"Goal evaluation: {evaluation}")
+
+    await agent.close()
+
+asyncio.run(main())
+```
+
+### Task Executor
+
+The `TaskExecutor` manages individual task iterations:
+
+```python
+import asyncio
+from reactive_agents.agents import ReactAgentBuilder
+
+async def main():
+    agent = await ReactAgentBuilder().with_name("Task Agent").with_model("ollama:qwen2:7b").build()
+
+    # Access the task executor
+    task_executor = agent.task_executor
+
+    # Execute a single iteration
+    result = await task_executor.execute_iteration("Research Bitcoin price")
+    print(f"Iteration result: {result}")
+
+    # Check if we should continue
+    should_continue = task_executor.should_continue()
+    print(f"Should continue: {should_continue}")
+
+    await agent.close()
+
+asyncio.run(main())
+```
+
+### Event Manager
+
+The `EventManager` handles event subscriptions and emission:
+
+```python
+import asyncio
+from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.context.agent_events import ToolCalledEventData
+
+async def main():
+    agent = await ReactAgentBuilder().with_name("Event Agent").with_model("ollama:qwen2:7b").build()
+
+    # Access the event manager
+    event_manager = agent.event_manager
+
+    # Subscribe to events directly
+    def on_tool_called(event: ToolCalledEventData):
+        print(f"Tool called: {event['tool_name']}")
+
+    event_manager.on_tool_called(on_tool_called)
+
+    # Run the agent
+    result = await agent.run("Research Bitcoin")
+
+    await agent.close()
+
+asyncio.run(main())
+```
+
+### Tool Processor
+
+The `ToolProcessor` handles tool registration and validation:
+
+```python
+import asyncio
+from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.tools.decorators import tool
+
+@tool(description="Example tool")
+async def example_tool(param: str) -> str:
+    return f"Result: {param}"
+
+async def main():
+    agent = await ReactAgentBuilder().with_name("Tool Agent").with_model("ollama:qwen2:7b").build()
+
+    # Access the tool processor
+    tool_processor = agent.tool_processor
+
+    # Process custom tools
+    processed_tools = tool_processor.process_custom_tools([example_tool])
+    print(f"Processed tools: {len(processed_tools)}")
+
+    await agent.close()
 
 asyncio.run(main())
 ```

@@ -20,6 +20,9 @@ class AgentSession(BaseModel):
     # Message history and reasoning
     messages: List[Dict[str, Any]] = Field(default_factory=list)
     reasoning_log: List[str] = Field(default_factory=list)
+    thinking_log: List[Dict[str, Any]] = Field(
+        default_factory=list
+    )  # Store thinking with call context
     task_progress: List[str] = Field(default_factory=list)
     task_nudges: List[str] = Field(default_factory=list)
 

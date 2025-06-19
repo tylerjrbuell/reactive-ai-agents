@@ -3,6 +3,7 @@ import json
 import traceback
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 from datetime import datetime  # Added for timestamp
+import time
 
 from pydantic import BaseModel, Field
 
@@ -137,8 +138,59 @@ class ReflectionManager(BaseModel):
             )
 
             if response and response.get("response"):
+                # Check if thinking is enabled and extract thinking content
+                thinking_enabled = (
+                    self.context.model_provider_options.get("think", False)
+                    if self.context.model_provider_options
+                    else False
+                )
+                response_text = response["response"].strip()
+
+                if thinking_enabled:
+                    # Extract thinking from reflection response
+                    think_start = response_text.find("<think>")
+                    think_end = response_text.find("</think>")
+
+                    if (
+                        think_start != -1
+                        and think_end != -1
+                        and think_end > think_start
+                    ):
+                        thinking_content = response_text[
+                            think_start + 7 : think_end
+                        ].strip()
+                        # Store thinking with reflection context
+                        if hasattr(self.context, "session") and thinking_content:
+                            thinking_entry = {
+                                "timestamp": time.time(),
+                                "call_context": "reflection",
+                                "thinking": thinking_content,
+                            }
+                            self.context.session.thinking_log.append(thinking_entry)
+                            self.agent_logger.debug(
+                                f"Stored reflection thinking: {thinking_content[:100]}..."
+                            )
+
+                        # Remove thinking tags from response
+                        response_text = (
+                            response_text[:think_start] + response_text[think_end + 8 :]
+                        )
+                        response_text = response_text.strip()
+
                 try:
-                    reflection_data = json.loads(response["response"])
+                    # Handle responses that may contain <think> tags or other content before JSON
+                    # Try to extract JSON from the response
+                    json_start = response_text.find("{")
+                    json_end = response_text.rfind("}") + 1
+
+                    if json_start != -1 and json_end > json_start:
+                        # Extract the JSON portion
+                        json_text = response_text[json_start:json_end]
+                        reflection_data = json.loads(json_text)
+                    else:
+                        # If no JSON found, try parsing the entire response
+                        reflection_data = json.loads(response_text)
+
                     self.reflections.append(reflection_data)
                     # Emit REFLECTION_GENERATED event
                     self.context.emit_event(

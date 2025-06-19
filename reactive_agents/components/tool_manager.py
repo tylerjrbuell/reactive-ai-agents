@@ -681,6 +681,42 @@ class ToolManager(BaseModel):
             tool_action_summary = summary_result.get(
                 "response", f"Executed tool {tool_name}."
             )
+
+            # Check if thinking is enabled and extract thinking content
+            thinking_enabled = (
+                self.context.model_provider_options.get("think", False)
+                if self.context.model_provider_options
+                else False
+            )
+
+            if thinking_enabled:
+                # Extract thinking from tool summary response
+                think_start = tool_action_summary.find("<think>")
+                think_end = tool_action_summary.find("</think>")
+
+                if think_start != -1 and think_end != -1 and think_end > think_start:
+                    thinking_content = tool_action_summary[
+                        think_start + 7 : think_end
+                    ].strip()
+                    # Store thinking with tool summary context
+                    if hasattr(self.context, "session") and thinking_content:
+                        thinking_entry = {
+                            "timestamp": time.time(),
+                            "call_context": f"tool_summary_{tool_name}",
+                            "thinking": thinking_content,
+                        }
+                        self.context.session.thinking_log.append(thinking_entry)
+                        self.tool_logger.debug(
+                            f"Stored tool summary thinking for {tool_name}: {thinking_content[:100]}..."
+                        )
+
+                    # Remove thinking tags from summary
+                    tool_action_summary = (
+                        tool_action_summary[:think_start]
+                        + tool_action_summary[think_end + 8 :]
+                    )
+                    tool_action_summary = tool_action_summary.strip()
+
             self.tool_logger.debug(f"Tool Action Summary: {tool_action_summary}")
 
             # Add summary to context's reasoning log and update task progress
