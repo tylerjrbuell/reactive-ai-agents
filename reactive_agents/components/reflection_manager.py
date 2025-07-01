@@ -9,13 +9,14 @@ from pydantic import BaseModel, Field
 
 # --- Import centralized prompts ---
 from reactive_agents.prompts.agent_prompts import (
-    REFLECTION_SYSTEM_PROMPT,
     REFLECTION_CONTEXT_PROMPT,
+    STEP_REFLECTION_SYSTEM_PROMPT,
 )
 
 # --- End Import ---
 
 from reactive_agents.common.types.event_types import AgentStateEvent
+from reactive_agents.common.types.session_types import StepStatus, PlanStep
 
 
 # Assuming ReflectionFormat is defined here or imported
@@ -86,148 +87,96 @@ class ReflectionManager(BaseModel):
         assert self.context.tool_manager is not None
         return self.context.tool_manager
 
-    async def generate_reflection(
-        self, think_act_result: Any
-    ) -> Optional[Dict[str, Any]]:
-        """Generate reflection on the current state."""
-        if not self.context.reflect_enabled or not self.context.model_provider:
-            return None
-
-        try:
-            # Get tool history
-            tool_history = (
-                self.context.tool_manager.tool_history
-                if self.context.tool_manager
-                else []
-            )
-            tools_used = [t.get("name") for t in tool_history if t.get("name")]
-            tools_used_successfully = [
-                t.get("name")
-                for t in tool_history
-                if t.get("name") and not t.get("error", False)
-            ]
-
-            # Get last tool action
-            last_tool_action = ""
-            if tool_history:
-                last_tool = tool_history[-1]
-                last_tool_action = f"Tool: {last_tool.get('name')}\nParams: {json.dumps(last_tool.get('params', {}), indent=2)}\nResult: {last_tool.get('result', 'No result')}"
-
-            # Get min_required_tools from session or use empty list
-            min_required_tools = (
-                getattr(self.context.session, "min_required_tools", set()) or set()
-            )
-
-            # Format the reflection prompt
-            reflection_context = {
-                "task": self.context.session.current_task,
-                "instructions": self.context.instructions,
-                "min_required_tools": list(min_required_tools),
-                "tools_used": tools_used,
-                "last_result": think_act_result,
-                "last_tool_action": last_tool_action,
-            }
-
-            # Get reflection from model
-            system_prompt_formatted = REFLECTION_SYSTEM_PROMPT.format(
-                **reflection_context
-            )
-            response = await self.context.model_provider.get_completion(
-                system=system_prompt_formatted,
-                prompt="Evaluate the current state and determine the next step.",
-            )
-
-            if response and response.get("response"):
-                # Check if thinking is enabled and extract thinking content
-                thinking_enabled = (
-                    self.context.model_provider_options.get("think", False)
-                    if self.context.model_provider_options
-                    else False
-                )
-                response_text = response["response"].strip()
-
-                if thinking_enabled:
-                    # Extract thinking from reflection response
-                    think_start = response_text.find("<think>")
-                    think_end = response_text.find("</think>")
-
-                    if (
-                        think_start != -1
-                        and think_end != -1
-                        and think_end > think_start
-                    ):
-                        thinking_content = response_text[
-                            think_start + 7 : think_end
-                        ].strip()
-                        # Store thinking with reflection context
-                        if hasattr(self.context, "session") and thinking_content:
-                            thinking_entry = {
-                                "timestamp": time.time(),
-                                "call_context": "reflection",
-                                "thinking": thinking_content,
-                            }
-                            self.context.session.thinking_log.append(thinking_entry)
-                            self.agent_logger.debug(
-                                f"Stored reflection thinking: {thinking_content[:100]}..."
-                            )
-
-                        # Remove thinking tags from response
-                        response_text = (
-                            response_text[:think_start] + response_text[think_end + 8 :]
-                        )
-                        response_text = response_text.strip()
-
-                try:
-                    # Handle responses that may contain <think> tags or other content before JSON
-                    # Try to extract JSON from the response
-                    json_start = response_text.find("{")
-                    json_end = response_text.rfind("}") + 1
-
-                    if json_start != -1 and json_end > json_start:
-                        # Extract the JSON portion
-                        json_text = response_text[json_start:json_end]
-                        reflection_data = json.loads(json_text)
-                    else:
-                        # If no JSON found, try parsing the entire response
-                        reflection_data = json.loads(response_text)
-
-                    self.reflections.append(reflection_data)
-                    # Emit REFLECTION_GENERATED event
-                    self.context.emit_event(
-                        AgentStateEvent.REFLECTION_GENERATED,
-                        {"reflection": reflection_data},
-                    )
-                    return reflection_data
-                except json.JSONDecodeError as e:
-                    if self.context.agent_logger:
-                        self.context.agent_logger.warning(
-                            f"Reflection LLM did not return valid JSON. Raw response: {response['response']!r}. Error: {e}"
-                        )
-                    # Fallback: return a minimal default reflection
-                    return {
-                        "next_step": "No valid reflection generated. Proceed to next step or retry.",
-                        "reason": "LLM did not return valid JSON for reflection.",
-                        "completed_tools": tools_used_successfully,
-                    }
-            else:
-                if self.context.agent_logger:
-                    self.context.agent_logger.warning(
-                        f"Reflection LLM returned empty or no response."
-                    )
-                return {
-                    "next_step": "No reflection response. Proceed to next step or retry.",
-                    "reason": "LLM returned empty response for reflection.",
-                    "completed_tools": tools_used_successfully,
-                }
-
-        except Exception as e:
-            if self.context.agent_logger:
-                self.context.agent_logger.error(
-                    f"Unexpected error during reflection generation: {e}"
-                )
-            traceback.print_exc()
-            return None
-
     def get_last_reflection(self) -> Optional[Dict[str, Any]]:
         """Returns the most recent reflection, if any."""
         return self.reflections[-1] if self.reflections else None
+
+    async def reflect_and_evaluate_steps(self, step_result: Any) -> dict:
+        """
+        Reflect on the current step result and evaluate the completion status of plan steps.
+        Returns step updates and next step information.
+        """
+        if not self.context.reflect_enabled or not self.context.model_provider:
+            return {
+                "step_updates": [],
+                "next_step_index": self.context.session.current_step_index,
+                "plan_complete": False,
+                "reason": "Reflection disabled or no model provider.",
+            }
+
+        if self.context.session.final_answer:
+            return {
+                "step_updates": [],
+                "next_step_index": self.context.session.current_step_index,
+                "plan_complete": True,
+                "reason": "Final answer set, plan complete.",
+            }
+
+        # Get tool history for context
+        tool_history = []
+        if self.context.tool_manager:
+            tool_history = self.context.tool_manager.tool_history or []
+
+        # Prepare step information for reflection
+        plan_steps = []
+        for i, step in enumerate(self.context.session.plan_steps):
+            step_info = {
+                "index": step.index,
+                "description": step.description,
+                "status": step.status.value,
+                "result": step.result,
+                "error": step.error,
+                "tool_used": step.tool_used,
+                "parameters": step.parameters,
+            }
+            plan_steps.append(step_info)
+
+        # Prepare reflection context
+        reflection_context = {
+            "task": self.context.session.current_task,
+            "instructions": self.context.instructions,
+            "plan_steps": json.dumps(plan_steps, indent=2),
+            "current_step_index": self.context.session.current_step_index,
+            "step_result": (
+                json.dumps(step_result) if step_result is not None else "null"
+            ),
+            "tool_history": json.dumps(tool_history, indent=2),
+        }
+
+        # Format the reflection prompt
+        system_prompt_formatted = STEP_REFLECTION_SYSTEM_PROMPT.format(
+            **reflection_context
+        )
+
+        # Call the LLM
+        response = await self.context.model_provider.get_completion(
+            system=system_prompt_formatted,
+            prompt=f"Evaluate the completion status of the current step and update step tracking accordingly.",
+            options=self.context.model_provider_options,
+        )
+
+        step_updates = []
+        next_step_index = self.context.session.current_step_index
+        plan_complete = False
+        reason = "No step updates."
+
+        if response and response.message.content:
+            try:
+                reflection_json = json.loads(response.message.content)
+                step_updates = reflection_json.get("step_updates", [])
+                next_step_index = reflection_json.get(
+                    "next_step_index", self.context.session.current_step_index
+                )
+                plan_complete = reflection_json.get("plan_complete", False)
+                reason = reflection_json.get("reason", reason)
+            except Exception as e:
+                agent_logger = getattr(self.context, "agent_logger", None)
+                if agent_logger is not None:
+                    agent_logger.warning(f"Failed to parse step reflection JSON: {e}")
+
+        return {
+            "step_updates": step_updates,
+            "next_step_index": next_step_index,
+            "plan_complete": plan_complete,
+            "reason": reason,
+        }

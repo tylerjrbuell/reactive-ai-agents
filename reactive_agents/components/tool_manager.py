@@ -56,7 +56,7 @@ class FinalAnswerTool(Tool):
 
         # Set the final answer in the context
         self.context.session.final_answer = answer
-        return ToolResult(f"Final answer has been recorded: {answer}")
+        return ToolResult(answer)
 
 
 class ToolManager(BaseModel):
@@ -423,8 +423,8 @@ class ToolManager(BaseModel):
 
             # Log success before returning
             if tool_name != "final_answer":  # Don't track final_answer as successful?
-                # Append to session successful_tools
-                self.context.session.successful_tools.append(tool_name)
+                # Add to session successful_tools (now a set)
+                self.context.session.successful_tools.add(tool_name)
             # Emit TOOL_COMPLETED event
             self.context.emit_event(
                 AgentStateEvent.TOOL_COMPLETED,
@@ -608,7 +608,7 @@ class ToolManager(BaseModel):
             ),
         }
         if not error and not cancelled:
-            self.context.session.successful_tools.append(tool_name)
+            self.context.session.successful_tools.add(tool_name)
 
         self.tool_history.append(entry)
 
@@ -663,45 +663,21 @@ class ToolManager(BaseModel):
             summary_result = await self.model_provider.get_completion(
                 system=TOOL_ACTION_SUMMARY_PROMPT,  # Keep existing system prompt
                 prompt=summary_context_prompt,  # Use the enhanced prompt from agent_prompts.py
+                options=self.context.model_provider_options,
             )
-            tool_action_summary = summary_result.get(
-                "response", f"Executed tool {tool_name}."
+            tool_action_summary = (
+                summary_result.message.content.strip() or f"Executed tool {tool_name}."
             )
-
-            # Check if thinking is enabled and extract thinking content
-            thinking_enabled = (
-                self.context.model_provider_options.get("think", False)
-                if self.context.model_provider_options
-                else False
+            # Ensure tool summary is clearly marked
+            if not tool_action_summary.startswith("[TOOL SUMMARY]"):
+                tool_action_summary = f"[TOOL SUMMARY] {tool_action_summary}"
+            # Append as atomic assistant message to context
+            self.context.session.messages.append(
+                {
+                    "role": "assistant",
+                    "content": tool_action_summary,
+                }
             )
-
-            if thinking_enabled:
-                # Extract thinking from tool summary response
-                think_start = tool_action_summary.find("<think>")
-                think_end = tool_action_summary.find("</think>")
-
-                if think_start != -1 and think_end != -1 and think_end > think_start:
-                    thinking_content = tool_action_summary[
-                        think_start + 7 : think_end
-                    ].strip()
-                    # Store thinking with tool summary context
-                    if hasattr(self.context, "session") and thinking_content:
-                        thinking_entry = {
-                            "timestamp": time.time(),
-                            "call_context": f"tool_summary_{tool_name}",
-                            "thinking": thinking_content,
-                        }
-                        self.context.session.thinking_log.append(thinking_entry)
-                        self.tool_logger.debug(
-                            f"Stored tool summary thinking for {tool_name}: {thinking_content[:100]}..."
-                        )
-
-                    # Remove thinking tags from summary
-                    tool_action_summary = (
-                        tool_action_summary[:think_start]
-                        + tool_action_summary[think_end + 8 :]
-                    )
-                    tool_action_summary = tool_action_summary.strip()
 
             # Enhanced logging for debugging
             self.tool_logger.debug(f"Tool Action Summary: {tool_action_summary}")
@@ -755,9 +731,36 @@ class ToolManager(BaseModel):
                 # Check for various data types
                 for data_type, values in extracted_data.items():
                     if values:
-                        validation["suggestions"].append(
-                            f"Found {data_type}: {values[:3]}..."
-                        )  # Show first 3 items
+                        # Ensure values is a proper list and handle any unhashable types
+                        try:
+                            if isinstance(values, list):
+                                # Filter out any unhashable types and take first 3 items
+                                safe_values = []
+                                for value in values:
+                                    try:
+                                        # Test if the value is hashable by trying to use it as a dict key
+                                        _ = {value: None}
+                                        safe_values.append(str(value))
+                                        if len(safe_values) >= 3:
+                                            break
+                                    except (TypeError, ValueError):
+                                        # Skip unhashable values
+                                        continue
+
+                                if safe_values:
+                                    validation["suggestions"].append(
+                                        f"Found {data_type}: {safe_values}..."
+                                    )
+                            else:
+                                # Handle non-list values
+                                validation["suggestions"].append(
+                                    f"Found {data_type}: {str(values)}"
+                                )
+                        except Exception as e:
+                            # If we can't process the values, just log it and continue
+                            self.tool_logger.debug(
+                                f"Could not process {data_type} values: {e}"
+                            )
 
             # Tool-specific validation
             if tool_name in ["brave_web_search", "brave_local_search"]:

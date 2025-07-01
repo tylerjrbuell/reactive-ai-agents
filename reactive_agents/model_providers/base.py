@@ -12,38 +12,25 @@ if TYPE_CHECKING:
     from reactive_agents.context.agent_context import AgentContext
 
 
-class ChatCompletionMessage(BaseModel):
-    role: str
+class CompletionMessage(BaseModel):
     content: str
-    thinking: Optional[str]
+    role: Optional[str] = None
+    thinking: Optional[str] = None
     tool_calls: Optional[list] = None
     images: Optional[list] = None
 
 
-class ChatCompletionResponse(BaseModel):
-    message: ChatCompletionMessage
-    model: str
-    done: bool
-    done_reason: Optional[str]
-    prompt_tokens: Optional[int]
-    completion_tokens: Optional[int]
-    prompt_eval_duration: Optional[float]
-    load_duration: Optional[float]
-    total_duration: Optional[float]
-    created_at: Optional[int]
-
-
 class CompletionResponse(BaseModel):
-    content: str
+    message: CompletionMessage
     model: str
     done: bool
-    done_reason: Optional[str]
-    prompt_tokens: Optional[int]
-    completion_tokens: Optional[int]
-    prompt_eval_duration: Optional[int]
-    load_duration: Optional[int]
-    total_duration: Optional[int]
-    created_at: str
+    done_reason: Optional[str] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    prompt_eval_duration: Optional[float] = None
+    load_duration: Optional[float] = None
+    total_duration: Optional[float] = None
+    created_at: Optional[str] = None
 
 
 # Dictionary to store registered model providers
@@ -143,7 +130,7 @@ class BaseModelProvider(ABC, metaclass=AutoRegisterModelMeta):
         pass
 
     @abstractmethod
-    async def get_chat_completion(self, **kwargs) -> ChatCompletionResponse:
+    async def get_chat_completion(self, **kwargs) -> CompletionResponse:
         """
         Abstract method to get a chat completion from the model.
 
@@ -153,7 +140,7 @@ class BaseModelProvider(ABC, metaclass=AutoRegisterModelMeta):
         pass
 
     @abstractmethod
-    async def get_completion(self, **kwargs) -> dict:
+    async def get_completion(self, **kwargs) -> CompletionResponse:
         """
         Abstract method to get a text completion from the model.
 
@@ -161,3 +148,45 @@ class BaseModelProvider(ABC, metaclass=AutoRegisterModelMeta):
             **kwargs: Arbitrary keyword arguments. Should include 'prompt' (str) and may include 'options' (dict) for model-specific parameters.
         """
         pass
+
+    def extract_and_store_thinking(
+        self,
+        message: CompletionMessage,
+        call_context: str = "unknown",
+    ) -> CompletionMessage:
+        """
+        Extracts <think> content from the message, cleans the message content, and stores the thinking in the context if present.
+
+        Args:
+            message: The message object (dict) from the model response
+            call_context: The context of the call (e.g., "think_chain", "summary_generation")
+
+        Returns:
+            The updated message dict with cleaned content and thinking removed from content.
+        """
+        content = message.content
+        if not content:
+            return message
+
+        think_start = content.find("<think>")
+        think_end = content.find("</think>")
+        thinking_content = None
+        if think_start != -1 and think_end != -1 and think_end > think_start:
+            thinking_content = content[think_start + 7 : think_end].strip()
+            cleaned_content = (content[:think_start] + content[think_end + 8 :]).strip()
+            message.content = cleaned_content
+        else:
+            message.content = content.strip()
+
+        if thinking_content and self.context and hasattr(self.context, "session"):
+            thinking_entry = {
+                "timestamp": time.time(),
+                "call_context": call_context,
+                "thinking": thinking_content,
+            }
+            self.context.session.thinking_log.append(thinking_entry)
+            if hasattr(self.context, "agent_logger") and self.context.agent_logger:
+                self.context.agent_logger.debug(
+                    f"Stored thinking for {call_context}: {thinking_content[:100]}..."
+                )
+        return message

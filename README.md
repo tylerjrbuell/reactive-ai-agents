@@ -29,6 +29,7 @@ async def main():
         .with_name("QuickStart Agent")
         .with_model("ollama:qwen2:7b")
         .with_custom_tools([weather_tool])
+        .with_response_format("Provide a clear and concise answer with weather details.")
         .build()
     )
 
@@ -75,6 +76,245 @@ asyncio.run(main())
 - Use the `ReactAgentBuilder`'s `.build()` method, preferably within an `async with` block, for automatic initialization and cleanup.
 - If you need to manage the agent lifecycle manually after building (less recommended), remember to `await agent.close()` when done.
 
+## 📝 Response Format Configuration
+
+The framework supports customizable response formats to ensure agents provide answers in the exact format you need:
+
+### Basic Response Format Usage
+
+```python
+import asyncio
+from reactive_agents.agents import ReactAgentBuilder
+
+async def main():
+    # Configure agent with specific response format
+    agent = await (
+        ReactAgentBuilder()
+        .with_name("Formatted Agent")
+        .with_model("ollama:qwen2:7b")
+        .with_response_format("""
+        Provide your answer in the following JSON format:
+        {
+            "summary": "Brief overview",
+            "details": "Detailed explanation",
+            "recommendations": ["item1", "item2"]
+        }
+        """)
+        .build()
+    )
+
+    result = await agent.run("Research the benefits of renewable energy")
+    print(result)
+    await agent.close()
+
+asyncio.run(main())
+```
+
+### Advanced Response Format Examples
+
+```python
+# JSON format for structured data
+.with_response_format("""
+Respond in JSON format with these fields:
+- status: success/error
+- data: the main information
+- timestamp: current time
+- source: information source
+""")
+
+# Table format for comparisons
+.with_response_format("""
+Format your response as a table with columns:
+| Feature | Description | Pros | Cons |
+""")
+
+# Step-by-step format
+.with_response_format("""
+Provide your answer in this structure:
+1. Executive Summary
+2. Key Findings
+3. Detailed Analysis
+4. Recommendations
+5. Next Steps
+""")
+
+# Technical format
+.with_response_format("""
+Structure your response as:
+## Overview
+## Technical Details
+## Implementation Steps
+## Code Examples (if applicable)
+## Conclusion
+""")
+```
+
+### Context-Aware Response Formats
+
+The response format is included in the agent's system prompt, ensuring the model understands exactly how to structure its final answer. This is particularly useful for:
+
+- **API Integration**: Ensure responses match expected data structures
+- **Documentation Generation**: Format technical documentation consistently
+- **Data Analysis**: Structure analytical results in specific formats
+- **Report Generation**: Create standardized reports with consistent formatting
+
+## 🧠 Intelligent Context Management
+
+The framework includes advanced context management features to optimize performance and token usage:
+
+### Adaptive Context Pruning
+
+The agent automatically manages conversation context based on the model provider's capabilities:
+
+```python
+import asyncio
+from reactive_agents.agents import ReactAgentBuilder
+
+async def main():
+    # Agent automatically uses optimal context settings for the model
+    agent = await (
+        ReactAgentBuilder()
+        .with_name("Smart Context Agent")
+        .with_model("ollama:qwen2:7b")  # Uses Ollama-optimized settings
+        .with_response_format("Provide a clear, structured answer.")
+        .build()
+    )
+
+    # For long conversations, context is automatically pruned and summarized
+    result = await agent.run("""
+    This is a very long task that will generate many messages.
+    The agent will automatically manage context to stay within token limits
+    while preserving the most relevant information.
+    """)
+
+    await agent.close()
+
+asyncio.run(main())
+```
+
+### Provider-Specific Optimizations
+
+Different model providers use optimized context settings:
+
+- **Ollama**: 15 messages, 2000 tokens, message-based pruning
+- **OpenAI**: 30 messages, 8000 tokens, adaptive pruning
+- **Anthropic**: 35 messages, 100k tokens, token-based pruning
+- **Groq**: 20 messages, 8000 tokens, adaptive pruning
+
+### Last Result Tracking
+
+The framework automatically tracks the last result from each iteration for better context continuity:
+
+```python
+import asyncio
+from reactive_agents.agents import ReactAgentBuilder
+
+async def main():
+    agent = await (
+        ReactAgentBuilder()
+        .with_name("Tracking Agent")
+        .with_model("ollama:qwen3:4b")
+        .with_mcp_tools(["brave-search", "time"])
+        .build()
+    )
+
+    try:
+        result = await agent.run("Research Bitcoin price trends")
+
+        # Access last result information
+        session = agent.context.session
+        print(f"Last result: {session.last_result}")
+        print(f"Last result timestamp: {session.last_result_timestamp}")
+        print(f"Last result iteration: {session.last_result_iteration}")
+
+    finally:
+        await agent.close()
+
+asyncio.run(main())
+```
+
+The last result is automatically included in the system prompt context, providing the agent with awareness of its most recent actions and responses.
+
+### Manual Context Configuration
+
+For advanced users, you can customize context management:
+
+```python
+import asyncio
+from reactive_agents.agents import ReactAgent, ReactAgentConfig
+
+async def main():
+    config = ReactAgentConfig(
+        agent_name="Custom Context Agent",
+        provider_model_name="ollama:qwen2:7b",
+        # Custom context settings
+        max_context_messages=25,  # Override default
+        max_context_tokens=5000,  # Set custom token limit
+        context_pruning_strategy="adaptive",  # Use adaptive pruning
+        response_format="Provide detailed analysis with examples."
+    )
+
+    agent = ReactAgent(config)
+    await agent.initialize()
+
+    result = await agent.run("Complex analysis task")
+    await agent.close()
+
+asyncio.run(main())
+```
+
+## ⚙️ Advanced Context Management & Tool Use Policy Configuration
+
+The framework exposes fine-grained control over context management and tool use policy for advanced users. All options are available as explicit builder methods on `ReactAgentBuilder`:
+
+### Context Management Options
+
+- `with_max_context_messages(value: int)`: Maximum number of context messages to retain (default: 20)
+- `with_max_context_tokens(value: int)`: Maximum number of context tokens to retain (default: None)
+- `with_enable_context_pruning(value: bool)`: Enable or disable context pruning (default: True)
+- `with_enable_context_summarization(value: bool)`: Enable or disable context summarization (default: True)
+- `with_context_pruning_strategy(value: str)`: Context pruning strategy: 'conservative', 'balanced', or 'aggressive' (default: 'balanced')
+- `with_context_token_budget(value: int)`: Token budget for context management (default: 4000)
+- `with_context_pruning_aggressiveness(value: str)`: Aggressiveness of context pruning: 'conservative', 'balanced', or 'aggressive' (default: 'balanced')
+- `with_context_summarization_frequency(value: int)`: Number of iterations between context summarizations (default: 3)
+
+### Tool Use Policy Options
+
+- `with_tool_use_policy(value: str)`: Tool use policy: 'always', 'required_only', 'adaptive', or 'never' (default: 'adaptive')
+- `with_tool_use_max_consecutive_calls(value: int)`: Maximum consecutive tool calls before forcing reflection/summarization (default: 3)
+
+#### Example Usage
+
+```python
+agent = await (
+    ReactAgentBuilder()
+    .with_name("Advanced Agent")
+    .with_model("ollama:qwen2:7b")
+    .with_max_context_messages(30)
+    .with_context_token_budget(6000)
+    .with_context_pruning_strategy("aggressive")
+    .with_tool_use_policy("always")
+    .with_tool_use_max_consecutive_calls(5)
+    .build()
+)
+```
+
+You can also set any of these options using `.with_advanced_config(...)`:
+
+```python
+agent = await (
+    ReactAgentBuilder()
+    .with_advanced_config(
+        max_context_messages=25,
+        context_summarization_frequency=2,
+        tool_use_policy="required_only"
+    )
+    .build()
+)
+```
+
+See the API docs for full details on each option.
+
 ## 🏗️ Architecture Overview
 
 The framework has been refactored with a clean component-based architecture:
@@ -102,6 +342,69 @@ All types are centralized in `reactive_agents/common/types/`:
 - **`agent_types.py`**: Agent-specific data models and formats
 - **`event_types.py`**: Event system types and data structures
 
+### Session Tracking and State Management
+
+The framework provides comprehensive session tracking with the `AgentSession` model:
+
+```python
+import asyncio
+from reactive_agents.agents import ReactAgentBuilder
+
+async def main():
+    agent = await (
+        ReactAgentBuilder()
+        .with_name("State Tracking Agent")
+        .with_model("ollama:qwen3:4b")
+        .with_mcp_tools(["brave-search", "time"])
+        .build()
+    )
+
+    try:
+        result = await agent.run("Research AI trends")
+
+        # Access comprehensive session state
+        session = agent.context.session
+
+        # Task information
+        print(f"Initial task: {session.initial_task}")
+        print(f"Current task: {session.current_task}")
+        print(f"Task status: {session.task_status}")
+        print(f"Iterations: {session.iterations}")
+
+        # Progress tracking
+        print(f"Completion score: {session.completion_score}")
+        print(f"Successful tools: {session.successful_tools}")
+        print(f"Required tools: {session.min_required_tools}")
+
+        # Last result tracking
+        print(f"Last result: {session.last_result}")
+        print(f"Last result timestamp: {session.last_result_timestamp}")
+        print(f"Last result iteration: {session.last_result_iteration}")
+
+        # Next step tracking
+        print(f"Current next step: {session.current_next_step}")
+        print(f"Next step source: {session.next_step_source}")
+        print(f"Next step timestamp: {session.next_step_timestamp}")
+
+        # Reasoning and progress logs
+        print(f"Reasoning log entries: {len(session.reasoning_log)}")
+        print(f"Task progress entries: {len(session.task_progress)}")
+        print(f"Task nudges: {session.task_nudges}")
+
+    finally:
+        await agent.close()
+
+asyncio.run(main())
+```
+
+The session provides detailed tracking of:
+
+- **Task State**: Initial task, current task, status, iterations
+- **Progress Metrics**: Completion scores, tool usage, required tools
+- **Last Result**: Most recent model response with timestamp and iteration
+- **Next Step**: Current action plan with source and timestamp
+- **Activity Logs**: Reasoning, progress, and task reminders
+
 ### Agent Classes
 
 - **`ReactAgent`** (`agents/react_agent.py`): Main reactive agent implementation with simplified interface
@@ -121,6 +424,9 @@ The main purpose of this project is to create a custom AI Agent Framework that a
 - **Strong Type Hinting**: Uses Pydantic models for configuration to ensure type safety and better developer experience.
 - **Component Architecture**: Clean separation of concerns with modular, reusable components.
 - **Event System**: Comprehensive event subscription system for monitoring agent lifecycle.
+- **Response Format Configuration**: Customizable response formats to ensure agents provide answers in the exact structure you need.
+- **Intelligent Context Management**: Adaptive context pruning and provider-specific optimizations for optimal performance and token usage.
+- **Last Result Tracking**: Automatic tracking of the most recent model response for better context continuity and debugging.
 
 ## Installation
 
@@ -338,6 +644,12 @@ async def main():
         .with_max_iterations(10)
         .with_reflection(True)
         .with_confirmation(confirmation_callback, config)
+        .with_response_format("""
+        Provide your research findings in this format:
+        1. Summary of key findings
+        2. Detailed analysis with sources
+        3. Recommendations or conclusions
+        """)
         .build()
     )
 
@@ -885,6 +1197,38 @@ async def main():
     # Process custom tools
     processed_tools = tool_processor.process_custom_tools([example_tool])
     print(f"Processed tools: {len(processed_tools)}")
+
+    await agent.close()
+
+asyncio.run(main())
+```
+
+### Context Management
+
+The agent's context management system provides advanced features for optimizing performance:
+
+```python
+import asyncio
+from reactive_agents.agents import ReactAgentBuilder
+
+async def main():
+    agent = await ReactAgentBuilder().with_name("Context Agent").with_model("ollama:qwen2:7b").build()
+
+    # Access context statistics
+    stats = agent.context.get_context_stats()
+    print(f"Context stats: {stats}")
+
+    # Check if context pruning is needed
+    should_prune = agent.context.should_prune_context()
+    print(f"Should prune: {should_prune}")
+
+    # Get optimal pruning configuration for the current model
+    config = agent.context.get_optimal_pruning_config()
+    print(f"Optimal config: {config}")
+
+    # Estimate token usage
+    tokens = agent.context.estimate_context_tokens()
+    print(f"Estimated tokens: {tokens}")
 
     await agent.close()
 

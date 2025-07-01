@@ -46,6 +46,7 @@ class ConfigValidator:
         confirmation_callback: Optional[ConfirmationCallbackProtocol] = None,
         confirmation_config: Optional[Dict[str, Any]] = None,
         workflow_context_shared: Optional[Dict[str, Any]] = None,
+        response_format: Optional[str] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """
@@ -74,6 +75,7 @@ class ConfigValidator:
             confirmation_callback: Callback for confirming tool use
             confirmation_config: Configuration for tool confirmation
             workflow_context_shared: Shared workflow context data
+            response_format: Format specification for the agent's final response
             **kwargs: Additional keyword arguments
 
         Returns:
@@ -111,6 +113,7 @@ class ConfigValidator:
             "confirmation_callback": confirmation_callback,
             "confirmation_config": confirmation_config,
             "workflow_context_shared": workflow_context_shared,
+            "response_format": response_format,
             "kwargs": kwargs,
         }
 

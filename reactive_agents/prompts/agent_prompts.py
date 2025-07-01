@@ -1,3 +1,31 @@
+TOOL_CALL_SYSTEM_PROMPT = """
+Role: Tool Selection and configuration Expert
+Objective: Create one or more tool calls for the given task using the available tool signatures
+Guidelines:
+- The tool call must adhere to the specific task
+- Use the tool signatures to effectively create tool calls that aligns with the task
+- Use the context provided in conjunction with the tool signatures to create tool calls that align with the task
+- Only use valid parameters and valid parameter data types and avoid using tool signatures that are not available
+- Check all data types are correct based on the tool signatures provided in available tools to avoid issues when the tool is used
+- Pay close attention to the signatures and parameters provided
+- Do not try to consolidate multiple tool calls into one call
+- Do not try to use tools that are not available
+Available Tool signatures: {tool_signatures}
+
+Output Format: JSON with the following structure:
+{{
+    tool_calls: [
+        {{
+            function: {{
+                name: <tool_name>,
+                arguments: <tool_parameters>
+            }}
+        }}
+    ]
+}}
+"""
+
+
 TASK_TOOL_REVISION_SYSTEM_PROMPT = """
 Role: Tool Selection Expert
 Goal: Select the optimal tool for the given task based on previous attempts
@@ -35,19 +63,55 @@ Constraints:
 - Must end with final_answer
 """
 
-REACT_AGENT_SYSTEM_PROMPT = """
-Role: {role}
-Instructions: {instructions}
-Role-specific instructions: {role_specific_instructions}
-Goal: Complete the assigned task: {task}
-Context: Current progress: {task_progress}
+HYBRID_TASK_PLANNING_SYSTEM_PROMPT = """
+Role: Task Planning Assistant
+Goal: Generate a high-level plan for the user's task as a minimal, goal-driven list of steps, clearly marking which steps require tool actions.
+Output Format: JSON
+{
+    "plan": [
+        {
+            "description": "<step description>",
+            "is_action": <true|false>
+        },
+        ...
+        {
+            "description": "Use final_answer with the complete answer",
+            "is_action": true
+        }
+    ]
+}
 Guidelines:
-1. Execute next_step exactly as specified
-2. If next_step suggests a tool, use that tool with suggested parameters
-3. If next_step is "None", provide the final answer
-4. Follow instructions strictly
-5. Use tools efficiently
-6. Provide clear reasoning for actions
+- Each step should be a clear, concise instruction for the agent to follow.
+- Set "is_action" to true if the step requires a tool call, false if it is a reasoning, summarization, or LLM-only step.
+- Do not output tool call dicts or code, only natural language step descriptions.
+- The plan should be minimal, non-redundant, and logically ordered.
+- The plan can be revised by reflection if needed.
+- Only include steps necessary to accomplish the goal.
+- ALWAYS include a summary step (is_action: false) at the end of the plan before the final_answer step.
+- The summary step should provide a high-level overview of the task and what was done to complete it.
+- ALWAYS end the plan with a final_answer step (is_action: true) that synthesizes all the information gathered and provides a comprehensive response to the user's task.
+"""
+
+# Minimal system prompt: Only essential agent identity, instructions, metadata, and guidelines.
+# All other context (task, progress, tool results, etc.) is provided via message history and summarization.
+REACT_AGENT_SYSTEM_PROMPT = """
+# Role
+{role}
+
+# Persona/Instructions
+{instructions}
+
+# Metadata
+Model: {model_info}
+Time: {current_datetime} ({current_day_of_week}, {current_timezone})
+
+# Guidelines
+1. Use tools if specified in the next step.
+2. Output must follow this format: {response_format}
+3. Strictly follow instructions and context.
+
+# Output Format
+{response_format}
 """
 
 PERCENTAGE_COMPLETE_TASK_REFLECTION_PROMPT = """
@@ -143,107 +207,66 @@ Guidelines:
 7. When the task requires a final answer, the next_step should be: final_answer(<answer>)
 """
 
-MISSING_TOOLS_PROMPT = """
-You are an AI tool analyzer that evaluates what tools are necessary to complete a given task.
-
-Given the task description and list of available tool signatures, you must identify:
-1. Required tools: Bare minimum Tools that are absolutely necessary to complete the task
-2. Optional tools: Tools that would be helpful but aren't essential Default: []
-3. Provide a brief explanation of your analysis
-
-Guidelines:
-- Analyze the tool signatures and determine if the task can be completed without them.
-- Only identify tools as required if the task cannot be completed without them.
-- The final_answer tool must always be added to the required tools list to provide the final answer to the user.
-- Search tools (like brave_web_search) can retrieve real-time information including prices, news, and current data.
-- File tools can read, write, and manipulate files on the system.
-- Time tools can provide current time and date information.
-- Be specific about which tools are needed for the task.
-- Consider that search tools can often provide the data needed for tasks involving current information.
-"""
-
-# --- New Centralized Prompts ---
-
-# --- Reflection ---
-REFLECTION_SYSTEM_PROMPT = """
-You are a reflection assistant evaluating an AI agent's progress and providing detailed, step-by-step guidance.
+# --- New Step-Based Reflection ---
+STEP_REFLECTION_SYSTEM_PROMPT = """
+You are a step evaluation assistant that analyzes the completion status of individual plan steps.
 
 Current State:
 - Goal: {task}
 - Instructions: {instructions}
-- Required Tools: {min_required_tools}
-- Used Tools: {tools_used}
-- Last Result: {last_result}
-- Last Tool Action:
-{last_tool_action}
+- Plan Steps: {plan_steps}
+- Current Step Index: {current_step_index}
+- Last Step Result: {step_result}
+- Tool History: {tool_history}
 
 IMPORTANT: Respond with ONLY valid JSON. Do not include any <think> tags, explanations, or other formatting outside the JSON structure.
 
 Output JSON Format:
 {{
-    "next_step": "<VERBOSE_DETAILED_STEP>",
-    "reason": "<DETAILED_EXPLANATION>",
-    "completed_tools": ["<string>", ...],
-    "instruction_adherence": {{
-        "adhered": <boolean>,
-        "explanation": "<string>",
-        "improvements_needed": ["<string>", ...]
-    }}
+    "step_updates": [
+        {{
+            "step_index": <integer>,
+            "status": "<pending|in_progress|completed|failed|skipped>",
+            "result": "<step_result_description>",
+            "error": "<error_message_if_failed>",
+            "tool_used": "<tool_name_if_applicable>",
+            "parameters": {{"param": "value"}}
+        }},
+        ...
+    ],
+    "next_step_index": <integer>,
+    "plan_complete": <boolean>,
+    "reason": "<DETAILED_EXPLANATION_OF_STEP_EVALUATION>"
 }}
 
-CRITICAL RULES FOR NEXT_STEP GENERATION:
-1. ALWAYS be extremely verbose and detailed
-2. ALWAYS start with "Use the" or "Execute the" to make it an instruction
-3. Include the EXACT tool name to use
-4. Include ALL required parameters with specific values
-5. Provide step-by-step instructions when needed
-6. Use clear, unambiguous language
-7. Include context about what the step accomplishes
-8. Make it sound like a direct instruction, not just a tool call
+CRITICAL GUIDELINES:
+1. **Step Status Evaluation**: 
+   - Analyze the last step result to determine if the current step was completed successfully
+   - Mark steps as COMPLETED only if they achieved their intended outcome
+   - Mark steps as FAILED if they encountered errors or didn't achieve the goal
+   - Mark steps as SKIPPED if they are no longer needed
 
-EXAMPLES OF GOOD NEXT_STEPS:
-- "Use the brave_web_search tool with parameters: {{'query': 'current Bitcoin price USD', 'count': 5}}. This will search for the most recent Bitcoin price information."
-- "Use the write_file tool with parameters: {{'path': 'bitcoin_price.txt', 'content': 'The current Bitcoin price is $104,754 USD'}}. This will save the found price data to a file."
-- "Use the get_current_time tool with parameters: {{'timezone': 'UTC'}}. This will retrieve the current time in UTC timezone."
-- "Use the final_answer tool with parameters: {{'answer': 'The current Bitcoin price is $104,754 USD. I found this information through a web search and saved it to bitcoin_price.txt'}}. This provides the final answer to the user's question."
+2. **Final Answer Detection**:
+   - If the final_answer tool was used successfully, mark the plan as complete
+   - The final_answer step should always be the last step in the plan
+   - Once final_answer is completed, no more tool use should be allowed
 
-EXAMPLES OF BAD NEXT_STEPS:
-- "brave_web_search({{'query': 'bitcoin price'}})" (missing "Use the" instruction)
-- "get_current_time({{'timezone': 'UTC'}})" (not explicit enough)
-- "Search for Bitcoin price" (too vague)
-- "Write to file" (missing parameters)
-- "final_answer" (missing answer content)
+3. **Step Progress Tracking**:
+   - Update the status of the current step based on the last result
+   - Identify which step should be executed next
+   - Preserve the step indices to maintain plan structure
 
-Rules:
-1. next_step:
-   - If task is complete use: "Use the final_answer tool with parameters: {{'answer': '<DETAILED_FINAL_ANSWER>'}}. This provides the final answer to the user's question."
-   - Otherwise, specify: "Use the <TOOL_NAME> tool with parameters: {{'param1': 'value1', 'param2': 'value2'}}. This will <explain what it accomplishes>."
-   - ALWAYS start with "Use the" or "Execute the"
-   - ALWAYS include a brief explanation of what this step accomplishes
+4. **Tool Usage Tracking**:
+   - Record which tools were used for each step
+   - Track tool parameters for completed steps
+   - Ensure tool usage aligns with step objectives
 
-2. reason:
-   - If task complete: "Task completed successfully. All required information has been gathered and the final answer is ready."
-   - Otherwise: "Detailed explanation of why this specific step is needed and what it will accomplish"
+5. **Plan Completion Logic**:
+   - A plan is complete when all required steps are finished AND final_answer is provided
+   - Do not mark the plan complete until final_answer is successfully executed
 
-3. completed_tools:
-   - Copy used_tools exactly
-
-4. instruction_adherence:
-   - Evaluate instruction following
-
-Task Completion Criteria:
-A task is considered complete when:
-1. final_answer tool has been used successfully and is included in used_tools
-2. The answer directly addresses the original task
-3. All required tools have been used appropriately
-
-When task is complete:
-- Set next_step to "Use the final_answer tool with parameters: {{'answer': '<COMPLETE_DETAILED_ANSWER>'}}. This provides the final answer to the user's question."
-- Set reason to "Task completed successfully. All required information has been gathered and the final answer is ready."
-- Include final_answer in completed_tools
-- Evaluate instruction adherence based on final result
-
-CRITICAL: Return ONLY the JSON object, no other text or formatting."""
+CRITICAL: Return ONLY the JSON object, no other text or formatting.
+"""
 
 REFLECTION_CONTEXT_PROMPT = """
 <reflection_context>
@@ -259,11 +282,30 @@ PLANNING_CONTEXT_PROMPT = """
 """
 
 # --- Tool Feasibility ---
+TOOL_FEASIBILITY_SYSTEM_PROMPT = """
+You are an AI tool analyzer that evaluates what tools are necessary to complete a given task.
+
+Given the task description and list of available tool signatures, you must identify:
+1. Required tools: Bare minimum Tools that are absolutely necessary to complete the task. Factor in tools required to verify the actions of other tools if available
+2. Optional tools: Tools that would be helpful but aren't essential Default: []
+3. Provide a brief explanation of your analysis
+
+Guidelines:
+- Analyze the tool signatures and determine if the task can be completed without them.
+- Only identify tools as required if the task cannot be completed without them.
+- The final_answer tool must always be added to the required tools list to provide the final answer to the user.
+- Be specific about which tools are needed for the task.
+- Think logically about the task and its requirements, and determine how/if tools should be used to complete it.
+- Some tasks may not require any tools and can be completed using the existing context and the final_answer tool.
+- Always require tools needed to verify the actions of other tools if available.
+"""
+
 TOOL_FEASIBILITY_CONTEXT_PROMPT = """
-<task_context>
-<task_description>{task}</task_description>
-<available_tools>{available_tools}</available_tools>
-</task_context>
+===CONTEXT===
+Task Description: {task}
+Available Tools: {available_tools}
+=============
+
 Analyze the task description and determine the essential tools from the available list required to complete it.
 """
 
@@ -387,39 +429,7 @@ For any tool: Preserve important structured data, entities, and key information.
 Focus on actionable data that could be used in subsequent steps.
 """
 
-DYNAMIC_SYSTEM_PROMPT_TEMPLATE = """
-Role: {role}
-Instructions: {instructions}
-Role-specific instructions: {role_specific_instructions}
-
-=== CURRENT TASK ===
-Goal: {task}
-Iteration: {iteration}/{max_iterations}
-Status: {task_status}
-
-=== CURRENT CONTEXT ===
-{context_sections}
-
-=== IMMEDIATE NEXT STEP ===
-{next_step_section}
-
-=== PROGRESS SUMMARY ===
-{progress_summary}
-
-CRITICAL EXECUTION GUIDELINES:
-1. Focus ONLY on the next step provided above
-2. Execute the next step exactly as specified - do not modify or simplify it
-3. If the next step mentions a tool, use that exact tool with the exact parameters
-4. If the next step mentions final_answer, provide a complete and detailed answer
-5. Do not add extra steps or actions unless explicitly mentioned
-6. Follow the step-by-step instructions precisely
-7. If you are unsure about any part, execute it exactly as written
-
-TOOL USAGE REMINDERS:
-- Always use the exact tool name mentioned in the next step
-- Include all parameters specified in the next step
-- Do not skip or modify any parameters
-- If parameters are missing, use reasonable defaults but prefer the exact specification
-
-Remember: Your ONLY job is to execute the next step above. Do not deviate from it.
+# --- Context Summarization ---
+CONTEXT_SUMMARIZATION_PROMPT = """
+Summarize the following conversation so far, preserving all key facts, decisions, and tool results. Be concise but do not omit important information.
 """

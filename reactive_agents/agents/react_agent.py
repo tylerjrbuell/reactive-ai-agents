@@ -4,9 +4,7 @@ import traceback
 import asyncio
 import time
 from typing import (
-    List,
     Any,
-    Literal,
     Optional,
     Dict,
     TYPE_CHECKING,
@@ -15,7 +13,7 @@ from typing import (
 from pydantic import BaseModel, Field, model_validator
 from reactive_agents.config.mcp_config import MCPConfig
 from reactive_agents.prompts.agent_prompts import (
-    MISSING_TOOLS_PROMPT,
+    TOOL_FEASIBILITY_SYSTEM_PROMPT,
     TOOL_FEASIBILITY_CONTEXT_PROMPT,
     RESCOPE_SYSTEM_PROMPT,
     RESCOPE_CONTEXT_PROMPT,
@@ -46,11 +44,8 @@ from reactive_agents.context.agent_events import (
     StopRequestedEventData,
     StoppedEventData,
 )
-from reactive_agents.common.types.status_types import TaskStatus
-from reactive_agents.common.types.confirmation_types import (
-    ConfirmationCallbackProtocol,
-)
 from reactive_agents.common.types.agent_types import (
+    ReactAgentConfig,
     ToolAnalysisFormat,
     RescopeFormat,
 )
@@ -61,118 +56,6 @@ from reactive_agents.agents.validators.config_validator import ConfigValidator
 
 if TYPE_CHECKING:
     from reactive_agents.components.execution_engine import AgentExecutionEngine
-
-
-# --- Agent Configuration Model ---
-class ReactAgentConfig(BaseModel):
-    # Required parameters
-    agent_name: str = Field(description="Name of the agent.")
-    provider_model_name: str = Field(description="Name of the LLM provider and model.")
-
-    # Optional parameters
-    model_provider_options: Optional[Dict[str, Any]] = Field(
-        default_factory=dict, description="Options for the LLM provider."
-    )
-    role: Optional[str] = Field(
-        default="Task Executor", description="Role of the agent."
-    )
-    mcp_client: Optional[MCPClient] = Field(
-        default=None, description="An initialized MCPClient instance."
-    )
-    mcp_config: Optional[MCPConfig] = Field(
-        default=None, description="MCP config dict or file path to use for MCPClient."
-    )
-    mcp_server_filter: Optional[List[str]] = Field(
-        default_factory=list,
-        description="Filter List of MCP servers for the agent to use in the MCPClient.",
-    )
-    min_completion_score: Optional[float] = Field(
-        default=1.0,
-        ge=0.0,
-        le=1.0,
-        description="Minimum score for task completion evaluation.",
-    )
-    instructions: Optional[str] = Field(
-        default="Solve the given task.",
-        description="High-level instructions for the agent.",
-    )
-    max_iterations: Optional[int] = Field(
-        default=10, description="Maximum number of iterations allowed."
-    )
-    reflect_enabled: Optional[bool] = Field(
-        default=True, description="Whether reflection mechanism is enabled."
-    )
-    log_level: Optional[Literal["debug", "info", "warning", "error", "critical"]] = (
-        Field(
-            default="info",
-            description="Logging level ('debug', 'info', 'warning', 'error' or 'critical').",
-        )
-    )
-    initial_task: Optional[str] = Field(
-        default=None,
-        description="The initial task description (can also be passed to run).",
-    )
-    tool_use_enabled: Optional[bool] = Field(
-        default=True, description="Whether the agent can use tools."
-    )
-    custom_tools: Optional[List[Any]] = Field(
-        default_factory=list,
-        description="List of custom tool instances to use with the agent.",
-    )
-    use_memory_enabled: Optional[bool] = Field(
-        default=True, description="Whether the agent uses long-term memory."
-    )
-    collect_metrics_enabled: Optional[bool] = Field(
-        default=True, description="Whether to collect performance metrics."
-    )
-    check_tool_feasibility: Optional[bool] = Field(
-        default=True, description="Whether to check tool feasibility before starting."
-    )
-    enable_caching: Optional[bool] = Field(
-        default=True, description="Whether to enable LLM response caching."
-    )
-    confirmation_callback: Optional[ConfirmationCallbackProtocol] = Field(
-        default=None,
-        description="Callback for confirming tool use. Can return bool or (bool, feedback).",
-    )
-    confirmation_config: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="Configuration for tool confirmation behavior. If None, defaults will be used.",
-    )
-    # Add workflow_context_shared field to ReactAgentConfig
-    workflow_context_shared: Optional[Dict[str, Any]] = Field(
-        default=None, description="Shared workflow context data."
-    )
-
-    # Store extra kwargs passed, e.g. for specific context managers
-    kwargs: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Additional keyword arguments passed to AgentContext.",
-    )
-
-    class Config:
-        arbitrary_types_allowed = True  # Allow MCPClient etc.
-
-    @model_validator(mode="before")
-    def capture_extra_kwargs(cls, values: Dict[str, Any]) -> Dict[str, Any]:
-        # Get all known fields from the model
-        known_fields = set(cls.model_fields.keys())
-
-        # Fields that should be processed normally (not captured as extra kwargs)
-        normal_fields = known_fields - {"kwargs"}
-
-        extra_kwargs = {}
-        processed_values = {}
-
-        for key, value in values.items():
-            if key in normal_fields:
-                processed_values[key] = value
-            else:
-                extra_kwargs[key] = value
-
-        # Add the extra kwargs to the processed values
-        processed_values["kwargs"] = extra_kwargs
-        return processed_values
 
 
 # --- End Agent Configuration Model ---
@@ -228,6 +111,7 @@ class ReactAgent(Agent):
             confirmation_callback=config.confirmation_callback,
             confirmation_config=config.confirmation_config,
             workflow_context_shared=config.workflow_context_shared,
+            response_format=config.response_format,
         )
 
         # Create the context
@@ -319,8 +203,6 @@ class ReactAgent(Agent):
         return await self.execution_engine.execute(
             initial_task=initial_task,
             cancellation_event=cancellation_event,
-            # self_improve=True,
-            # max_improvement_attempts=3,
         )
 
     def _check_dependencies(self) -> bool:
@@ -332,146 +214,8 @@ class ReactAgent(Agent):
 
     def _should_continue(self) -> bool:
         """Determines if the ReAct loop should continue."""
-        # Use session status
-        if self.context.session.task_status in [
-            TaskStatus.COMPLETE,
-            TaskStatus.ERROR,
-            TaskStatus.CANCELLED,
-            TaskStatus.RESCOPED_COMPLETE,
-            TaskStatus.MAX_ITERATIONS,
-            TaskStatus.MISSING_TOOLS,
-        ]:
-            self.agent_logger.debug(
-                f"Stopping loop: Terminal status {self.context.session.task_status}."
-            )
-            return False
-
-        # Use session iterations
-        if (
-            self.context.max_iterations is not None
-            and self.context.session.iterations >= self.context.max_iterations
-        ):
-            self.agent_logger.info(
-                f"Stopping loop: Max iterations ({self.context.max_iterations}) reached."
-            )
-            self.context.session.task_status = (
-                TaskStatus.MAX_ITERATIONS
-            )  # Update session status
-            return False
-
-        # Use session final_answer
-        if self.context.session.final_answer is not None:
-            self.agent_logger.info("Stopping loop: Final answer set.")
-            # Let the main check handle final_answer + tools
-            pass
-
-        if not self._check_dependencies():
-            self.agent_logger.info("Stopping loop: Dependencies not met.")
-            return False
-
-        if self.context.reflect_enabled and self.context.reflection_manager:
-            pass  # Reflection no longer determines completion score directly
-
-        # Check required tools completion against actual successful tools context
-        tools_completed = False
-        deterministic_score = 0.0
-        # Use session min_required_tools
-        if (
-            self.context.session.min_required_tools is not None
-            and len(self.context.session.min_required_tools) > 0
-        ):
-            # Use session successful_tools
-            successful_tools_set = set(self.context.session.successful_tools)
-            successful_intersection = (
-                self.context.session.min_required_tools.intersection(
-                    successful_tools_set
-                )
-            )
-            deterministic_score = len(successful_intersection) / len(
-                self.context.session.min_required_tools
-            )
-            tools_completed = self.context.session.min_required_tools.issubset(
-                successful_tools_set
-            )
-            self.agent_logger.info(
-                f"Required tools check: Required={self.context.session.min_required_tools}, "
-                f"Successful={successful_tools_set}, Completed={tools_completed}, Score={deterministic_score:.2f}"
-            )
-            if not tools_completed:
-                missing_tools = (
-                    self.context.session.min_required_tools - successful_tools_set
-                )
-                nudge = f"**Task requires completion of these tools: {missing_tools}**"
-                # Use session task_nudges
-                if nudge not in self.context.session.task_nudges:
-                    self.context.session.task_nudges.append(nudge)
-        else:
-            tools_completed = True
-            deterministic_score = 1.0
-            self.agent_logger.info(
-                "No minimum required tools set. Score=1.0, Tools Completed=True."
-            )
-
-        # Store the calculated score in session
-        self.context.session.completion_score = deterministic_score
-
-        score_met = deterministic_score >= self.context.min_completion_score
-
-        # Check if ALL conditions are met: Score Threshold Met, All Required Tools Used, AND Final Answer Provided
-        # Use session final_answer
-        if (
-            score_met
-            and tools_completed
-            and self.context.session.final_answer is not None
-        ):
-            self.agent_logger.info(
-                f"Stopping loop: Score threshold met ({deterministic_score:.2f} >= {self.context.min_completion_score}), "
-                f"all required tools used, and final answer provided."
-            )
-            self.context.session.task_status = (
-                TaskStatus.COMPLETE
-            )  # Update session status
-            return False
-        # Use session final_answer and task_nudges
-        elif tools_completed and self.context.session.final_answer is None:
-            nudge = "**All required tools used, but requires 'final_answer(<answer>)' tool call.**"
-            if nudge not in self.context.session.task_nudges:
-                self.context.session.task_nudges.append(nudge)
-        # Use session task_nudges
-        elif score_met and not tools_completed:
-            nudge = f"**Score threshold ({self.context.min_completion_score}) met, but required tools still missing.**"
-            if nudge not in self.context.session.task_nudges:
-                self.context.session.task_nudges.append(nudge)
-
-        # Check for repeated assistant messages (use session messages)
-        if (
-            self.context.session.iterations > 1
-            and len(self.context.session.messages) > 3
-        ):
-            if (
-                self.context.session.messages[-1].get("role") == "tool"
-                and self.context.session.messages[-2].get("role") == "assistant"
-            ):
-                last_assistant_msg = self.context.session.messages[-2]
-                if (
-                    len(self.context.session.messages) > 4
-                    and self.context.session.messages[-3].get("role") == "tool"
-                    and self.context.session.messages[-4].get("role") == "assistant"
-                ):
-                    prev_assistant_msg = self.context.session.messages[-4]
-                    if last_assistant_msg.get("content") and last_assistant_msg.get(
-                        "content"
-                    ) == prev_assistant_msg.get("content"):
-                        if not last_assistant_msg.get("tool_calls"):
-                            self.agent_logger.warning(
-                                "Stopping loop: Assistant content repeated between iterations."
-                            )
-                            self.context.session.task_status = (
-                                TaskStatus.COMPLETE
-                            )  # Update session status
-                            return False
-
-        return True
+        # Delegate to TaskExecutor's should_continue method
+        return self.task_executor.should_continue()
 
     async def check_tool_feasibility(self, task: str) -> Dict[str, Any]:
         """Checks if required tools are available using the ToolManager."""
@@ -495,7 +239,7 @@ class ReactAgent(Agent):
                 return cached_result["result"]
 
         try:
-            available_tools = self.context.get_available_tool_names()
+            available_tools = self.context.get_tool_names()
             tool_signatures = self.context.get_tool_signatures()
             if not available_tools:
                 self.agent_logger.info("No tools available in ToolManager.")
@@ -506,7 +250,7 @@ class ReactAgent(Agent):
                 }
 
             # Use centralized prompts
-            system_prompt = MISSING_TOOLS_PROMPT
+            system_prompt = TOOL_FEASIBILITY_SYSTEM_PROMPT
             prompt = TOOL_FEASIBILITY_CONTEXT_PROMPT.format(
                 task=task, available_tools=json.dumps(tool_signatures, indent=2)
             )
@@ -519,9 +263,10 @@ class ReactAgent(Agent):
                     if self.model_provider.name == "ollama"
                     else "json"
                 ),
+                options=self.context.model_provider_options,
             )
 
-            if not response or not response.get("response"):
+            if not response or not response.message.content:
                 self.agent_logger.warning(
                     "Tool feasibility check failed: No response from model."
                 )
@@ -532,35 +277,21 @@ class ReactAgent(Agent):
                 }
 
             # Parse the simplified response
-            response_text = response["response"]
-            lines = response_text.split("\n")
+            feasibility_check = json.loads(response.message.content)
 
-            required_tools = []
-            optional_tools = []
-            explanation = "Analysis completed"
-
-            for line in lines:
-                if line.startswith("Required tools:"):
-                    required_tools = [
-                        t.strip()
-                        for t in line.replace("Required tools:", "").split(",")
-                        if t.strip()
-                    ]
-                elif line.startswith("Optional tools:"):
-                    optional_tools = [
-                        t.strip()
-                        for t in line.replace("Optional tools:", "").split(",")
-                        if t.strip()
-                    ]
-                elif line.startswith("Explanation:"):
-                    explanation = line.replace("Explanation:", "").strip()
+            required_tools = feasibility_check.get("required_tools", [])
+            optional_tools = feasibility_check.get("optional_tools", [])
+            explanation = feasibility_check.get("explanation", "")
 
             # Ensure final_answer is always required
             if "final_answer" not in required_tools:
                 required_tools.append("final_answer")
 
+            if required_tools:
+                self.context.session.set_min_required_tools(required_tools)
+            min_required_tools = self.context.session.min_required_tools or set()
             missing_tools = [
-                tool for tool in required_tools if tool not in available_tools
+                tool for tool in min_required_tools if tool not in available_tools
             ]
             is_feasible = not bool(missing_tools)
 
@@ -571,7 +302,7 @@ class ReactAgent(Agent):
             result = {
                 "feasible": is_feasible,
                 "missing_tools": missing_tools,
-                "required_tools": required_tools,
+                "required_tools": list(min_required_tools),
                 "optional_tools": optional_tools,
                 "explanation": explanation,
                 "available_tools": list(available_tools),
@@ -624,7 +355,7 @@ class ReactAgent(Agent):
             }
 
         try:
-            available_tools = self.context.get_available_tool_names()
+            available_tools = self.context.get_tool_names()
 
             # Use centralized prompts
             rescope_prompt = RESCOPE_CONTEXT_PROMPT.format(
@@ -640,9 +371,10 @@ class ReactAgent(Agent):
                     if self.model_provider.name == "ollama"
                     else "json"
                 ),
+                options=self.context.model_provider_options,
             )
 
-            if not response or not response.get("response"):
+            if not response or not response.message.content:
                 self.agent_logger.warning(
                     "Goal rescoping failed: No response from model."
                 )
@@ -653,7 +385,7 @@ class ReactAgent(Agent):
                 }
 
             try:
-                rescope_data = response["response"]
+                rescope_data = response.message.content
                 parsed_rescope = (
                     json.loads(rescope_data)
                     if isinstance(rescope_data, str)
@@ -668,7 +400,7 @@ class ReactAgent(Agent):
 
             except (json.JSONDecodeError, TypeError) as e:
                 self.agent_logger.error(
-                    f"Error parsing rescope analysis JSON: {e}\nResponse: {response.get('response')}"
+                    f"Error parsing rescope analysis JSON: {e}\nResponse: {response.message.content}"
                 )
                 return {
                     "rescoped_task": None,
@@ -737,7 +469,7 @@ class ReactAgent(Agent):
                 result.get("think_act", {}).get("message", {}).get("content")
             )
             if think_act_result:
-                self.context.session.final_answer = think_act_result
+                # self.context.session.final_answer = think_act_result
                 self.agent_logger.info("Setting final answer from think_act result.")
                 return think_act_result
 

@@ -12,6 +12,7 @@ from typing import (
     Callable,
     Optional,
     List,
+    Tuple,
     Union,
     TypeVar,
     Set,
@@ -20,6 +21,7 @@ import asyncio
 from pydantic import BaseModel, Field
 
 from reactive_agents.agent_mcp.client import MCPClient
+from reactive_agents.common.types.confirmation_types import ConfirmationCallbackProtocol
 from reactive_agents.config.logging import LogLevel, formatter
 from reactive_agents.loggers.base import Logger
 from reactive_agents.config.mcp_config import MCPConfig
@@ -191,6 +193,16 @@ class ReactAgentBuilder:
             "enable_caching": True,
             "confirmation_callback": None,
             "confirmation_config": {},
+            "max_context_messages": 20,
+            "max_context_tokens": None,
+            "enable_context_pruning": True,
+            "enable_context_summarization": True,
+            "context_pruning_strategy": "balanced",
+            "context_token_budget": 4000,
+            "context_pruning_aggressiveness": "balanced",
+            "context_summarization_frequency": 3,
+            "tool_use_policy": "adaptive",
+            "tool_use_max_consecutive_calls": 3,
             "kwargs": {},
         }
         self._mcp_client: Optional[MCPClient] = None
@@ -257,7 +269,7 @@ class ReactAgentBuilder:
             server_filter: List of MCP tool names to include
         """
         self._mcp_server_filter = server_filter
-
+        self._config["mcp_server_filter"] = server_filter
         # warn of servers not found
         if self._mcp_config:
             for server_name in server_filter:
@@ -379,7 +391,7 @@ class ReactAgentBuilder:
 
     def with_confirmation(
         self,
-        callback: Callable[[str, Dict[str, Any]], Awaitable[bool]],
+        callback: ConfirmationCallbackProtocol,
         config: Optional[Union[Dict[str, Any], ConfirmationConfig]] = None,
     ) -> "ReactAgentBuilder":
         """
@@ -406,6 +418,66 @@ class ReactAgentBuilder:
         This allows setting any configuration options that don't have specific methods
         """
         self._config.update(kwargs)
+        return self
+
+    def with_workflow_context(self, context: Dict[str, Any]) -> "ReactAgentBuilder":
+        """Set shared workflow context data"""
+        self._config["workflow_context_shared"] = context
+        return self
+
+    def with_response_format(self, format_spec: str) -> "ReactAgentBuilder":
+        """Set the response format specification for the agent's final answer"""
+        self._config["response_format"] = format_spec
+        return self
+
+    def with_max_context_messages(self, value: int) -> "ReactAgentBuilder":
+        """Set the maximum number of context messages to retain."""
+        self._config["max_context_messages"] = value
+        return self
+
+    def with_max_context_tokens(self, value: int) -> "ReactAgentBuilder":
+        """Set the maximum number of context tokens to retain."""
+        self._config["max_context_tokens"] = value
+        return self
+
+    def with_context_pruning(self, value: bool = True) -> "ReactAgentBuilder":
+        """Enable or disable context pruning."""
+        self._config["enable_context_pruning"] = value
+        return self
+
+    def with_context_summarization(self, value: bool = True) -> "ReactAgentBuilder":
+        """Enable or disable context summarization."""
+        self._config["enable_context_summarization"] = value
+        return self
+
+    def with_context_pruning_strategy(self, value: str) -> "ReactAgentBuilder":
+        """Set the context pruning strategy ('conservative', 'balanced', 'aggressive')."""
+        self._config["context_pruning_strategy"] = value
+        return self
+
+    def with_context_token_budget(self, value: int) -> "ReactAgentBuilder":
+        """Set the token budget for context management."""
+        self._config["context_token_budget"] = value
+        return self
+
+    def with_context_pruning_aggressiveness(self, value: str) -> "ReactAgentBuilder":
+        """Set the aggressiveness of context pruning ('conservative', 'balanced', 'aggressive')."""
+        self._config["context_pruning_aggressiveness"] = value
+        return self
+
+    def with_context_summarization_frequency(self, value: int) -> "ReactAgentBuilder":
+        """Set the number of iterations between context summarizations."""
+        self._config["context_summarization_frequency"] = value
+        return self
+
+    def with_tool_use_policy(self, value: str) -> "ReactAgentBuilder":
+        """Set the tool use policy ('always', 'required_only', 'adaptive', 'never')."""
+        self._config["tool_use_policy"] = value
+        return self
+
+    def with_tool_use_max_consecutive_calls(self, value: int) -> "ReactAgentBuilder":
+        """Set the maximum consecutive tool calls before forcing reflection/summarization."""
+        self._config["tool_use_max_consecutive_calls"] = value
         return self
 
     # Factory methods for common agent types
@@ -979,21 +1051,6 @@ class ReactAgentBuilder:
         Returns:
             ReactAgent: A fully configured agent ready to use
         """
-        # Initialize MCP client if not already done
-        if (self._mcp_client is None and self._mcp_config is not None) or (
-            self._mcp_client is None and self._mcp_server_filter is not None
-        ):
-            try:
-                # Create the client in the same task context where it will be used
-                self._mcp_client = await MCPClient(
-                    server_config=self._mcp_config,
-                    server_filter=self._mcp_server_filter,
-                ).initialize()
-                self._config["mcp_client"] = self._mcp_client
-            except Exception as e:
-                error_msg = f"Failed to initialize MCP client: {e}"
-                raise RuntimeError(error_msg) from e
-
         # Add custom tools to the configuration
         if self._custom_tools:
             # Ensure each custom tool has proper tracking attributes

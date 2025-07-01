@@ -66,58 +66,6 @@ class Agent:
         assert self.context.model_provider is not None
         return self.context.model_provider
 
-    def _extract_thinking_and_clean_content(
-        self, content: str, call_context: str = "unknown"
-    ) -> tuple[str, Optional[str]]:
-        """
-        Extract thinking content from <think> tags and clean the content.
-
-        Args:
-            content: The raw content from the model response
-            call_context: The context of the call (e.g., "summary_generation", "reflection", etc.)
-
-        Returns:
-            tuple: (cleaned_content, thinking_content)
-        """
-        if not content:
-            return "", None
-
-        # Look for <think> tags
-        think_start = content.find("<think>")
-        think_end = content.find("</think>")
-
-        if think_start != -1 and think_end != -1 and think_end > think_start:
-            # Extract thinking content
-            thinking_content = content[think_start + 7 : think_end].strip()
-
-            # Remove thinking tags from content
-            cleaned_content = content[:think_start] + content[think_end + 8 :]
-            cleaned_content = cleaned_content.strip()
-
-            return cleaned_content, thinking_content
-        else:
-            # No thinking tags found, return content as is
-            return content.strip(), None
-
-    def _store_thinking(self, thinking_content: str, call_context: str) -> None:
-        """
-        Store thinking content in the session with call context.
-
-        Args:
-            thinking_content: The extracted thinking content
-            call_context: The context of the call
-        """
-        if thinking_content and hasattr(self.context, "session"):
-            thinking_entry = {
-                "timestamp": time.time(),
-                "call_context": call_context,
-                "thinking": thinking_content,
-            }
-            self.context.session.thinking_log.append(thinking_entry)
-            self.agent_logger.debug(
-                f"Stored thinking for {call_context}: {thinking_content[:100]}..."
-            )
-
     # --- End Convenience properties ---
 
     async def _think(self, **kwargs) -> dict | None:
@@ -128,51 +76,68 @@ class Agent:
             # Pass messages directly if provided, otherwise use context messages
             kwargs.setdefault("messages", self.context.session.messages)
             result = await self.model_provider.get_completion(**kwargs)
-
             # Metric Tracking
             execution_time = time.time() - start_time
             if self.context.metrics_manager:
-                usage = result.get("usage", {}) if result else {}
-                self.context.metrics_manager.update_model_metrics(
-                    {
-                        "time": execution_time,
-                        "prompt_tokens": usage.get("prompt_tokens", 0),
-                        "completion_tokens": usage.get("completion_tokens", 0),
-                    }
-                )
-            return result
+                execution_time = time.time() - start_time
+                if self.context.metrics_manager:
+                    self.context.metrics_manager.update_model_metrics(
+                        {
+                            "time": result.total_duration or execution_time,
+                            "prompt_tokens": result.prompt_tokens or 0,
+                            "completion_tokens": result.completion_tokens or 0,
+                        }
+                    )
+            return result.model_dump()
         except Exception as e:
             self.agent_logger.error(f"Direct Completion Error: {e}")
-            # Track error? Maybe implicitly tracked by lack of successful result.
             return None
 
-    def _should_use_tools_in_recursion(self, tool_calls: List[Dict[str, Any]]) -> bool:
+    def _should_use_tools(self, tool_calls: List[Dict[str, Any]]) -> bool:
         """
-        Dynamically determine if the recursive think_chain should use tools.
-
-        Args:
-            tool_calls: The tool calls that were just processed
-
-        Returns:
-            bool: True if tools should be enabled in the recursive call, False otherwise
+        Decide whether to allow tool use in the next think_chain call, based on context.tool_use_policy and plan progress.
+        - If the final answer has been set, do not allow tool use.
+        - If the plan is complete (all steps completed), do not allow tool use.
+        - Otherwise, use the existing tool_use_policy logic.
         """
-        if not self.context.tool_manager:
+        # --- Final answer check: if final answer is set, do not allow tool use ---
+        if self.context.session.final_answer is not None:
+            self.agent_logger.debug("Final answer already set, not allowing tool use.")
             return False
 
-        # Check if we have required tools and if they've been used
-        if self.context.session.min_required_tools:
-            successful_tools = set(self.context.session.successful_tools)
-            required_tools = self.context.session.min_required_tools
+        # --- Step-based plan completion check: if plan is complete, do not allow tool use ---
+        if self.context.session.is_plan_complete():
+            self.agent_logger.debug("Plan is complete, not allowing tool use.")
+            return False
 
-            # If we've used all required tools, disable tools to force final response
-            if required_tools.issubset(successful_tools):
-                self.agent_logger.info(
-                    "✅ All required tools used, disabling tools to force final response"
-                )
-                return False
+        # --- Existing tool_use_policy logic ---
+        policy = getattr(self.context, "tool_use_policy", "adaptive")
+        session = self.context.session
 
-        # Default: allow tools for proactive behavior
-        self.agent_logger.info("🛠️ Enabling tools in recursion for proactive tool usage")
+        if policy == "always":
+            return True
+        if policy == "never":
+            return False
+        if policy == "required_only":
+            if session.min_required_tools:
+                tools_completed, _ = self.context.has_completed_required_tools()
+                return not tools_completed
+            return False
+
+        # Adaptive/heuristic
+        # 1. If required tools left, use tools
+        if session.min_required_tools:
+            tools_completed, _ = self.context.has_completed_required_tools()
+            if not tools_completed:
+                return True
+        # 2. If just used a tool, consider pausing for reflection
+        if tool_calls and tool_calls[-1].get("name") in session.successful_tools:
+            return False
+        # 3. If too many tool calls in a row, force reflection
+        max_calls = getattr(self.context, "tool_use_max_consecutive_calls", 3)
+        if len(tool_calls) > max_calls:
+            return False
+        # 4. Otherwise, allow tool use
         return True
 
     async def _think_chain(
@@ -202,54 +167,30 @@ class Agent:
                     f"Using model provider options: {self.context.model_provider_options}"
                 )
                 kwargs["options"] = self.context.model_provider_options
-
             result = await self.model_provider.get_chat_completion(
                 tools=tool_signatures if use_tools else [],
+                tool_use_required=use_tools,
                 **kwargs,
             )
-            result = result.model_dump()
             self.agent_logger.debug(f"Chat completion result: {result}")
             # Metric Tracking (always track call, even if it fails below)
             execution_time = time.time() - start_time
             if self.context.metrics_manager:
                 self.context.metrics_manager.update_model_metrics(
                     {
-                        "time": result.get("total_duration", execution_time),
-                        "prompt_tokens": result.get("prompt_tokens", 0),
-                        "completion_tokens": result.get("completion_tokens", 0),
+                        "time": result.total_duration or execution_time,
+                        "prompt_tokens": result.prompt_tokens or 0,
+                        "completion_tokens": result.completion_tokens or 0,
                     }
                 )
-
-            if not result or "message" not in result.keys():
+            if not result or not result.message:
                 self.agent_logger.warning(
                     "Chat completion did not return a valid message structure."
                 )
                 return None
-
-            message = result["message"]
-            message_content: str = message.get("content")
-            tool_calls: List[Dict[str, Any]] = message.get("tool_calls")
-
-            # Check if thinking is enabled and extract thinking content
-            thinking_enabled = (
-                self.context.model_provider_options.get("think", False)
-                if self.context.model_provider_options
-                else False
-            )
-            call_context = "think_chain"
-
-            if thinking_enabled and message_content:
-                cleaned_content, thinking_content = (
-                    self._extract_thinking_and_clean_content(
-                        message_content, call_context
-                    )
-                )
-                if thinking_content:
-                    self._store_thinking(thinking_content, call_context)
-                message_content = cleaned_content
-                # Update the message content with cleaned version
-                message["content"] = cleaned_content
-
+            message = result.message
+            message_content: str = message.content or ""
+            tool_calls: List[Dict[str, Any]] = message.tool_calls or []
             if message_content.strip() and remember_messages:
                 # Add assistant response to context's message history
                 self.context.session.messages.append(
@@ -258,12 +199,12 @@ class Agent:
                 self.agent_logger.debug(
                     f"Added assistant message to context: {message_content[:100]}..."
                 )
-            elif tool_calls and use_tools:
+            if tool_calls and use_tools:
                 self.agent_logger.info(f"Received {len(tool_calls)} tool calls.")
                 # Add the assistant message with tool calls before processing results
                 if remember_messages:
                     self.context.session.messages.append(
-                        message
+                        message.model_dump()
                     )  # Store the message with tool_calls
                     self.agent_logger.debug(
                         "Added assistant tool call message to context."
@@ -272,29 +213,33 @@ class Agent:
                 # Process tools using ToolManager via context
                 await self._process_tool_calls(tool_calls=tool_calls)
 
+                # Check if final answer was set during tool processing
+                if self.context.session.final_answer is not None:
+                    self.agent_logger.info(
+                        "Final answer set during tool processing, stopping tool chain."
+                    )
+                    return result.model_dump()
+
                 # Dynamically determine if tools should be enabled in the recursive call
-                should_use_tools = self._should_use_tools_in_recursion(tool_calls)
+                should_use_tools = self._should_use_tools(tool_calls)
 
                 # Recursive call to let the model respond to tool results
                 return await self._think_chain(
                     remember_messages=remember_messages,
-                    use_tools=should_use_tools,
+                    use_tools=False,
                     **kwargs,
                 )
-
-            # Return the result which might contain content or tool_calls
-            return result
-
+            return result.model_dump()
         except Exception as e:
-            # Capture detailed traceback
             tb_str = traceback.format_exc()
             self.agent_logger.error(f"Chat Completion Error: {e}\n{tb_str}")
             return None
 
-    async def _process_tool_calls(self, tool_calls: List[Dict[str, Any]]) -> None:
+    async def _process_tool_calls(self, tool_calls: List[Dict[str, Any]]) -> list | None:
         """
         Processes tool calls using the execution engine to handle pause/stop/terminate states.
         Now runs tool calls in parallel for speed optimization.
+        Stops processing immediately if final_answer tool is called.
         """
         import asyncio
 
@@ -337,9 +282,10 @@ class Agent:
                 continue
             if tool_result is not None:
                 result_content = str(tool_result)
+                tool_name = tool_call.get("function", {}).get("name", "unknown_tool")
                 tool_result_message = {
                     "role": "tool",
-                    "name": tool_call.get("function", {}).get("name", "unknown_tool"),
+                    "name": tool_name,
                     "content": result_content,
                     **({"tool_call_id": tool_call_id} if tool_call_id else {}),
                 }
@@ -347,6 +293,13 @@ class Agent:
                 self.agent_logger.debug(
                     f"Added tool result message to context for {tool_result_message['name']}."
                 )
+
+                # If this was a final_answer tool
+                if tool_name == "final_answer":
+                    self.agent_logger.info(
+                        f"✅ Final answer set: {result_content[:100]}..."
+                    )
+
                 if tool_call_id:
                     processed_tool_call_ids.add(tool_call_id)
                 else:
@@ -355,6 +308,7 @@ class Agent:
                 self.tool_logger.warning(
                     f"Tool call {tool_call.get('function', {}).get('name')} produced None result. Not adding to messages."
                 )
+        return results
 
     async def _run_task(self, task: str) -> dict | None:
         """Adds the main task to the message list and initiates the thinking chain."""
@@ -364,17 +318,6 @@ class Agent:
         if not self.context.session.current_task:
             self.context.session.current_task = task
 
-        # Append the user's task message
-        task_nudges_joined = "\n".join(self.context.session.task_nudges)
-        self.context.session.messages.append(
-            {
-                "role": "user",
-                "content": f"""
-                {task}
-                {task_nudges_joined}
-                """,
-            }
-        )
         # Start the thinking process
         result = await self._think_chain(
             remember_messages=True
@@ -530,14 +473,3 @@ class Agent:
             if self.context.metrics_manager:
                 self.context.metrics_manager.finalize_run_metrics()
             return None
-        # finally:
-        # Context closure should be handled by the caller who created the context
-        # await self.context.close() # Don't close context here
-
-    # --- Methods removed as logic moved to Context/Managers ---
-    # _use_tool -> Now handled by ToolManager
-    # _safe_close_mcp_client -> Now handled by AgentContext.close
-    # ask_user_confirmation -> Now handled by ToolManager
-    # _update_metrics -> Now handled by MetricsManager
-    # set_model_provider -> Configuration should happen at context creation
-    # _plan -> Specific logic, likely belongs in ReactAgent or similar

@@ -1,5 +1,159 @@
-from typing import List, Optional, Dict, Any, Set
-from pydantic import BaseModel, Field
+from typing import List, Literal, Optional, Dict, Any, Set
+from pydantic import BaseModel, Field, model_validator
+
+from reactive_agents.agent_mcp.client import MCPClient
+from reactive_agents.common.types.confirmation_types import ConfirmationCallbackProtocol
+from reactive_agents.config.mcp_config import MCPConfig
+
+# --- Agent Configuration Model ---
+class ReactAgentConfig(BaseModel):
+    # Required parameters
+    agent_name: str = Field(description="Name of the agent.")
+    provider_model_name: str = Field(description="Name of the LLM provider and model.")
+
+    # Optional parameters
+    model_provider_options: Optional[Dict[str, Any]] = Field(
+        default_factory=dict, description="Options for the LLM provider."
+    )
+    role: Optional[str] = Field(
+        default="Task Executor", description="Role of the agent."
+    )
+    mcp_client: Optional[MCPClient] = Field(
+        default=None, description="An initialized MCPClient instance."
+    )
+    mcp_config: Optional[MCPConfig] = Field(
+        default=None, description="MCP config dict or file path to use for MCPClient."
+    )
+    mcp_server_filter: Optional[List[str]] = Field(
+        default_factory=list,
+        description="Filter List of MCP servers for the agent to use in the MCPClient.",
+    )
+    min_completion_score: Optional[float] = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Minimum score for task completion evaluation.",
+    )
+    instructions: Optional[str] = Field(
+        default="Solve the given task.",
+        description="High-level instructions for the agent.",
+    )
+    max_iterations: Optional[int] = Field(
+        default=10, description="Maximum number of iterations allowed."
+    )
+    reflect_enabled: Optional[bool] = Field(
+        default=True, description="Whether reflection mechanism is enabled."
+    )
+    log_level: Optional[Literal["debug", "info", "warning", "error", "critical"]] = (
+        Field(
+            default="info",
+            description="Logging level ('debug', 'info', 'warning', 'error' or 'critical').",
+        )
+    )
+    initial_task: Optional[str] = Field(
+        default=None,
+        description="The initial task description (can also be passed to run).",
+    )
+    tool_use_enabled: Optional[bool] = Field(
+        default=True, description="Whether the agent can use tools."
+    )
+    custom_tools: Optional[List[Any]] = Field(
+        default_factory=list,
+        description="List of custom tool instances to use with the agent.",
+    )
+    use_memory_enabled: Optional[bool] = Field(
+        default=True, description="Whether the agent uses long-term memory."
+    )
+    collect_metrics_enabled: Optional[bool] = Field(
+        default=True, description="Whether to collect performance metrics."
+    )
+    check_tool_feasibility: Optional[bool] = Field(
+        default=True, description="Whether to check tool feasibility before starting."
+    )
+    enable_caching: Optional[bool] = Field(
+        default=True, description="Whether to enable LLM response caching."
+    )
+    confirmation_callback: Optional[ConfirmationCallbackProtocol] = Field(
+        default=None,
+        description="Callback for confirming tool use. Can return bool or (bool, feedback).",
+    )
+    confirmation_config: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Configuration for tool confirmation behavior. If None, defaults will be used.",
+    )
+    # Add workflow_context_shared field to ReactAgentConfig
+    workflow_context_shared: Optional[Dict[str, Any]] = Field(
+        default=None, description="Shared workflow context data."
+    )
+
+    # Response format configuration
+    response_format: Optional[str] = Field(
+        default=None, description="Format specification for the agent's final response."
+    )
+
+    # --- Context Management and Tool Use Policy Configuration ---
+    max_context_messages: int = Field(
+        default=20, description="Maximum number of context messages to retain."
+    )
+    max_context_tokens: Optional[int] = Field(
+        default=None, description="Maximum number of context tokens to retain."
+    )
+    enable_context_pruning: bool = Field(
+        default=True, description="Whether to enable context pruning."
+    )
+    enable_context_summarization: bool = Field(
+        default=True, description="Whether to enable context summarization."
+    )
+    context_pruning_strategy: Literal["conservative", "balanced", "aggressive"] = Field(
+        default="balanced", description="Context pruning strategy."
+    )
+    context_token_budget: int = Field(
+        default=4000, description="Token budget for context management."
+    )
+    context_pruning_aggressiveness: Literal[
+        "conservative", "balanced", "aggressive"
+    ] = Field(default="balanced", description="Aggressiveness of context pruning.")
+    context_summarization_frequency: int = Field(
+        default=3, description="Number of iterations between context summarizations."
+    )
+    tool_use_policy: Literal["always", "required_only", "adaptive", "never"] = Field(
+        default="adaptive", description="Policy for tool use in the agent loop."
+    )
+    tool_use_max_consecutive_calls: int = Field(
+        default=3,
+        description="Maximum consecutive tool calls before forcing reflection/summarization.",
+    )
+
+    # Store extra kwargs passed, e.g. for specific context managers
+    kwargs: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional keyword arguments passed to AgentContext.",
+    )
+
+    class Config:
+        arbitrary_types_allowed = True  # Allow MCPClient etc.
+
+    @model_validator(mode="before")
+    def capture_extra_kwargs(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        # Get all known fields from the model
+        known_fields = set(cls.model_fields.keys())
+
+        # Fields that should be processed normally (not captured as extra kwargs)
+        normal_fields = known_fields - {"kwargs"}
+
+        extra_kwargs = {}
+        processed_values = {}
+
+        for key, value in values.items():
+            if key in normal_fields:
+                processed_values[key] = value
+            else:
+                extra_kwargs[key] = value
+
+        # Add the extra kwargs to the processed values
+        processed_values["kwargs"] = extra_kwargs
+        return processed_values
+
 
 
 class PlanFormat(BaseModel):

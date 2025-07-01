@@ -14,8 +14,6 @@ from typing import (
     Tuple,
 )
 import json
-from pydantic import BaseModel
-
 from reactive_agents.common.types.status_types import TaskStatus
 from reactive_agents.common.types.session_types import AgentSession
 from reactive_agents.common.types.event_types import AgentStateEvent
@@ -84,38 +82,48 @@ class AgentExecutionEngine:
             A dictionary containing the final status, result, and other execution details.
         """
         # Initialize session
-        self.context.session = AgentSession(
-            initial_task=initial_task,
-            current_task=initial_task,
-            start_time=time.time(),
-            task_status=TaskStatus.INITIALIZED,
-            reasoning_log=[],
-            task_progress=[],
-            task_nudges=[],
-            successful_tools=[],
-            metrics={},
-            completion_score=0.0,
-            tool_usage_score=0.0,
-            progress_score=0.0,
-            answer_quality_score=0.0,
-            llm_evaluation_score=0.0,
-            instruction_adherence_score=0.0,
-        )
+        if self.context.session is None:
+            self.context.session = AgentSession(
+                initial_task=initial_task,
+                current_task=initial_task,
+                start_time=time.time(),
+                task_status=TaskStatus.INITIALIZED,
+                reasoning_log=[],
+                task_progress=[],
+                task_nudges=[],
+                successful_tools=set(),
+                metrics={},
+                completion_score=0.0,
+                tool_usage_score=0.0,
+                progress_score=0.0,
+                answer_quality_score=0.0,
+                llm_evaluation_score=0.0,
+                instruction_adherence_score=0.0,
+            )
 
+            # Emit session start event
+            self.context.emit_event(
+                AgentStateEvent.SESSION_STARTED,
+                {
+                    "initial_task": self.context.session.initial_task,
+                    "session_id": self.context.session.session_id,
+                },
+            )
         # Reset managers
         if self.context.metrics_manager:
             self.context.metrics_manager.reset()
         if self.context.reflection_manager:
             self.context.reflection_manager.reset()
 
-        # Emit session start event
-        self.context.emit_event(
-            AgentStateEvent.SESSION_STARTED,
-            {
-                "initial_task": self.context.session.initial_task,
-                "session_id": self.context.session.session_id,
-            },
-        )
+        # Reset local state
+        self.context.session.iterations = 0
+        self.context.session.final_answer = None
+        self.context.session.current_next_step = initial_task
+        self.context.session.initial_task = initial_task
+        self.context.session.current_task = initial_task
+        self.context.session.successful_tools = set()
+        self.context.session.plan_steps = []
+        self.context.session.plan = []
 
         # Local state for run management
         last_error: Optional[str] = None
@@ -254,22 +262,22 @@ class AgentExecutionEngine:
             Tuple of (content, plan) from the iteration.
         """
         # Log the current context state
-        if self.context.agent_logger:
-            self.context.agent_logger.debug("\n=== MODEL INPUT CONTEXT ===")
-            self.context.agent_logger.debug(f"Current Task: {task}")
-            self.context.agent_logger.debug(
-                f"Last Plan: {json.dumps(last_plan, indent=2) if last_plan else 'None'}"
-            )
-            self.context.agent_logger.debug(
-                f"System Prompt: {self.context.session.messages[0]['content'] if self.context.session.messages else 'None'}"
-            )
-            self.context.agent_logger.debug(
-                f"Recent Messages: {json.dumps(self.context.session.messages[-3:], indent=2) if self.context.session.messages else 'None'}"
-            )
-            self.context.agent_logger.debug(
-                f"Recent Reasoning Log: {json.dumps(self.context.session.reasoning_log[-3:], indent=2) if self.context.session.reasoning_log else 'None'}"
-            )
-            self.context.agent_logger.debug("========================\n")
+        # if self.context.agent_logger:
+        #     self.context.agent_logger.debug("\n=== MODEL INPUT CONTEXT ===")
+        #     self.context.agent_logger.debug(f"Current Task: {task}")
+        #     self.context.agent_logger.debug(
+        #         f"Last Plan: {json.dumps(last_plan, indent=2) if last_plan else 'None'}"
+        #     )
+        #     self.context.agent_logger.debug(
+        #         f"System Prompt: {self.context.session.messages[0]['content'] if self.context.session.messages else 'None'}"
+        #     )
+        #     self.context.agent_logger.debug(
+        #         f"Recent Messages: {json.dumps(self.context.session.messages[-3:], indent=2) if self.context.session.messages else 'None'}"
+        #     )
+        #     self.context.agent_logger.debug(
+        #         f"Recent Reasoning Log: {json.dumps(self.context.session.reasoning_log[-3:], indent=2) if self.context.session.reasoning_log else 'None'}"
+        #     )
+        #     self.context.agent_logger.debug("========================\n")
 
         # Execute iteration using TaskExecutor
         result = await self._await_with_control(
@@ -557,7 +565,6 @@ class AgentExecutionEngine:
                 # Remove from pending after resuming, if it's still there
                 if tool_call in self._pending_tool_calls:
                     self._pending_tool_calls.remove(tool_call)
-
             # Execute the tool call through the task executor
             return await self._await_with_control(
                 self.task_executor.execute_tool_call(tool_call)
@@ -570,21 +577,6 @@ class AgentExecutionEngine:
     async def _check_dependencies(self) -> bool:
         """Check if all dependencies are met."""
         return self.task_executor._check_dependencies()
-
-    async def _generate_reflection(
-        self, think_act_result: Any
-    ) -> Optional[Dict[str, Any]]:
-        """Generate reflection on the current state."""
-        if not self.context.reflection_manager:
-            return None
-
-        reflection_input = think_act_result
-        if isinstance(reflection_input, str):
-            reflection_input = {"message": {"content": reflection_input}}
-
-        return await self._await_with_control(
-            self.context.reflection_manager.generate_reflection(reflection_input)
-        )
 
     async def _generate_plan(
         self,
@@ -644,14 +636,14 @@ class AgentExecutionEngine:
                 system=SUMMARY_SYSTEM_PROMPT, prompt=summary_prompt
             )
 
-            if response and response.get("response"):
+            if response and response.message.content:
                 # Check if thinking is enabled and extract thinking content
                 thinking_enabled = (
                     self.context.model_provider_options.get("think", False)
                     if self.context.model_provider_options
                     else False
                 )
-                response_text = response["response"].strip()
+                response_text = response.message.content.strip()
 
                 if response_text.startswith("<think>") or thinking_enabled:
                     # Extract thinking from summary response
@@ -813,6 +805,8 @@ class AgentExecutionEngine:
             )
             final_result_str = (
                 self.context.session.final_answer
+                if self.context.session.final_answer
+                else self.context.session.last_result
                 or "No explicit final textual answer provided by agent."
             )
             eval_context = {
@@ -857,7 +851,7 @@ class AgentExecutionEngine:
                 ),
             )
 
-            if not response or not response.get("response"):
+            if not response or not response.message.content:
                 if self.context.agent_logger:
                     self.context.agent_logger.warning(
                         "Goal evaluation failed: No response from model."
@@ -881,7 +875,7 @@ class AgentExecutionEngine:
                 }
 
             try:
-                eval_data = response["response"]
+                eval_data = response.message.content
                 parsed_eval = (
                     json.loads(eval_data) if isinstance(eval_data, str) else eval_data
                 )
@@ -934,7 +928,7 @@ class AgentExecutionEngine:
             except (json.JSONDecodeError, TypeError) as e:
                 if self.context.agent_logger:
                     self.context.agent_logger.error(
-                        f"Error parsing evaluation JSON: {e}\nResponse: {response.get('response')}"
+                        f"Error parsing evaluation JSON: {e}\nResponse: {response.message.content}"
                     )
                 return default_eval | {"explanation": f"Error parsing evaluation: {e}"}
             except Exception as e:
@@ -989,7 +983,8 @@ class AgentExecutionEngine:
         final_result = {
             # Core execution results
             "status": session.task_status.value,
-            "result": session.final_answer or "No final answer provided",
+            "result": session.last_result,
+            "final_answer": session.final_answer or "No final answer provided",
             "summary": session.summary,
             "error": critical_error.get("error") if critical_error else session.error,
             # Performance metrics
