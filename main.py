@@ -4,14 +4,17 @@ import dotenv
 import warnings
 import tracemalloc
 import traceback
-from typing import Any, Dict, Optional, Callable, Awaitable, List, Tuple
+from typing import Any, Dict, Optional, Callable, Awaitable
 from pydantic import PydanticDeprecatedSince211
 
-from reactive_agents.agents import ReactAgent, ReactAgentBuilder
-from reactive_agents.agents.builders import ConfirmationConfig, LogLevel
-from reactive_agents.agents.react_agent import ReactAgentConfig
-from reactive_agents.config.mcp_config import DockerConfig, MCPConfig, MCPServerConfig
-from reactive_agents.tools.decorators import tool
+from reactive_agents.app.agents import ReactiveAgent
+from reactive_agents.app.builders.agent import (
+    ReactiveAgentBuilder as Builder,
+    ConfirmationConfig,
+    LogLevel,
+)
+from reactive_agents.core.tools.decorators import tool
+from reactive_agents.core.types.reasoning_types import ReasoningStrategies
 
 warnings.simplefilter("ignore", ResourceWarning)
 warnings.filterwarnings("ignore", category=PydanticDeprecatedSince211)
@@ -19,14 +22,29 @@ tracemalloc.start()
 dotenv.load_dotenv()
 
 
+@tool()
+async def web_search(query: str, num_results: int = 5) -> str:
+    """
+    Search the web using Google Custom Search JSON API.
+
+    Args:
+        query (str): The search query string.
+        num_results (int): Number of search results to return (default is 5).
+
+    Returns:
+        str: A string containing the search results.
+    """
+    return query + " - " + str(num_results)
+
+
 # Example custom tool using the @tool decorator
-@tool(description="Get the current weather for a specified location")
+@tool()
 async def custom_weather_tool(location: str) -> str:
     """
     Get the weather for a given location (simulated).
 
     Args:
-        location: The location to get the weather for. Supported locations are:
+        location: (string) The location to get the weather for. Supported locations are:
                  New York, London, Tokyo, and Sydney.
 
     Returns:
@@ -47,13 +65,56 @@ async def custom_weather_tool(location: str) -> str:
         return f"Weather data for {location} not available. Try New York, London, Tokyo, or Sydney."
 
 
-@tool(description="Get the current price of a cryptocurrency")
+@tool()
+async def multi_city_weather_tool(cities: str, unit: str = "celsius") -> str:
+    """
+    Get the weather for multiple cities (simulated).
+
+    Args:
+        cities: (string) Comma-separated list of cities to get weather for.
+               Supported cities: New York, London, Tokyo, Sydney
+        unit: (string) Temperature unit - "celsius" or "fahrenheit" (default: celsius)
+
+    Returns:
+        A string with weather information for all requested cities
+    """
+    # This is a simulated tool - in a real app, this would call a weather API
+    weather_data = {
+        "New York": {"temp_c": 22, "temp_f": 72, "condition": "Sunny", "humidity": 65},
+        "London": {"temp_c": 18, "temp_f": 64, "condition": "Rainy", "humidity": 80},
+        "Tokyo": {"temp_c": 25, "temp_f": 77, "condition": "Cloudy", "humidity": 70},
+        "Sydney": {
+            "temp_c": 22,
+            "temp_f": 72,
+            "condition": "Partly Cloudy",
+            "humidity": 75,
+        },
+    }
+
+    city_list = [city.strip() for city in cities.split(",")]
+    results = []
+
+    for city in city_list:
+        if city in weather_data:
+            data = weather_data[city]
+            temp = data["temp_c"] if unit.lower() == "celsius" else data["temp_f"]
+            temp_unit = "°C" if unit.lower() == "celsius" else "°F"
+            results.append(
+                f"{city}: {temp}{temp_unit}, {data['condition']} (Humidity: {data['humidity']}%)"
+            )
+        else:
+            results.append(f"{city}: Weather data not available")
+
+    return "\n".join(results)
+
+
+@tool()
 async def crypto_price_simulator(coin: str) -> str:
     """
     Get the current price of a cryptocurrency (simulated).
 
     Args:
-        coin: The name of the cryptocurrency. Supported coins are:
+        coin: (string) The name of the cryptocurrency. Supported coins are:
               Bitcoin, Ethereum, Solana, and Cardano.
 
     Returns:
@@ -82,7 +143,7 @@ async def run_examples(examples):
 async def run_example(
     example_num: int,
     task: str,
-    builder_fn: Callable[[], Awaitable[ReactAgent]],
+    builder_fn: Callable[[], Awaitable[ReactiveAgent]],
     confirmation_callback: Optional[Callable[..., Awaitable[bool]]] = None,
     timeout: int = 60,
 ) -> None:
@@ -107,6 +168,29 @@ async def run_example(
 
             # Build the agent
             agent = await builder_fn()
+
+            # Set up event handlers to showcase the dynamic event system
+            agent.on_session_started(
+                lambda event: print(
+                    f"🎬 Session started: {event.get('agent_name', 'Unknown')}"
+                )
+            )
+            agent.on_tool_called(
+                lambda event: print(
+                    f"🔧 Tool called: {event.get('tool_name', 'Unknown')}"
+                )
+            )
+            agent.on_iteration_completed(
+                lambda event: print(
+                    f"🔄 Iteration {event.get('iteration', 0)} completed"
+                )
+            )
+            agent.on_final_answer_set(
+                lambda event: print(
+                    f"✅ Final answer set with score: {event.get('completion_score', 0)}"
+                )
+            )
+
             # Run the task
             result = await agent.run(initial_task=task)
 
@@ -160,8 +244,11 @@ async def run_example(
 
 async def main():
     """
-    Example usage of different ways to create and use ReactAgents with both
-    MCP client tools and custom tools.
+    Example usage of the new ReactiveAgent framework with enhanced features:
+    - Dynamic event system
+    - Multiple reasoning strategies
+    - Advanced tool management
+    - Real-time control operations
     """
     try:
         # For confirmation callbacks
@@ -181,271 +268,365 @@ async def main():
             allowed_silent_tools=["get_current_time"],
         )
 
-        # Run examples sequentially with proper cleanup between them
-        examples: List[
-            Tuple[int, str, Callable[[], Awaitable[ReactAgent]], Callable, int]
-        ] = []
-
-        # Example 1: Using only MCP tools
-        task1 = "What is the current time in New York and Tokyo?"
-
+        # Example 1: Basic ReactiveAgent with dynamic reasoning
         async def build_agent1():
             return await (
-                ReactAgentBuilder()
-                .with_name("MCP Tools Agent")
-                .with_model(PROVIDER_MODEL)
-                .with_tool_use()
-                .with_tool_caching()
-                .with_model_provider_options({"num_ctx": 4000, "num_gpus": 256})
-                .with_mcp_tools(["time", "brave-search"])
-                .with_instructions("Answer questions using MCP tools.")
+                Builder()
+                .with_name("Dynamic Research Agent")
+                .with_model("ollama:cogito:14b")
+                .with_role("Advanced Research Assistant")
+                .with_instructions(
+                    "Research topics thoroughly using dynamic reasoning strategies."
+                )
+                .with_reasoning_strategy(ReasoningStrategies.REFLECT_DECIDE_ACT)
+                .with_mcp_tools(["brave-search", "time"])
+                .with_custom_tools([custom_weather_tool])
                 .with_confirmation(confirm, confirmation_config)
-                .with_log_level(LogLevel.DEBUG)
+                .with_max_iterations(15)
+                .with_dynamic_strategy_switching(True)
                 .build()
             )
 
-        examples.append((1, task1, build_agent1, confirm, 60))
-
-        # Example 2: Using only custom tools
-        task2 = "What's the weather in Tokyo and London? Also, what is the current price of Bitcoin and Ethereum?"
-
+        # Example 2: Adaptive agent with strategy switching
         async def build_agent2():
-            # First check the tool registration
-            builder = (
-                ReactAgentBuilder()
-                .with_name("Custom Tools Agent")
-                .with_model(PROVIDER_MODEL)
-                .with_model_provider_options(
-                    {
-                        "temperature": 0.2,
-                        "num_ctx": 4000,
-                        "num_gpus": 256,
-                        "think": False,
-                    }
-                )
-                .with_custom_tools([custom_weather_tool, crypto_price_simulator])
-                .with_instructions("Answer questions using custom tools.")
-                .with_confirmation(confirmation_callback, confirmation_config)
+            return await (
+                Builder()
+                .with_name("Adaptive Agent")
+                .with_model("ollama:cogito:14b")
+                .with_role("Adaptive Task Executor")
+                .with_instructions("Adapt reasoning strategy based on task complexity.")
+                .with_reasoning_strategy(ReasoningStrategies.ADAPTIVE)
+                .with_mcp_tools(["brave-search", "time"])
+                .with_custom_tools([crypto_price_simulator])
+                .with_max_iterations(20)
+                .with_dynamic_strategy_switching(True)
+                .build()
             )
 
-            # Debug tools before building
-            tool_info = builder.debug_tools()
-            print("\n--- Pre-build Tool Registration Check ---")
-            print(f"Custom tools: {', '.join(tool_info['custom_tools'])}")
-            print("----------------------------------------\n")
-
-            return await builder.build()
-
-        examples.append((2, task2, build_agent2, confirm, 60))
-
-        # Example 3: Using both MCP and custom tools
-        task3 = "What time is it in New York? What's the weather in Tokyo? What's the price of Solana?"
-
+        # Example 3: Plan-execute-reflect strategy
         async def build_agent3():
-            # Create the agent with explicit tool configuration
-            builder = (
-                ReactAgentBuilder()
-                .with_name("Hybrid Tools Agent")
-                .with_model(PROVIDER_MODEL)
-                .with_tools(
-                    mcp_tools=["time"],
-                    custom_tools=[custom_weather_tool, crypto_price_simulator],
-                )
-                .with_instructions("Answer questions using both MCP and custom tools.")
-                .with_confirmation(confirmation_callback)
+            return await (
+                Builder()
+                .with_name("Planner Agent")
+                .with_model("ollama:cogito:14b")
+                .with_role("Strategic Planner")
+                .with_instructions("Plan, execute, and reflect on complex tasks.")
+                .with_reasoning_strategy(ReasoningStrategies.PLAN_EXECUTE_REFLECT)
+                .with_mcp_tools(["brave-search", "time"])
+                .with_custom_tools([web_search, custom_weather_tool])
+                .with_max_iterations(12)
+                .build()
             )
 
-            # Debug tools before building
-            tool_info = builder.debug_tools()
-            print("\n--- Hybrid Agent Pre-build Tool Check ---")
-            print(f"MCP tools: {', '.join(tool_info['mcp_tools'])}")
-            print(f"Custom tools: {', '.join(tool_info['custom_tools'])}")
-            print("----------------------------------------\n")
-
-            agent = await builder.build()
-
-            # Verify tool registration after building
-            diagnosis = await ReactAgentBuilder.diagnose_agent_tools(agent)
-            print("\n--- Hybrid Agent Post-build Tool Check ---")
-            print(f"Tools in context: {', '.join(diagnosis['context_tools'])}")
-            print(f"Tools in manager: {', '.join(diagnosis['manager_tools'])}")
-
-            if diagnosis["has_tool_mismatch"]:
-                print("⚠️ WARNING: Tool registration mismatch detected!")
-            else:
-                print("✅ All tools properly registered")
-            print("----------------------------------------\n")
-
-            # Enhanced instructions to ensure tool usage
-            agent.context.instructions += (
-                "\nIMPORTANT: For this task, you'll need to:\n"
-                + "1. Use get_current_time for New York time\n"
-                + "2. Use custom_weather_tool for Tokyo weather\n"
-                + "3. Use crypto_price_simulator for Solana price\n"
-                + "Make sure to use ALL these tools to complete the task."
-            )
-
-            return agent
-
-        examples.append((3, task3, build_agent3, confirm, 60))
-
-        # Example 4: Using the factory method with custom tools added
-        task4 = "Research when Bitcoin was created and what its current price is"
-
+        # Example 4: Reactive strategy for quick responses
         async def build_agent4():
-            # Start with a research agent but add a custom crypto price tool
-            agent = await ReactAgentBuilder.research_agent(model=PROVIDER_MODEL)
-
-            # Use the new utility method to add the custom tool
-            return await ReactAgentBuilder.add_custom_tools_to_agent(
-                agent, [crypto_price_simulator]
+            return await (
+                Builder()
+                .with_name("Quick Response Agent")
+                .with_model("ollama:cogito:14b")
+                .with_role("Quick Response Assistant")
+                .with_instructions(
+                    "Provide quick, reactive responses to simple queries."
+                )
+                .with_reasoning_strategy(ReasoningStrategies.REACTIVE)
+                .with_mcp_tools(["time"])
+                .with_custom_tools([crypto_price_simulator])
+                .with_max_iterations(5)
+                .build()
             )
 
-        examples.append((4, task4, build_agent4, confirm, 60))
-
-        # Example 5: Demonstrate pause, resume, stop, and terminate
-        task5 = "Get the weather in New York, London, Tokyo, and Sydney, and the price of Bitcoin, Ethereum, Solana, and Cardano."
-
+        # Example 5: Advanced agent with comprehensive event handling
         async def build_agent5():
             agent = await (
-                ReactAgentBuilder()
-                .with_name("Pause/Terminate Demo Agent")
-                .with_model(PROVIDER_MODEL)
+                Builder()
+                .with_name("Event-Driven Agent")
+                .with_model("ollama:cogito:14b")
+                .with_role("Event-Driven Assistant")
+                .with_instructions(
+                    "Demonstrate comprehensive event handling capabilities."
+                )
+                .with_reasoning_strategy(ReasoningStrategies.REFLECT_DECIDE_ACT)
+                .with_mcp_tools(["brave-search", "time"])
                 .with_custom_tools([custom_weather_tool, crypto_price_simulator])
-                .with_instructions("Demonstrate pause, resume, stop, and terminate.")
-                .with_log_level(LogLevel.DEBUG)
+                .with_max_iterations(10)
                 .build()
             )
-            # Subscribe to control events
-            agent.on_pause_requested(lambda e: print(e.get("message")))
-            agent.on_paused(lambda e: print(e.get("message")))
-            agent.on_resume_requested(lambda e: print(e.get("message")))
-            agent.on_resumed(lambda e: print(e.get("message")))
-            agent.on_terminate_requested(lambda e: print(e.get("message")))
-            agent.on_terminated(lambda e: print(e.get("message")))
-            agent.on_stop_requested(lambda e: print(e.get("message")))
-            agent.on_stopped(lambda e: print(e.get("message")))
-            agent.on_tool_called(lambda e: print("Tool called:", e))
+
+            # Set up comprehensive event handlers
+            agent.on_session_started(
+                lambda event: print(f"🚀 Session started: {event.get('agent_name')}")
+            )
+            agent.on_session_ended(
+                lambda event: print(f"🏁 Session ended: {event.get('agent_name')}")
+            )
+            agent.on_task_status_changed(
+                lambda event: print(f"📊 Task status: {event.get('status')}")
+            )
+            agent.on_iteration_started(
+                lambda event: print(f"🔄 Starting iteration {event.get('iteration')}")
+            )
+            agent.on_iteration_completed(
+                lambda event: print(f"✅ Completed iteration {event.get('iteration')}")
+            )
+            agent.on_tool_called(
+                lambda event: print(f"🔧 Called tool: {event.get('tool_name')}")
+            )
+            agent.on_tool_completed(
+                lambda event: print(f"✅ Tool completed: {event.get('tool_name')}")
+            )
+            agent.on_tool_failed(
+                lambda event: print(f"❌ Tool failed: {event.get('tool_name')}")
+            )
+            agent.on_reflection_generated(
+                lambda event: print(f"🤔 Reflection generated")
+            )
+            agent.on_final_answer_set(lambda event: print(f"🎯 Final answer set"))
+            agent.on_metrics_updated(lambda event: print(f"📈 Metrics updated"))
+            agent.on_error_occurred(
+                lambda event: print(f"⚠️ Error occurred: {event.get('error')}")
+            )
+
             return agent
 
-        async def pause_resume_terminate_demo():
-            print("\n=== Example 5: Pause/Resume/Stop/Terminate Demo ===")
-            agent = await build_agent5()
-            run_task = asyncio.create_task(agent.run(initial_task=task5))
-            await asyncio.sleep(1)  # Let the agent start
-            print("[CONTROL] Pausing agent...")
-            await agent.pause()
-            await asyncio.sleep(20)
-            print("[CONTROL] Resuming agent...")
-            await agent.resume()
+        # Example 6: Control operations demo
+        async def control_operations_demo():
+            print("\n=== Control Operations Demo ===")
+
+            agent = await (
+                Builder()
+                .with_name("Controllable Agent")
+                .with_model("ollama:cogito:14b")
+                .with_role("Demo Agent")
+                .with_instructions("Demonstrate control operations.")
+                .with_reasoning_strategy(ReasoningStrategies.REFLECT_DECIDE_ACT)
+                .with_mcp_tools(["time"])
+                .with_max_iterations(10)
+                .build()
+            )
+            # Set up control event handlers
+            agent.on_pause_requested(lambda event: print("⏸️ Pause requested"))
+            agent.on_paused(lambda event: print("⏸️ Agent paused"))
+            agent.on_resume_requested(lambda event: print("▶️ Resume requested"))
+            agent.on_resumed(lambda event: print("▶️ Agent resumed"))
+            agent.on_stop_requested(lambda event: print("⏹️ Stop requested"))
+            agent.on_stopped(lambda event: print("⏹️ Agent stopped"))
+            agent.on_terminate_requested(lambda event: print("🔚 Terminate requested"))
+            agent.on_terminated(lambda event: print("🔚 Agent terminated"))
+
+            # Start a task in the background
+            task = asyncio.create_task(
+                agent.run("Research the current time and weather in New York")
+            )
+
+            # Wait a bit then demonstrate control operations
             await asyncio.sleep(2)
-            # print("[CONTROL] Stopping agent (graceful)...")
-            # await agent.stop()
-            await asyncio.sleep(5)
-            print("[CONTROL] Terminating agent...")
-            await agent.terminate()
-            result = await run_task
-            print("\n--- Example 5 Result ---")
-            print(json.dumps(result, indent=4, default=str))
-            print("------------------------")
+            print("\n--- Demonstrating Control Operations ---")
+
+            await agent.pause()
+            await asyncio.sleep(1)
+
+            await agent.resume()
+            await asyncio.sleep(1)
+
+            await agent.stop()
+
+            try:
+                await task
+            except Exception as e:
+                print(f"Task stopped as expected: {e}")
+
             await agent.close()
+            print("Control operations demo completed.")
 
-        # Add Example 5 to the run sequence
-        async def confirmation_callback(*args, **kwargs):
-            print(
-                "[CONTROL] confirmation callback called: ",
-                f"Args: {args}",
-                f"Kwargs: {kwargs}",
-            )
-            return (
-                input("Confirm this action? [y]es/[n]o/[f]eedback: ").lower().strip()
-                == "y"
-            )
+        # Define examples
+        examples = [
+            (
+                1,
+                "Research the current weather in Tokyo and provide a brief summary",
+                build_agent1,
+            ),
+            (
+                2,
+                "Get the current price of Bitcoin and explain its significance",
+                build_agent2,
+            ),
+            (
+                3,
+                "Plan and execute a research task about renewable energy trends",
+                build_agent3,
+            ),
+            (4, "Quickly provide the current time and a random fact", build_agent4),
+            (
+                5,
+                "Research the weather in London and the price of Ethereum",
+                build_agent5,
+            ),
+        ]
 
-        examples.append((5, task5, build_agent5, confirmation_callback, 30))
-        await pause_resume_terminate_demo()
-        # Run the examples one at a time
-        # for example in examples:
-        #     await run_example(*example)
+        # Run the examples
+        print("🚀 Starting ReactiveAgent Framework Examples")
+        print("=" * 60)
+
+        await run_examples(examples)
+
+        # Run the control operations demo
+        await control_operations_demo()
+
+        print("\n🎉 All examples completed successfully!")
+        print("=" * 60)
+
     except Exception as e:
-        print(f"\nAn error occurred in main: {e}")
+        print(f"Error in main: {e}")
         traceback.print_exc()
 
 
 async def classic_main():
     """
-    Example usage of the legacy way to create a ReactAgent with custom tools.
-
-    This demonstrates creating a minimal ReactAgent using ReactAgentConfig with custom tools.
+    Classic example using the simplified quick_create_agent function.
     """
+    print("\n=== Classic Quick Create Example ===")
 
-    def confirmation_callback(*args, **kwargs):
-        print("[CONTROL] confirmation callback called.", args, kwargs)
+    try:
+        from reactive_agents.app.builders.agent import quick_create_agent
 
-        confirmation = input(f"Confirm {args[0]}? [y]es/[n]o/[f]eedback: ")
-        return confirmation.casefold() == "y"
-
-    mcp_config = MCPConfig(
-        mcpServers={
-            "time": MCPServerConfig(
-                command="docker",
-                args=["run", "-i", "--rm", "mcp/time"],
-            ),
-        }
-    )
-    agent = await ReactAgent(
-        config=ReactAgentConfig(
-            agent_name="Legacy Agent",
-            role="Task Execution Agent",
-            instructions="Use tools to solve complex tasks. Always take steps to confirm your actions are correct.",
-            provider_model_name=PROVIDER_MODEL,
-            model_provider_options={
-                "num_ctx": 10000,
-                "num_gpu": 256,
-                "temperature": 0,
-                "think": False,
-            },
-            reflect_enabled=True,
-            max_iterations=5,
-            log_level="info",
-            # mcp_config=mcp_config,
-            mcp_server_filter=["time"],
-            confirmation_callback=confirmation_callback,
+        result = await quick_create_agent(
+            task="Research the current weather in Paris and provide a summary",
+            model="ollama:cogito:14b",
+            tools=["brave-search", "time"],
+            interactive=False,
         )
-    ).initialize()
-    result = await agent.run(initial_task="What day of the week is it today?")
-    print(json.dumps(result, indent=4, default=str))
-    await agent.close()
+
+        print("Classic Example Result:")
+        print(json.dumps(result, indent=4, default=str))
+
+    except Exception as e:
+        print(f"Error in classic example: {e}")
+        traceback.print_exc()
 
 
 async def context_managed_main():
+    """
+    Example using context manager for automatic resource cleanup.
+    """
+    print("\n=== Context Manager Example ===")
 
-    mcp_config = MCPConfig(
-        mcpServers={
-            "time": MCPServerConfig(
-                args=["run", "-i", "--rm", "mcp/time"],
-                command="docker",
-            )
-        }
-    )
-    #  Create agent with required parameters and custom tools
-    async with ReactAgent(
-        config=ReactAgentConfig(
-            agent_name="Context Managed Agent",
-            provider_model_name=PROVIDER_MODEL,
-            mcp_config=mcp_config,
+    try:
+        agent = await (
+            Builder()
+            .with_name("Context Managed Agent")
+            .with_model("ollama:cogito:14b")
+            .with_role("Context Demo")
+            .with_instructions("Demonstrate context manager usage.")
+            .with_mcp_tools(["time"])
+            .with_custom_tools([custom_weather_tool])
+            .build()
         )
-    ) as agent:
-        # Run the agent with the task specified at runtime
-        result = await agent.run(initial_task="What is the current time in New York?")
-        print(result)
+
+        async with agent:
+            result = await agent.run("Get the current time and weather in Sydney")
+            print("Context Manager Result:")
+            print(json.dumps(result, indent=4, default=str))
+
+    except Exception as e:
+        print(f"Error in context manager example: {e}")
+        traceback.print_exc()
+
+
+async def test():
+    """
+    Simple test function for quick validation.
+    """
+    print("\n=== Simple Test ===")
+
+    try:
+        agent = await (
+            Builder()
+            .with_name("Test Agent")
+            .with_model("ollama:cogito:14b")
+            .with_mcp_tools(["brave-search"])
+            .with_log_level(LogLevel.DEBUG)
+            .with_reflection(True)
+            .with_vector_memory()
+            .with_model_provider_options(
+                {"num_gpu": 256, "num_ctx": 4000, "temperature": 0.2}
+            )
+            .build()
+        )
+
+        result = await agent.run("What is the current price of xrp, bitcoin, ethereum?")
+        print("Test Result:")
+
+        # Use a custom JSON encoder to handle non-serializable objects
+        def json_serializer(obj):
+            if hasattr(obj, "value"):
+                return obj.value
+            if hasattr(obj, "model_dump"):
+                return obj.model_dump()
+            return str(obj)
+
+        print(json.dumps(result, indent=2, default=json_serializer))
+        await agent.close()
+
+    except Exception as e:
+        print(f"Error in test: {e}")
+        traceback.print_exc()
+
+
+async def test_reflect_decide_act():
+    """
+    Test the reflect_decide_act strategy specifically.
+    """
+    print("\n=== Testing Reflect-Decide-Act Strategy ===")
+
+    try:
+        agent = (
+            await (
+                Builder()
+                .with_name("RDA Test Agent")
+                .with_model("ollama:cogito:14b")
+                .with_role("Strategy Testing Agent")
+                .with_instructions("Solve the task by using the tools provided.")
+                .with_reasoning_strategy(ReasoningStrategies.REFLECT_DECIDE_ACT)
+                # .with_mcp_tools(["brave-search", "time"])
+                .with_custom_tools(
+                    [
+                        # custom_weather_tool,
+                        multi_city_weather_tool,
+                        # crypto_price_simulator,
+                    ]
+                )
+                .with_max_iterations(10)
+                .with_dynamic_strategy_switching(False)  # Force the strategy
+                .with_log_level(LogLevel.DEBUG)
+                .build()
+            )
+        )
+
+        # Test with a task that should use reflect-decide-act
+        task = "Get the current weather in three different cities (New York, London, Tokyo) and compare their temperatures."
+
+        print(f"Running task: {task}")
+        await agent.pause()
+        result = await agent.run(task)
+
+        print("RDA Strategy Test Result:")
+        print(json.dumps(result, indent=2, default=str))
+
+        await agent.close()
+
+    except Exception as e:
+        print(f"Error in reflect_decide_act test: {e}")
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
-    PROVIDER_MODEL = "ollama:cogito:14b"
-    # 👇 Run the builder pattern examples
-    asyncio.run(main())
-    # 👇 Run the class based minimal agent example
+    # Run the main examples
+    # asyncio.run(main())
+
+    # Run additional examples
     # asyncio.run(classic_main())
-    # 👇 Run the context managed agent example
     # asyncio.run(context_managed_main())
+    # asyncio.run(test())
+
+    # Test reflect_decide_act strategy
+    asyncio.run(test_reflect_decide_act())

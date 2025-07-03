@@ -1,7 +1,7 @@
 """
 Tool Registration Diagnostics Example
 
-This example demonstrates how to use the diagnostic features of ReactAgentBuilder
+This example demonstrates how to use the diagnostic features of ReactiveAgentBuilder
 to debug tool registration issues. It shows how to:
 
 1. Use the debug_tools method to check tool configuration before building
@@ -13,7 +13,7 @@ import json
 import asyncio
 import os
 
-from agents import ReactAgentBuilder
+from agents import ReactiveAgentBuilder
 from tools.decorators import tool
 
 
@@ -37,7 +37,7 @@ async def main():
     print("Example 1: Debug tools before building")
     print("--------------------------------------")
     builder = (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("Debug Example Agent")
         .with_model("ollama:cogito:14b")
         .with_mcp_tools(["time", "brave-search"])
@@ -65,7 +65,7 @@ async def main():
         print(f"Agent built successfully: {agent.context.agent_name}")
 
         # Diagnose the agent's tools
-        diagnosis = await ReactAgentBuilder.diagnose_agent_tools(agent)
+        diagnosis = await ReactiveAgentBuilder.diagnose_agent_tools(agent)
         print(f"Context tools: {diagnosis['context_tools']}")
         print(f"Manager tools: {diagnosis['manager_tools']}")
 
@@ -91,7 +91,7 @@ async def main():
     print(
         """
 This example simulates what happens if tools are added directly to an agent's context
-without using the ReactAgentBuilder's proper tool registration methods.
+without using the ReactiveAgentBuilder's proper tool registration methods.
     """
     )
 
@@ -112,7 +112,7 @@ Common tool registration issues:
    - The agent won't have proper schema information about the tools
    - May lead to incorrect tool parameter handling
 
-Using ReactAgentBuilder.add_custom_tools_to_agent() or the builder's unified
+Using ReactiveAgentBuilder.add_custom_tools_to_agent() or the builder's unified
 registration methods prevents all these issues.
     """
     )

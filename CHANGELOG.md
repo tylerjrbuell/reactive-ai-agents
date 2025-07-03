@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Enhanced Execution Engine**: New `AgentExecutionEngine` with improved task coordination and result preparation
 - **Simplified Agent Interface**: Cleaner ReactAgent interface with delegated operations
 - **Event System**: Comprehensive event subscription system for monitoring agent lifecycle
-- **Builder Pattern**: Fluent interface for easy agent creation with `ReactAgentBuilder`
+- **Builder Pattern**: Fluent interface for easy agent creation with `ReactiveAgentBuilder`
 
 ### Changed
 

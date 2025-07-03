@@ -1,7 +1,7 @@
 """
-Integration tests for ReactAgentBuilder
+Integration tests for ReactiveAgentBuilder
 
-These tests verify that ReactAgentBuilder correctly integrates with:
+These tests verify that ReactiveAgentBuilder correctly integrates with:
 1. ReactAgent
 2. MCP client tools
 3. Custom tools
@@ -12,9 +12,9 @@ import pytest
 import os
 from unittest.mock import patch, MagicMock, AsyncMock
 
-from reactive_agents.agents import ReactAgentBuilder
-from reactive_agents.tools.decorators import tool
-from reactive_agents.agent_mcp.client import MCPClient
+from reactive_agents.agents import ReactiveAgentBuilder
+from reactive_agents.core.tools.decorators import tool
+from reactive_agents.providers.external.client import MCPClient
 
 
 # Sample custom tools for testing
@@ -93,7 +93,7 @@ async def test_builder_with_mcp_tools_integration(
     # Build agent with MCP tools
     print("Before agent build")
     agent = await (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("Integration Test Agent")
         .with_model("ollama:test:model")
         .with_mcp_client(mock_mcp_client_instance)
@@ -149,7 +149,7 @@ async def test_builder_with_custom_tools_integration(
 
     # Build agent with custom tools
     agent = await (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("Custom Tools Agent")
         .with_model("ollama:test:model")
         .with_custom_tools([square, greeting])
@@ -209,7 +209,7 @@ async def test_builder_with_hybrid_tools_integration(
 
     # Build agent with hybrid tools
     agent = await (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("Hybrid Tools Agent")
         .with_model("ollama:test:model")
         .with_mcp_client(mock_mcp_client_instance)
@@ -276,7 +276,7 @@ async def test_adding_custom_tools_to_existing_agent(
 
     # Create a research agent
     agent = await (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("Existing Agent")
         .with_model("ollama:test:model")
         .with_mcp_client(mock_mcp_client_instance)
@@ -289,7 +289,7 @@ async def test_adding_custom_tools_to_existing_agent(
     assert "greeting" not in initial_tool_names
 
     # Add custom tools
-    updated_agent = await ReactAgentBuilder.add_custom_tools_to_agent(
+    updated_agent = await ReactiveAgentBuilder.add_custom_tools_to_agent(
         agent, [square, greeting]
     )
 
@@ -350,7 +350,7 @@ async def test_tool_registration_diagnostics(
 
     # Create a builder with hybrid tools
     builder = (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("Diagnostic Test Agent")
         .with_mcp_client(mock_mcp_client_instance)
         .with_model("ollama:test:model")
@@ -370,7 +370,7 @@ async def test_tool_registration_diagnostics(
     agent = await builder.build()
 
     # Use diagnose_agent_tools after building
-    diagnosis = await ReactAgentBuilder.diagnose_agent_tools(agent)
+    diagnosis = await ReactiveAgentBuilder.diagnose_agent_tools(agent)
     assert "context_tools" in diagnosis
     assert "manager_tools" in diagnosis
     assert "has_tool_mismatch" in diagnosis
@@ -400,7 +400,7 @@ async def test_real_agent_execution():
     """
     # Create a simple agent with the square tool
     agent = await (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("Real Execution Agent")
         .with_model("ollama:llama3:8b")  # Use a small model
         .with_custom_tools([square])

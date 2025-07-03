@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional
 
 from agents.react_agent import ReactAgent, ReactAgentConfig
-from agent_mcp.client import MCPClient
+from reactive_agents.providers.external.client import MCPClient
 from context.agent_observer import AgentStateEvent
 
 # Note: In a real implementation, ensure the calculator tool is available

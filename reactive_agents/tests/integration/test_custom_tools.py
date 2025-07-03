@@ -1,14 +1,14 @@
 """
 Integration tests for custom tools.
 
-This file tests the integration of custom tools with the ReactAgentBuilder.
+This file tests the integration of custom tools with the ReactiveAgentBuilder.
 """
 
 import pytest
 import os
 from unittest.mock import patch, MagicMock, AsyncMock
-from reactive_agents.agents import ReactAgentBuilder
-from reactive_agents.tools.decorators import tool
+from reactive_agents.agents import ReactiveAgentBuilder
+from reactive_agents.core.tools.decorators import tool
 from reactive_agents.tests.integration.mcp_fixtures import (
     mock_agent_run,
     model_validation_bypass,
@@ -84,7 +84,7 @@ async def test_builder_with_custom_tools_fixed(
 
     # Build agent with custom tools
     agent = await (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("Custom Tools Agent")
         .with_model("ollama:test:model")
         .with_custom_tools([square, greeting])
@@ -133,7 +133,7 @@ async def test_add_custom_tools_to_existing_agent_fixed(
     mock_tool_manager._generate_tool_signatures = MagicMock()
 
     # Add custom tools to the existing agent
-    updated_agent = await ReactAgentBuilder.add_custom_tools_to_agent(
+    updated_agent = await ReactiveAgentBuilder.add_custom_tools_to_agent(
         mock_agent, [square, greeting]
     )
 

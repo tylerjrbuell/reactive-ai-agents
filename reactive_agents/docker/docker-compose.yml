@@ -1,0 +1,84 @@
+version: "3.8"
+
+services:
+  reflex:
+    build:
+      context: ../..
+      dockerfile: reactive_agents/docker/Dockerfile
+    image: reflex:latest
+    container_name: reflex-agent
+    restart: unless-stopped
+    environment:
+      - REFLEX_ENV=production
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Mount configuration directory
+      - ./config:/app/config:ro
+      # Mount data directory for persistence
+      - reflex_data:/app/data
+      # Mount logs directory
+      - reflex_logs:/app/logs
+    ports:
+      - "8000:8000"
+    networks:
+      - reflex-network
+    healthcheck:
+      test: ["CMD", "reflex", "version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: Ollama service for local LLM inference
+  ollama:
+    image: ollama/ollama:latest
+    container_name: reflex-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - reflex-network
+    environment:
+      - OLLAMA_ORIGINS=*
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Optional: ChromaDB for vector storage
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: reflex-chromadb
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    volumes:
+      - chromadb_data:/chroma/chroma
+    networks:
+      - reflex-network
+    environment:
+      - CHROMA_SERVER_HOST=0.0.0.0
+      - CHROMA_SERVER_HTTP_PORT=8000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  reflex_data:
+    driver: local
+  reflex_logs:
+    driver: local
+  ollama_data:
+    driver: local
+  chromadb_data:
+    driver: local
+
+networks:
+  reflex-network:
+    driver: bridge

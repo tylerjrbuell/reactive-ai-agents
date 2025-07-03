@@ -1,5 +1,5 @@
 .env
 **/__pycache__
-memory
+storage/
 agent_mcp/agent.db
 reactive_agents/agent_mcp/agent.db

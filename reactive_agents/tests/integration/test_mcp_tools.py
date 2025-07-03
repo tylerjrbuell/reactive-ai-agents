@@ -1,13 +1,13 @@
 """
 Integration tests for MCP tools using the new fixtures.
 
-This file tests the integration of MCP tools with the ReactAgentBuilder.
+This file tests the integration of MCP tools with the ReactiveAgentBuilder.
 """
 
 import pytest
 import os
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.agents import ReactiveAgentBuilder
 from reactive_agents.tests.integration.mcp_fixtures import (
     mock_mcp_initialize,
     mock_agent_run,
@@ -38,7 +38,7 @@ async def test_builder_with_mcp_tools_fixed(
     """Test the builder integration with MCP tools using proper fixtures"""
     # Build agent with MCP tools
     agent = await (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("Integration Test Agent")
         .with_model("ollama:test:model")
         .with_mcp_tools(["time", "brave-search"])
@@ -96,7 +96,7 @@ async def test_research_agent_factory_fixed(
 ):
     """Test the research_agent factory method using proper fixtures"""
     # Create a research agent
-    agent = await ReactAgentBuilder.research_agent(model="ollama:test:model")
+    agent = await ReactiveAgentBuilder.research_agent(model="ollama:test:model")
 
     # Verify agent configuration
     assert agent.context.agent_name == "Research Agent"

@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Dict, Any, List, Set
 
 from agents.react_agent import ReactAgent, ReactAgentConfig
-from agent_mcp.client import MCPClient
+from reactive_agents.providers.external.client import MCPClient
 from context.agent_observer import AgentStateEvent
 from context.agent_events import (
     MetricsUpdatedEventData,

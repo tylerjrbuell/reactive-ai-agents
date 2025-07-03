@@ -13,7 +13,7 @@ The simplest way to create a reactive agent using the recommended Builder patter
 
 ```python
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.agents import ReactiveAgentBuilder
 from reactive_agents.tools.decorators import tool
 
 # Define a custom tool
@@ -25,7 +25,7 @@ async def weather_tool(location: str) -> str:
 async def main():
     # Build agent with minimal configuration and custom tools
     agent = await (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("QuickStart Agent")
         .with_model("ollama:qwen2:7b")
         .with_custom_tools([weather_tool])
@@ -49,11 +49,11 @@ asyncio.run(main())
 
 ## 🔄 Context Management Support
 
-`ReactAgentBuilder` and the resulting agent instances support Python's async context management protocol, making resource management even easier. This is the recommended way to use agents when possible:
+`ReactiveAgentBuilder` and the resulting agent instances support Python's async context management protocol, making resource management even easier. This is the recommended way to use agents when possible:
 
 ```python
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.agents import ReactiveAgentBuilder
 from reactive_agents.tools.decorators import tool
 
 @tool(description="Get the current weather for a location")
@@ -61,7 +61,7 @@ async def weather_tool(location: str) -> str:
     return f"The weather in {location} is sunny and 72°F"
 
 async def main():
-    async with ReactAgentBuilder().with_name("Context Managed Agent").with_model("ollama:qwen2:7b").with_custom_tools([weather_tool]).build() as agent:
+    async with ReactiveAgentBuilder().with_name("Context Managed Agent").with_model("ollama:qwen2:7b").with_custom_tools([weather_tool]).build() as agent:
         # The agent is automatically initialized and will be closed when the block exits
         result = await agent.run(
             initial_task="What's the weather in Tokyo?"
@@ -73,7 +73,7 @@ asyncio.run(main())
 
 **Key Points:**
 
-- Use the `ReactAgentBuilder`'s `.build()` method, preferably within an `async with` block, for automatic initialization and cleanup.
+- Use the `ReactiveAgentBuilder`'s `.build()` method, preferably within an `async with` block, for automatic initialization and cleanup.
 - If you need to manage the agent lifecycle manually after building (less recommended), remember to `await agent.close()` when done.
 
 ## 📝 Response Format Configuration
@@ -84,12 +84,12 @@ The framework supports customizable response formats to ensure agents provide an
 
 ```python
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.agents import ReactiveAgentBuilder
 
 async def main():
     # Configure agent with specific response format
     agent = await (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("Formatted Agent")
         .with_model("ollama:qwen2:7b")
         .with_response_format("""
@@ -168,12 +168,12 @@ The agent automatically manages conversation context based on the model provider
 
 ```python
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.agents import ReactiveAgentBuilder
 
 async def main():
     # Agent automatically uses optimal context settings for the model
     agent = await (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("Smart Context Agent")
         .with_model("ollama:qwen2:7b")  # Uses Ollama-optimized settings
         .with_response_format("Provide a clear, structured answer.")
@@ -207,11 +207,11 @@ The framework automatically tracks the last result from each iteration for bette
 
 ```python
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.agents import ReactiveAgentBuilder
 
 async def main():
     agent = await (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("Tracking Agent")
         .with_model("ollama:qwen3:4b")
         .with_mcp_tools(["brave-search", "time"])
@@ -265,7 +265,7 @@ asyncio.run(main())
 
 ## ⚙️ Advanced Context Management & Tool Use Policy Configuration
 
-The framework exposes fine-grained control over context management and tool use policy for advanced users. All options are available as explicit builder methods on `ReactAgentBuilder`:
+The framework exposes fine-grained control over context management and tool use policy for advanced users. All options are available as explicit builder methods on `ReactiveAgentBuilder`:
 
 ### Context Management Options
 
@@ -287,7 +287,7 @@ The framework exposes fine-grained control over context management and tool use 
 
 ```python
 agent = await (
-    ReactAgentBuilder()
+    ReactiveAgentBuilder()
     .with_name("Advanced Agent")
     .with_model("ollama:qwen2:7b")
     .with_max_context_messages(30)
@@ -303,7 +303,7 @@ You can also set any of these options using `.with_advanced_config(...)`:
 
 ```python
 agent = await (
-    ReactAgentBuilder()
+    ReactiveAgentBuilder()
     .with_advanced_config(
         max_context_messages=25,
         context_summarization_frequency=2,
@@ -348,11 +348,11 @@ The framework provides comprehensive session tracking with the `AgentSession` mo
 
 ```python
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.agents import ReactiveAgentBuilder
 
 async def main():
     agent = await (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("State Tracking Agent")
         .with_model("ollama:qwen3:4b")
         .with_mcp_tools(["brave-search", "time"])
@@ -409,7 +409,7 @@ The session provides detailed tracking of:
 
 - **`ReactAgent`** (`agents/react_agent.py`): Main reactive agent implementation with simplified interface
 - **`Agent`** (`agents/base.py`): Base agent class with core functionality
-- **`ReactAgentBuilder`** (`agents/builders.py`): Fluent builder interface for easy agent creation
+- **`ReactiveAgentBuilder`** (`agents/builders.py`): Fluent builder interface for easy agent creation
 
 ## Overview
 
@@ -418,7 +418,7 @@ The main purpose of this project is to create a custom AI Agent Framework that a
 - **Model Providers**: Currently Supports `Ollama` for open-source models (local) or `Groq` fast cloud-based models.
 - **Agent Reflection**: The agent has the ability to reflect on its previous actions, improve as it iterates, and grade itself until it arrives at a final result.
 - **Tool Integration**: Agents can use both MCP client tools (server-side) and custom Python functions decorated with `@tool()`.
-- **Builder Pattern**: Easy agent creation with a fluent interface and sensible defaults using the `ReactAgentBuilder` class.
+- **Builder Pattern**: Easy agent creation with a fluent interface and sensible defaults using the `ReactiveAgentBuilder` class.
 - **Model Context Protocol (MCP)**: Supports distributed tool execution through MCP servers, allowing agents to use tools from multiple sources.
 - **Workflow Management**: Supports creating complex agent workflows with dependencies and parallel execution.
 - **Strong Type Hinting**: Uses Pydantic models for configuration to ensure type safety and better developer experience.
@@ -456,7 +456,7 @@ result = await agent.run(task)
 await agent.close()
 
 # New way (v0.3.0) - Recommended
-async with ReactAgentBuilder().with_name("Agent").with_model("ollama:qwen2:7b").build() as agent:
+async with ReactiveAgentBuilder().with_name("Agent").with_model("ollama:qwen2:7b").build() as agent:
     result = await agent.run(task)
 
 # Or manual way (still supported)
@@ -540,8 +540,8 @@ You can customize MCP servers in a few ways:
 
    ```python
 
-   # Minimal example using `ReactAgentBuilder`
-   agent = await ReactAgentBuilder().with_mcp_config_path("/path/to/custom/mcp_config.json").build()
+   # Minimal example using `ReactiveAgentBuilder`
+   agent = await ReactiveAgentBuilder().with_mcp_config_path("/path/to/custom/mcp_config.json").build()
 
    # Minimal Example using `ReactAgent` class directly
    from reactive_agents.agents import ReactAgent, ReactAgentConfig
@@ -615,11 +615,11 @@ asyncio.run(main())
 
 ### 2. Builder Pattern (Recommended)
 
-For most use cases, use the `ReactAgentBuilder` class with its fluent interface:
+For most use cases, use the `ReactiveAgentBuilder` class with its fluent interface:
 
 ```python
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.agents import ReactiveAgentBuilder
 from reactive_agents.agents.builders import ConfirmationConfig
 
 async def main():
@@ -636,7 +636,7 @@ async def main():
 
     # Build an agent with a fluent interface
     agent = await (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("Research Agent")
         .with_model("ollama:qwen3:4b")
         .with_mcp_tools(["brave-search", "time"])
@@ -670,11 +670,11 @@ For common use cases, use the factory methods:
 
 ```python
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.agents import ReactiveAgentBuilder
 
 async def main():
     # Create a specialized research agent
-    agent = await ReactAgentBuilder.research_agent(model="ollama:qwen3:4b")
+    agent = await ReactiveAgentBuilder.research_agent(model="ollama:qwen3:4b")
 
     try:
         result = await agent.run("Research the history of Bitcoin")
@@ -683,7 +683,7 @@ async def main():
         await agent.close()
 
     # Create a database-focused agent
-    db_agent = await ReactAgentBuilder.database_agent(model="ollama:llama3:8b")
+    db_agent = await ReactiveAgentBuilder.database_agent(model="ollama:llama3:8b")
 
     try:
         result = await db_agent.run("Create a table of cryptocurrency prices")
@@ -700,7 +700,7 @@ You can create and use custom tools with the `@tool()` decorator:
 
 ```python
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.agents import ReactiveAgentBuilder
 from reactive_agents.tools.decorators import tool
 
 # Define a custom tool
@@ -721,7 +721,7 @@ async def weather_tool(location: str) -> str:
 async def main():
     # Create an agent with a custom tool
     agent = await (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("Weather Agent")
         .with_model("ollama:qwen3:4b")
         .with_custom_tools([weather_tool])
@@ -743,7 +743,7 @@ You can combine MCP tools and custom tools in a single agent:
 
 ```python
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.agents import ReactiveAgentBuilder
 from reactive_agents.tools.decorators import tool
 
 @tool(description="Get cryptocurrency price information")
@@ -755,7 +755,7 @@ async def crypto_price(coin: str) -> str:
 async def main():
     # Create an agent with both MCP and custom tools
     agent = await (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("Research Agent")
         .with_model("ollama:qwen3:4b")
         .with_tools(
@@ -782,7 +782,7 @@ You can add custom tools to an agent that has already been created:
 
 ```python
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.agents import ReactiveAgentBuilder
 from reactive_agents.tools.decorators import tool
 
 @tool(description="Get cryptocurrency price information")
@@ -793,10 +793,10 @@ async def crypto_price(coin: str) -> str:
 
 async def main():
     # Create a research agent from the factory
-    agent = await ReactAgentBuilder.research_agent()
+    agent = await ReactiveAgentBuilder.research_agent()
 
     # Add a custom tool to the existing agent
-    agent = await ReactAgentBuilder.add_custom_tools_to_agent(
+    agent = await ReactiveAgentBuilder.add_custom_tools_to_agent(
         agent, [crypto_price]
     )
 
@@ -817,7 +817,7 @@ While the Builder Pattern is recommended, you can still create `ReactAgent` inst
 
 ```python
 import asyncio
-from reactive_agents.agent_mcp.client import MCPClient
+from reactive_agents.providers.external.client import MCPClient
 from reactive_agents.agents import ReactAgent, ReactAgentConfig
 
 async def main():
@@ -863,8 +863,8 @@ You can monitor and react to agent lifecycle events in real-time using the event
 
 ```python
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
-from reactive_agents.context.agent_events import ToolCalledEventData, ToolCompletedEventData
+from reactive_agents.agents import ReactiveAgentBuilder
+from reactive_agents.core.engine.agent_events import ToolCalledEventData, ToolCompletedEventData
 
 async def main():
     # Create counters to track events
@@ -885,7 +885,7 @@ async def main():
 
     # Create an agent with event subscriptions
     agent = await (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("Observable Agent")
         .with_model("ollama:qwen3:4b")
         .with_mcp_tools(["brave-search"])
@@ -914,9 +914,9 @@ For a more flexible approach, you can use the generic `with_subscription` method
 
 ```python
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
-from reactive_agents.context.agent_observer import AgentStateEvent
-from reactive_agents.context.agent_events import ToolCalledEventData, SessionStartedEventData
+from reactive_agents.agents import ReactiveAgentBuilder
+from reactive_agents.core.engine.agent_observer import AgentStateEvent
+from reactive_agents.core.engine.agent_events import ToolCalledEventData, SessionStartedEventData
 
 async def main():
     # Define callbacks for events
@@ -928,7 +928,7 @@ async def main():
 
     # Create an agent with generic event subscriptions
     agent = await (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("Generic Subscription Agent")
         .with_model("ollama:qwen3:4b")
         .with_mcp_tools(["brave-search"])
@@ -953,8 +953,8 @@ You can also use the async version for asynchronous callbacks:
 
 ```python
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
-from reactive_agents.context.agent_observer import AgentStateEvent
+from reactive_agents.agents import ReactiveAgentBuilder
+from reactive_agents.core.engine.agent_observer import AgentStateEvent
 
 async def log_tool_async(event):
     # Simulate async database logging
@@ -963,7 +963,7 @@ async def log_tool_async(event):
 
 async def main():
     agent = await (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("Async Subscription Agent")
         .with_model("ollama:qwen3:4b")
         .with_mcp_tools(["brave-search"])
@@ -1010,7 +1010,7 @@ The framework provides diagnostic tools to help debug tool registration issues:
 
 ```python
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.agents import ReactiveAgentBuilder
 from reactive_agents.tools.decorators import tool
 
 @tool(description="Example custom tool")
@@ -1020,7 +1020,7 @@ async def example_tool(param: str) -> str:
 async def main():
     # Create a builder with tools
     builder = (
-        ReactAgentBuilder()
+        ReactiveAgentBuilder()
         .with_name("Diagnostic Agent")
         .with_mcp_tools(["brave-search"])
         .with_custom_tools([example_tool])
@@ -1035,7 +1035,7 @@ async def main():
     agent = await builder.build()
 
     # Diagnose tool registration after building
-    diagnosis = await ReactAgentBuilder.diagnose_agent_tools(agent)
+    diagnosis = await ReactiveAgentBuilder.diagnose_agent_tools(agent)
     if diagnosis["has_tool_mismatch"]:
         print("WARNING: Tool registration mismatch detected!")
     else:
@@ -1098,10 +1098,10 @@ The `AgentExecutionEngine` handles the main execution loop and task coordination
 
 ```python
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.agents import ReactiveAgentBuilder
 
 async def main():
-    agent = await ReactAgentBuilder().with_name("Component Agent").with_model("ollama:qwen2:7b").build()
+    agent = await ReactiveAgentBuilder().with_name("Component Agent").with_model("ollama:qwen2:7b").build()
 
     # Access the execution engine directly
     execution_engine = agent.execution_engine
@@ -1125,10 +1125,10 @@ The `TaskExecutor` manages individual task iterations:
 
 ```python
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.agents import ReactiveAgentBuilder
 
 async def main():
-    agent = await ReactAgentBuilder().with_name("Task Agent").with_model("ollama:qwen2:7b").build()
+    agent = await ReactiveAgentBuilder().with_name("Task Agent").with_model("ollama:qwen2:7b").build()
 
     # Access the task executor
     task_executor = agent.task_executor
@@ -1152,11 +1152,11 @@ The `EventManager` handles event subscriptions and emission:
 
 ```python
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
-from reactive_agents.context.agent_events import ToolCalledEventData
+from reactive_agents.agents import ReactiveAgentBuilder
+from reactive_agents.core.engine.agent_events import ToolCalledEventData
 
 async def main():
-    agent = await ReactAgentBuilder().with_name("Event Agent").with_model("ollama:qwen2:7b").build()
+    agent = await ReactiveAgentBuilder().with_name("Event Agent").with_model("ollama:qwen2:7b").build()
 
     # Access the event manager
     event_manager = agent.event_manager
@@ -1181,7 +1181,7 @@ The `ToolProcessor` handles tool registration and validation:
 
 ```python
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.agents import ReactiveAgentBuilder
 from reactive_agents.tools.decorators import tool
 
 @tool(description="Example tool")
@@ -1189,7 +1189,7 @@ async def example_tool(param: str) -> str:
     return f"Result: {param}"
 
 async def main():
-    agent = await ReactAgentBuilder().with_name("Tool Agent").with_model("ollama:qwen2:7b").build()
+    agent = await ReactiveAgentBuilder().with_name("Tool Agent").with_model("ollama:qwen2:7b").build()
 
     # Access the tool processor
     tool_processor = agent.tool_processor
@@ -1209,10 +1209,10 @@ The agent's context management system provides advanced features for optimizing 
 
 ```python
 import asyncio
-from reactive_agents.agents import ReactAgentBuilder
+from reactive_agents.agents import ReactiveAgentBuilder
 
 async def main():
-    agent = await ReactAgentBuilder().with_name("Context Agent").with_model("ollama:qwen2:7b").build()
+    agent = await ReactiveAgentBuilder().with_name("Context Agent").with_model("ollama:qwen2:7b").build()
 
     # Access context statistics
     stats = agent.context.get_context_stats()

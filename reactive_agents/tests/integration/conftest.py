@@ -12,7 +12,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 from reactive_agents.tests.integration.mcp_fixtures import SimpleMockMCPClient
 
 # Import OllamaModelProvider for type hinting, not direct use here
-from reactive_agents.model_providers.ollama import OllamaModelProvider
+from reactive_agents.providers.llm.ollama import OllamaModelProvider
 
 
 @pytest.fixture(scope="session", autouse=True)

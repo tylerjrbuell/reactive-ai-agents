@@ -1,7 +1,7 @@
 import asyncio
 from typing import Dict, Any
 from agents.react_agent import ReactAgent, ReactAgentConfig
-from agent_mcp.client import MCPClient
+from reactive_agents.providers.external.client import MCPClient
 import readline  # For better input handling
 
 # Import the new type definitions

@@ -1,6 +1,6 @@
 from typing import Dict, Any, List, Optional
 from unittest.mock import AsyncMock
-from reactive_agents.agent_mcp.client import MCPClient
+from reactive_agents.providers.external.client import MCPClient
 
 
 class MockModelProvider:

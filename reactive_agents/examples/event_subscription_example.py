@@ -3,7 +3,7 @@
 Event Subscription Example
 
 This example demonstrates two ways to subscribe to agent events:
-1. Using the ReactAgentBuilder with dynamic subscription methods
+1. Using the ReactiveAgentBuilder with dynamic subscription methods
 2. Using the agent.events interface for existing agent instances
 
 Both approaches provide a clean and extensible way to work with events:
@@ -21,7 +21,7 @@ import asyncio
 from typing import Dict, Any
 
 from context.agent_observer import AgentStateEvent
-from agents.builders import ReactAgentBuilder
+from agents.builders import ReactiveAgentBuilder
 from context.agent_events import (
     ToolCalledEventData,
     ToolCompletedEventData,
@@ -67,7 +67,7 @@ async def example_builder_subscription():
     # Create an agent using the builder pattern with dynamic subscriptions
     agent = (
         await (
-            ReactAgentBuilder()
+            ReactiveAgentBuilder()
             .with_name("Subscription Demo Agent")
             .with_model("ollama:qwen2:7b")
             .with_mcp_tools(["brave-search", "time"])
@@ -98,7 +98,9 @@ async def example_existing_agent_subscription():
     print("\n=== Example 2: Using events Interface on Existing Agent ===")
 
     # Create a basic agent without subscriptions
-    agent = await ReactAgentBuilder().with_mcp_tools(["brave-search", "time"]).build()
+    agent = (
+        await ReactiveAgentBuilder().with_mcp_tools(["brave-search", "time"]).build()
+    )
 
     # Add event subscriptions using the events interface
     agent.events.on_tool_called().subscribe(log_tool_called)

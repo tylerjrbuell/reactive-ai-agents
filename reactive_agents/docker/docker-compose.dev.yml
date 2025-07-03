@@ -1,0 +1,89 @@
+version: "3.8"
+
+services:
+  reflex-dev:
+    build:
+      context: ../..
+      dockerfile: reactive_agents/docker/Dockerfile.dev
+    image: reflex:dev
+    container_name: reflex-agent-dev
+    restart: unless-stopped
+    environment:
+      - REFLEX_ENV=development
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      # Mount source code for hot reloading
+      - ../..:/app
+      # Mount configuration directory
+      - ./config:/app/config
+      # Mount data directory for persistence
+      - reflex_dev_data:/app/data
+      # Mount logs directory
+      - reflex_dev_logs:/app/logs
+    ports:
+      - "8000:8000"
+      - "5678:5678" # Debug port
+    networks:
+      - reflex-dev-network
+    command: ["python", "-m", "reactive_agents.console.cli", "--help"]
+    stdin_open: true
+    tty: true
+
+  # Ollama for local development
+  ollama-dev:
+    image: ollama/ollama:latest
+    container_name: reflex-ollama-dev
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_dev_data:/root/.ollama
+    networks:
+      - reflex-dev-network
+    environment:
+      - OLLAMA_ORIGINS=*
+
+  # ChromaDB for development
+  chromadb-dev:
+    image: chromadb/chroma:latest
+    container_name: reflex-chromadb-dev
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    volumes:
+      - chromadb_dev_data:/chroma/chroma
+    networks:
+      - reflex-dev-network
+    environment:
+      - CHROMA_SERVER_HOST=0.0.0.0
+      - CHROMA_SERVER_HTTP_PORT=8000
+
+  # Redis for caching (development)
+  redis-dev:
+    image: redis:7-alpine
+    container_name: reflex-redis-dev
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_dev_data:/data
+    networks:
+      - reflex-dev-network
+    command: redis-server --appendonly yes
+
+volumes:
+  reflex_dev_data:
+    driver: local
+  reflex_dev_logs:
+    driver: local
+  ollama_dev_data:
+    driver: local
+  chromadb_dev_data:
+    driver: local
+  redis_dev_data:
+    driver: local
+
+networks:
+  reflex-dev-network:
+    driver: bridge

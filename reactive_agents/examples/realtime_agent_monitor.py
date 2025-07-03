@@ -36,7 +36,7 @@ except ImportError:
     sys.exit(1)
 
 from agents.react_agent import ReactAgent, ReactAgentConfig
-from agent_mcp.client import MCPClient
+from reactive_agents.providers.external.client import MCPClient
 from context.agent_observer import AgentStateEvent
 
 # Create FastAPI app

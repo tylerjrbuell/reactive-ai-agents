@@ -1,0 +1,75 @@
+# Reflex - Reactive Agents Framework
+# Development Docker Image
+FROM python:3.11-slim
+
+# Set metadata
+LABEL maintainer="Tyler Buell"
+LABEL description="Reflex - Development environment for reactive agents framework"
+LABEL version="0.1.0a6-dev"
+
+# Set environment variables for development
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    POETRY_NO_INTERACTION=1 \
+    POETRY_VENV_IN_PROJECT=1 \
+    POETRY_CACHE_DIR=/tmp/poetry_cache \
+    REFLEX_ENV=development
+
+# Install system dependencies including development tools
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    git \
+    vim \
+    nano \
+    htop \
+    procps \
+    net-tools \
+    iputils-ping \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Poetry
+RUN pip install poetry==1.8.3
+
+# Create app directory
+WORKDIR /app
+
+# Copy poetry files
+COPY pyproject.toml poetry.lock* ./
+
+# Configure poetry and install all dependencies (including dev)
+RUN poetry config virtualenvs.create false \
+    && poetry install --with dev \
+    && rm -rf $POETRY_CACHE_DIR
+
+# Install additional development tools
+RUN pip install \
+    debugpy \
+    ipython \
+    jupyter \
+    black \
+    flake8 \
+    mypy \
+    pytest-watch
+
+# Copy application code
+COPY . .
+
+# Install the package in development mode
+RUN pip install -e .
+
+# Create non-root user for development
+RUN groupadd -r reflex && useradd -r -g reflex -s /bin/bash reflex
+RUN chown -R reflex:reflex /app
+USER reflex
+
+# Create directories for development
+RUN mkdir -p /app/data /app/logs /app/config /app/notebooks
+
+# Expose ports for development
+EXPOSE 8000 5678 8888
+
+# Default command for development
+CMD ["bash"] 
