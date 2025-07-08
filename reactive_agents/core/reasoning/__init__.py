@@ -1,16 +1,31 @@
 """
 Reasoning System
 
-Core reasoning, reflection, planning, and task classification components.
+Core reasoning components and strategies for intelligent task execution.
+Provides centralized infrastructure, strategy management, and task classification.
 """
 
-from .reflection_manager import ReflectionManager
-from .plan_manager import PlanManager
+# Core reasoning module
+from .infrastructure import Infrastructure
+from .strategy_manager import StrategyManager
 from .task_classifier import TaskClassifier
-from .strategies import *
+
+# Reasoning strategies
+from .strategies.reactive import ReactiveStrategy
+from .strategies.reflect_decide_act import ReflectDecideActStrategy
+from .strategies.plan_execute_reflect import PlanExecuteReflectStrategy
+
+# Base strategy classes
+from .strategies.base import BaseReasoningStrategy, StrategyResult, StrategyCapabilities
 
 __all__ = [
-    "ReflectionManager",
-    "PlanManager",
+    "Infrastructure",
+    "StrategyManager",
     "TaskClassifier",
+    "ReactiveStrategy",
+    "ReflectDecideActStrategy",
+    "PlanExecuteReflectStrategy",
+    "BaseReasoningStrategy",
+    "StrategyResult",
+    "StrategyCapabilities",
 ]

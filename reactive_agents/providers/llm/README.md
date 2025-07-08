@@ -16,6 +16,12 @@ This module contains implementations of various LLM providers for the reactive-a
 - **Features**: Chat completions, text completions, tool/function calling (Claude 3 only), streaming support
 - **Requirements**: `anthropic` package, `ANTHROPIC_API_KEY` environment variable
 
+### Google Provider (`google`)
+
+- **Models**: Gemini Pro, Gemini 1.5 Pro, and other Google Generative AI models
+- **Features**: Chat completions, text completions, tool/function calling, streaming support, configurable safety settings, robust error handling
+- **Requirements**: `google-generativeai` package, `GOOGLE_API_KEY` environment variable
+
 ### Groq Provider (`groq`)
 
 - **Models**: Groq-hosted models (Llama, Mixtral, etc.)
@@ -41,6 +47,9 @@ provider = ModelProviderFactory.get_model_provider("openai:gpt-4")
 # Anthropic
 provider = ModelProviderFactory.get_model_provider("anthropic:claude-3-sonnet-20240229")
 
+# Google
+provider = ModelProviderFactory.get_model_provider("google:gemini-pro")
+
 # Groq
 provider = ModelProviderFactory.get_model_provider("groq:mixtral-8x7b-32768")
 
@@ -53,6 +62,7 @@ provider = ModelProviderFactory.get_model_provider("ollama:llama2")
 ```python
 from reactive_agents.providers.llm.openai import OpenAIModelProvider
 from reactive_agents.providers.llm.anthropic import AnthropicModelProvider
+from reactive_agents.providers.llm.google import GoogleModelProvider
 
 # OpenAI
 openai_provider = OpenAIModelProvider(
@@ -65,6 +75,22 @@ anthropic_provider = AnthropicModelProvider(
     model="claude-3-sonnet-20240229",
     options={"temperature": 0.7, "max_tokens": 1000}
 )
+
+# Google
+google_provider = GoogleModelProvider(
+    model="gemini-pro",
+    options={"temperature": 0.7, "max_output_tokens": 1000}
+)
+
+# Configure safety settings (optional)
+google_provider.configure_safety_settings()  # Use permissive settings
+# Or customize safety settings
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
+custom_safety = {
+    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+}
+google_provider.configure_safety_settings(custom_safety)
 ```
 
 ### Chat Completion
@@ -88,6 +114,41 @@ response = await provider.get_completion(
 )
 print(response.message.content)
 ```
+
+### JSON Output Mode
+
+All providers support JSON output mode for structured responses:
+
+```python
+# Request JSON format response
+response = await provider.get_chat_completion(
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "List the top 3 programming languages with their popularity scores."}
+    ],
+    format="json"
+)
+print(response.message.content)
+# Output: {"languages": [{"name": "Python", "score": 95}, {"name": "JavaScript", "score": 87}, {"name": "Java", "score": 82}]}
+```
+
+```python
+# JSON format with text completion
+response = await provider.get_completion(
+    prompt="Generate a JSON object with user profile data",
+    format="json"
+)
+print(response.message.content)
+# Output: {"name": "John Doe", "age": 30, "email": "john@example.com"}
+```
+
+**Provider-Specific JSON Support:**
+
+- **OpenAI**: Native JSON mode with `{"type": "json_object"}`
+- **Anthropic**: JSON instruction added to prompt (both Claude 3 and legacy models)
+- **Google**: JSON instruction added to prompt with enhanced formatting
+- **Groq**: Native JSON mode with `{"type": "json_object"}`
+- **Ollama**: Native JSON mode with `format="json"`
 
 ### Tool/Function Calling
 
@@ -132,6 +193,9 @@ export OPENAI_API_KEY="your_openai_api_key"
 # Anthropic
 export ANTHROPIC_API_KEY="your_anthropic_api_key"
 
+# Google
+export GOOGLE_API_KEY="your_google_api_key"
+
 # Groq
 export GROQ_API_KEY="your_groq_api_key"
 
@@ -159,6 +223,14 @@ export OLLAMA_HOST="http://localhost:11434"
 - `claude-3-5-haiku-20241022` - Claude 3.5 Haiku
 - `claude-2` - Claude 2 (legacy, limited features)
 
+### Google Models
+
+- `gemini-pro` - Gemini Pro
+- `gemini-1.5-pro` - Gemini 1.5 Pro
+- `gemini-1.5-pro-latest` - Gemini 1.5 Pro (latest)
+- `gemini-pro-vision` - Gemini Pro Vision (multimodal)
+- And other Google Generative AI models
+
 ## Installation
 
 Install the required dependencies:
@@ -170,6 +242,9 @@ pip install openai
 # For Anthropic support
 pip install anthropic
 
+# For Google support
+pip install google-generativeai
+
 # For Groq support
 pip install groq
 
@@ -180,7 +255,7 @@ pip install ollama
 Or install all at once:
 
 ```bash
-pip install openai anthropic groq ollama
+pip install openai anthropic google-generativeai groq ollama
 ```
 
 ## Error Handling
@@ -194,6 +269,21 @@ try:
 except Exception as e:
     print(f"Error: {e}")
     # Error details are automatically logged and stored in context
+```
+
+### Google Provider Safety Handling
+
+The Google provider includes special handling for safety-filtered responses:
+
+```python
+response = await google_provider.get_chat_completion(messages=messages)
+
+# Check if response was blocked by safety filters
+if response.done_reason == "content_filter":
+    print("Response was blocked by safety filters")
+    # Configure more permissive settings
+    google_provider.configure_safety_settings()  # Disable safety filtering
+    response = await google_provider.get_chat_completion(messages=messages)
 ```
 
 ## Streaming Support

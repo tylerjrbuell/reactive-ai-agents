@@ -21,6 +21,11 @@ from .base import (
     FinalAnswerPrompt,
     StrategyTransitionPrompt,
     ErrorRecoveryPrompt,
+    PlanGenerationPrompt,
+    StepExecutionPrompt,
+    TaskCompletionValidationPrompt,
+    PlanProgressReflectionPrompt,
+    PlanExtensionPrompt,
 )
 
 __all__ = [
@@ -38,4 +43,9 @@ __all__ = [
     "FinalAnswerPrompt",
     "StrategyTransitionPrompt",
     "ErrorRecoveryPrompt",
+    "PlanGenerationPrompt",
+    "StepExecutionPrompt",
+    "TaskCompletionValidationPrompt",
+    "PlanProgressReflectionPrompt",
+    "PlanExtensionPrompt",
 ]

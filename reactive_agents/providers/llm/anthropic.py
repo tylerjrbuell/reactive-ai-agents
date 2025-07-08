@@ -172,6 +172,19 @@ class AnthropicModelProvider(BaseModelProvider):
                 if tool_choice and tool_choice != "auto":
                     api_params["tool_choice"] = tool_choice
 
+            # Handle JSON format for Claude 3 models
+            if format == "json":
+                # Add JSON instruction to the last user message
+                if cleaned_messages and cleaned_messages[-1].get("role") == "user":
+                    cleaned_messages[-1][
+                        "content"
+                    ] += "\n\nPlease respond in valid JSON format."
+                elif system_message:
+                    system_message += "\n\nAlways respond in valid JSON format."
+                else:
+                    # Add system message if not present
+                    api_params["system"] = "Always respond in valid JSON format."
+
             # Create completion
             completion = self.client.messages.create(**api_params)
 
@@ -272,6 +285,10 @@ class AnthropicModelProvider(BaseModelProvider):
                 "temperature": merged_options.get("temperature", 0.7),
                 "stream": stream,
             }
+
+            # Handle JSON format for legacy models
+            if format == "json":
+                data["prompt"] += "\n\nPlease respond in valid JSON format."
 
             # Make request to legacy API
             response = requests.post(

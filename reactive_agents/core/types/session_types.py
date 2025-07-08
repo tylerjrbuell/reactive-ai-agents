@@ -1,35 +1,82 @@
+from __future__ import annotations
 from typing import List, Dict, Any, Optional, Set
 from pydantic import BaseModel, Field
-from .status_types import TaskStatus
-from .agent_types import TaskSuccessCriteria
 import uuid
-from enum import Enum
 import time
+from .status_types import TaskStatus, StepStatus
+from .agent_types import TaskSuccessCriteria
+from .task_types import PlanStep
 
 
-class StepStatus(str, Enum):
-    """Status of individual plan steps."""
+class PlanExecuteReflectState(BaseModel):
+    """State tracking specific to Plan-Execute-Reflect strategy."""
 
-    PENDING = "pending"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    SKIPPED = "skipped"
+    # Plan state
+    current_plan: Dict[str, Any] = Field(default_factory=lambda: {"steps": []})
+    current_step: int = 0
+    execution_history: List[Dict[str, Any]] = Field(default_factory=list)
+    error_count: int = 0
+    completed_actions: List[str] = Field(default_factory=list)
+    max_errors: int = 3
+    last_step_output: str = ""
+    tool_responses: List[str] = Field(default_factory=list)
 
+    # Reflection state
+    reflection_count: int = 0
+    last_reflection_result: Dict[str, Any] = Field(default_factory=dict)
+    reflection_history: List[Dict[str, Any]] = Field(default_factory=list)
 
-class PlanStep(BaseModel):
-    """Represents a single step in the plan with tracking information."""
+    # Strategy metrics
+    plan_success_rate: float = 0.0
+    step_success_rate: float = 0.0
+    recovery_success_rate: float = 0.0
 
-    index: int
-    description: str
-    is_action: Optional[bool] = None
-    status: StepStatus = StepStatus.PENDING
-    result: Optional[str] = None
-    error: Optional[str] = None
-    completed_at: Optional[float] = None
-    tool_used: Optional[str] = None
-    parameters: Optional[Dict[str, Any]] = None
-    retry_count: int = 0
+    def get_execution_summary(self) -> Dict[str, Any]:
+        """Get a structured summary of execution progress."""
+        successful_steps = [
+            s for s in self.execution_history if s.get("success", False)
+        ]
+        failed_steps = [
+            s for s in self.execution_history if not s.get("success", False)
+        ]
+
+        return {
+            "total_steps": len(self.execution_history),
+            "successful_steps": len(successful_steps),
+            "failed_steps": len(failed_steps),
+            "error_count": self.error_count,
+            "reflection_count": self.reflection_count,
+            "current_step": self.current_step,
+            "plan_success_rate": self.plan_success_rate,
+            "step_success_rate": self.step_success_rate,
+            "recovery_success_rate": self.recovery_success_rate,
+        }
+
+    def record_step_result(self, step_result: Dict[str, Any]) -> None:
+        """Record a step execution result and update metrics."""
+        self.execution_history.append(step_result)
+        self.last_step_output = step_result.get("result", "")
+
+        # Update success rates
+        total_steps = len(self.execution_history)
+        successful_steps = len(
+            [s for s in self.execution_history if s.get("success", False)]
+        )
+        self.step_success_rate = (
+            successful_steps / total_steps if total_steps > 0 else 0.0
+        )
+
+        # Track tool responses
+        if "tool_calls" in step_result:
+            for call in step_result["tool_calls"]:
+                if isinstance(call, dict) and "result" in call:
+                    self.tool_responses.append(str(call["result"]))
+
+    def record_reflection_result(self, reflection_result: Dict[str, Any]) -> None:
+        """Record a reflection result and update metrics."""
+        self.reflection_count += 1
+        self.last_reflection_result = reflection_result
+        self.reflection_history.append(reflection_result)
 
 
 class AgentSession(BaseModel):
@@ -105,6 +152,19 @@ class AgentSession(BaseModel):
     # New step tracking system
     plan_steps: List[PlanStep] = Field(default_factory=list)
     current_step_index: int = 0
+
+    # Strategy-specific state
+    per_strategy_state: Optional[PlanExecuteReflectState] = None
+
+    def initialize_strategy_state(self, strategy_name: str) -> None:
+        """Initialize state tracking for a specific strategy."""
+        if strategy_name == "plan_execute_reflect":
+            self.per_strategy_state = PlanExecuteReflectState()
+        # Add other strategy states as needed
+
+    def get_strategy_state(self) -> Optional[PlanExecuteReflectState]:
+        """Get the current strategy state."""
+        return self.per_strategy_state
 
     def set_min_required_tools(self, required_tools) -> None:
         """

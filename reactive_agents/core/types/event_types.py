@@ -25,3 +25,9 @@ class AgentStateEvent(str, Enum):
     TERMINATE_REQUESTED = "terminate_requested"
     TERMINATED = "terminated"
     CANCELLED = "cancelled"
+
+    # Context Observability Events
+    CONTEXT_CHANGED = "context_changed"
+    OPERATION_COMPLETED = "operation_completed"
+    TOKENS_USED = "tokens_used"
+    SNAPSHOT_TAKEN = "snapshot_taken"

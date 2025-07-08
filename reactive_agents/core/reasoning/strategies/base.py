@@ -1,37 +1,103 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
+from enum import Enum
 import json
-from reactive_agents.core.types.reasoning_types import (
-    ReasoningStrategies,
-    ReasoningContext,
-    StrategySwitch,
-)
+from reactive_agents.core.types.reasoning_types import ReasoningContext
+from reactive_agents.core.reasoning.infrastructure import Infrastructure
 
 if TYPE_CHECKING:
     from reactive_agents.core.context.agent_context import AgentContext
-    from reactive_agents.app.agents.reactive_agent import ReactiveAgent
+
+
+class StrategyCapabilities(Enum):
+    """Capabilities that a strategy can declare."""
+
+    TOOL_EXECUTION = "tool_execution"
+    PLANNING = "planning"
+    REFLECTION = "reflection"
+    MEMORY_USAGE = "memory_usage"
+    ADAPTATION = "adaptation"
+    COLLABORATION = "collaboration"
+
+
+class StrategyResult:
+    """Standardized result from strategy execution."""
+
+    def __init__(
+        self,
+        action_taken: str,
+        result: Dict[str, Any],
+        should_continue: bool = True,
+        confidence: float = 0.5,
+        strategy_used: str = "unknown",
+        next_strategy: Optional[str] = None,
+        final_answer: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        self.action_taken = action_taken
+        self.result = result
+        self.should_continue = should_continue
+        self.confidence = confidence
+        self.strategy_used = strategy_used
+        self.next_strategy = next_strategy
+        self.final_answer = final_answer
+        self.metadata = metadata or {}
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "action_taken": self.action_taken,
+            "result": self.result,
+            "should_continue": self.should_continue,
+            "confidence": self.confidence,
+            "strategy_used": self.strategy_used,
+            "next_strategy": self.next_strategy,
+            "final_answer": self.final_answer,
+            "metadata": self.metadata,
+        }
 
 
 class BaseReasoningStrategy(ABC):
     """
     Base class for all reasoning strategies.
 
-    This class provides a unified interface that leverages the existing
-    agent infrastructure for thinking, tool execution, and message management.
+    This interface provides a clean, standardized way to implement
+    reasoning strategies that can be plugged into the framework.
     """
 
-    def __init__(self, context: "AgentContext"):
-        self.context = context
-        self.agent_logger = context.agent_logger
-        self.model_provider = context.model_provider
-        # Get reference to the agent for using its methods
-        self.agent: Optional["ReactiveAgent"] = getattr(context, "_agent", None)
+    def __init__(self, infrastructure: "Infrastructure"):
+        """
+        Initialize the strategy with shared infrastructure.
+
+        Args:
+            infrastructure: The reasoning infrastructure providing shared services
+        """
+        self.infrastructure = infrastructure
+        self.context = infrastructure.context
+        self.agent_logger = infrastructure.context.agent_logger
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Return the name of this strategy."""
+        pass
+
+    @property
+    @abstractmethod
+    def capabilities(self) -> List[StrategyCapabilities]:
+        """Return the capabilities this strategy supports."""
+        pass
+
+    @property
+    def description(self) -> str:
+        """Return a description of this strategy (optional override)."""
+        return f"Base reasoning strategy: {self.name}"
 
     @abstractmethod
     async def execute_iteration(
         self, task: str, reasoning_context: ReasoningContext
-    ) -> Dict[str, Any]:
+    ) -> StrategyResult:
         """
         Execute one iteration of this reasoning strategy.
 
@@ -40,309 +106,246 @@ class BaseReasoningStrategy(ABC):
             reasoning_context: Context about current reasoning state
 
         Returns:
-            Dictionary with iteration results including:
-            - action_taken: What action was performed
-            - result: The result of the action
-            - should_continue: Whether to continue iterating
-            - next_strategy: Optional strategy to switch to
+            StrategyResult with execution results
+        """
+        pass
+
+    async def initialize(self, task: str, reasoning_context: ReasoningContext) -> None:
+        """
+        Initialize the strategy for a new task (optional override).
+
+        Args:
+            task: The task to be executed
+            reasoning_context: Initial reasoning context
+        """
+        pass
+
+    async def finalize(self, task: str, reasoning_context: ReasoningContext) -> None:
+        """
+        Finalize the strategy after task completion (optional override).
+
+        Args:
+            task: The completed task
+            reasoning_context: Final reasoning context
         """
         pass
 
     def should_switch_strategy(
         self, reasoning_context: ReasoningContext
-    ) -> Optional[StrategySwitch]:
+    ) -> Optional[str]:
         """
-        Determine if strategy should be switched based on current context.
+        Determine if strategy should switch to another (optional override).
 
         Args:
-            reasoning_context: Current reasoning state
+            reasoning_context: Current reasoning context
 
         Returns:
-            StrategySwitch object if switch recommended, None otherwise
+            Strategy name to switch to, or None to continue
         """
-        # Default implementation - no switching
         return None
 
-    @abstractmethod
-    def get_strategy_name(self) -> ReasoningStrategies:
-        """Get the strategy enum identifier."""
-        pass
+    # Utility methods for strategies
+    async def _think(self, prompt: str) -> Optional[Dict[str, Any]]:
+        """Execute a thinking step using the infrastructure."""
+        return await self.infrastructure.think(prompt)
 
-    # --- Unified thinking methods using base agent infrastructure ---
+    async def _think_chain(self, use_tools: bool = False) -> Optional[Dict[str, Any]]:
+        """Execute a thinking step using the infrastructure."""
+        return await self.infrastructure.think_chain(use_tools)
 
-    async def _think(
-        self, messages: Optional[List[Dict[str, str]]] = None, **kwargs
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Use the agent's direct thinking method for simple completions.
-
-        Args:
-            messages: Optional message list, defaults to context messages
-            **kwargs: Additional arguments passed to the agent's _think method
-
-        Returns:
-            The completion result or None if failed
-        """
-        if not self.agent:
-            return await self._fallback_think(messages, **kwargs)
-
-        # Use the agent's established thinking method
-        kwargs.setdefault("messages", messages or self.context.session.messages)
-        return await self.agent._think(**kwargs)
-
-    async def _think_chain(
-        self,
-        messages: Optional[List[Dict[str, str]]] = None,
-        use_tools: bool = True,
-        remember_messages: bool = True,
-        **kwargs,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Use the agent's thinking chain method for completions with tool support.
-
-        Args:
-            messages: Optional message list, defaults to context messages
-            use_tools: Whether to enable tool usage
-            remember_messages: Whether to remember messages in context
-            **kwargs: Additional arguments passed to the agent's _think_chain method
-
-        Returns:
-            The completion result with tool calls or None if failed
-        """
-        if not self.agent:
-            return await self._fallback_think_chain(
-                messages, use_tools, remember_messages, **kwargs
-            )
-
-        # Use the agent's established thinking chain method
-        kwargs.setdefault("messages", messages or self.context.session.messages)
-        return await self.agent._think_chain(
-            use_tools=use_tools, remember_messages=remember_messages, **kwargs
-        )
-
-    async def _execute_tool_calls(
+    async def _execute_tools(
         self, tool_calls: List[Dict[str, Any]]
-    ) -> Optional[List[Dict[str, Any]]]:
+    ) -> List[Dict[str, Any]]:
+        """Execute tool calls using the infrastructure."""
+        return await self.infrastructure.execute_tools(tool_calls)
+
+    def _preserve_context(self, key: str, value: Any) -> None:
+        """Preserve important context using the infrastructure."""
+        self.infrastructure.preserve_context(key, value)
+
+    def _get_preserved_context(self, key: Optional[str] = None) -> Dict[str, Any]:
+        """Get preserved context using the infrastructure."""
+        return self.infrastructure.get_preserved_context(key)
+
+    # === Centralized Task Completion ===
+    async def check_task_completion(
+        self, task: str, progress_summary: str = "", **kwargs
+    ) -> Dict[str, Any]:
         """
-        Use the agent's tool execution method for consistent tool handling.
+        Check if the task should be completed using centralized logic.
 
         Args:
-            tool_calls: List of tool calls to execute
+            task: The original task
+            progress_summary: Summary of progress made
+            **kwargs: Additional context for completion checking
 
         Returns:
-            List of tool execution results or None if failed
+            Dict with completion information
         """
-        if not self.agent or not tool_calls:
-            return None
+        return await self.infrastructure.should_complete_task(
+            task, progress_summary=progress_summary, **kwargs
+        )
 
-        # Use the agent's established tool execution method
-        return await self.agent._process_tool_calls(tool_calls)
-
-    # --- Unified helper methods ---
-
-    async def _generate_structured_response(
-        self, system_prompt: str, user_prompt: str, use_tools: bool = False, **kwargs
+    async def generate_final_answer(
+        self, task: str, execution_summary: str = "", **kwargs
     ) -> Optional[Dict[str, Any]]:
         """
-        Generate a structured response using the agent's thinking methods.
+        Generate a final answer using centralized logic.
 
         Args:
-            system_prompt: System prompt for the completion
-            user_prompt: User prompt for the completion
-            use_tools: Whether to enable tool usage
-            **kwargs: Additional arguments
+            task: The original task
+            execution_summary: Summary of what was accomplished
+            **kwargs: Additional context for answer generation
 
         Returns:
-            Parsed JSON response or None if failed
+            Final answer string or None
         """
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
+        return await self.infrastructure.generate_final_answer(
+            task, execution_summary, **kwargs
+        )
+
+    async def complete_task_if_ready(
+        self, task: str, execution_summary: str = "", **kwargs
+    ) -> StrategyResult:
+        """
+        Check completion and generate final answer if ready using centralized logic.
+
+        Args:
+            task: The original task
+            execution_summary: Summary of what was accomplished
+            **kwargs: Additional context
+
+        Returns:
+            StrategyResult indicating whether task was completed
+        """
+        completion_data = await self.infrastructure.complete_task_if_ready(
+            task, execution_summary, **kwargs
+        )
+        print(completion_data)
+
+        should_complete = completion_data.get("should_complete", False)
+        final_answer = completion_data.get("final_answer")
+        completion_info = completion_data.get("completion_info", {})
+
+        action_taken = "task_completed" if should_complete else "completion_checked"
+
+        return StrategyResult(
+            action_taken=action_taken,
+            result={
+                "completion_check": completion_info,
+                "execution_summary": execution_summary,
+                "is_complete": should_complete,
+            },
+            should_continue=not should_complete,
+            confidence=completion_info.get("confidence", 0.5),
+            strategy_used=self.name,
+            final_answer=final_answer,
+        )
+
+    def _extract_required_actions(self, task: str) -> List[str]:
+        """Extract required actions from task description."""
+        # Basic action extraction - strategies can override
+        action_keywords = [
+            "search",
+            "find",
+            "get",
+            "retrieve",
+            "fetch",
+            "lookup",
+            "check",
+            "send",
+            "create",
+            "write",
+            "generate",
+            "make",
+            "build",
+            "compose",
+            "delete",
+            "remove",
+            "clean",
+            "clear",
+            "purge",
+            "unsubscribe",
+            "update",
+            "modify",
+            "change",
+            "edit",
+            "alter",
+            "set",
+            "configure",
+            "analyze",
+            "review",
+            "evaluate",
+            "assess",
+            "examine",
+            "inspect",
+            "list",
+            "show",
+            "display",
+            "view",
+            "read",
+            "browse",
+            "scan",
         ]
-        result = await self._think_chain(
-            messages=messages, use_tools=use_tools, remember_messages=False, **kwargs
+
+        task_lower = task.lower()
+        actions = []
+
+        for keyword in action_keywords:
+            if keyword in task_lower:
+                actions.append(keyword)
+
+        return actions if actions else ["execute_task"]
+
+    def _format_error_result(
+        self, error: Exception, action: str = "unknown"
+    ) -> StrategyResult:
+        """Format an error as a StrategyResult."""
+        return StrategyResult(
+            action_taken=f"{action}_error",
+            result={"error": str(error)},
+            should_continue=False,
+            confidence=0.0,
+            strategy_used=self.name,
         )
 
-        if not result or not result.get("content"):
-            return None
 
-        try:
-            return json.loads(result["content"])
-        except json.JSONDecodeError:
-            # If not JSON, return as text response
-            return {"response": result["content"]}
+class StrategyPlugin:
+    """
+    Plugin wrapper for strategies to provide metadata and registration info.
+    """
 
-    async def _execute_tool_decision(
-        self, decision: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Execute a tool based on a decision, using the agent's tool infrastructure.
-
-        Args:
-            decision: Decision dict containing tool_needed and parameters
-
-        Returns:
-            Tool execution result or None if no tool needed
-        """
-        tool_needed = decision.get("tool_needed")
-        if not tool_needed:
-            return None
-
-        parameters = decision.get("parameters", {})
-
-        # Create tool call structure compatible with agent's _process_tool_calls
-        tool_calls = [
-            {"name": tool_needed, "arguments": parameters, "id": f"call_{tool_needed}"}
-        ]
-
-        # Use the agent's tool execution method
-        results = await self._execute_tool_calls(tool_calls)
-
-        if results and len(results) > 0:
-            return {
-                "tool_name": tool_needed,
-                "result": results[0].get("result"),
-                "success": results[0].get("success", False),
-            }
-
-        return None
-
-    async def _add_reasoning_message(
-        self, content: str, role: str = "assistant"
-    ) -> None:
-        """
-        Add a reasoning message to the context using established patterns.
-
-        Args:
-            content: Message content
-            role: Message role (default: assistant)
-        """
-        self.context.session.messages.append({"role": role, "content": content})
-
-    # --- Fallback methods for cases where agent reference is not available ---
-
-    async def _fallback_think(
-        self, messages: Optional[List[Dict[str, str]]] = None, **kwargs
-    ) -> Optional[Dict[str, Any]]:
-        """Fallback thinking method when agent reference is not available."""
-        try:
-            if not self.model_provider:
-                return None
-
-            kwargs.setdefault("messages", messages or self.context.session.messages)
-            result = await self.model_provider.get_completion(**kwargs)
-
-            if result and result.message:
-                return {"content": result.message.content}
-        except Exception as e:
-            if self.agent_logger:
-                self.agent_logger.warning(f"Fallback think failed: {e}")
-        return None
-
-    async def _fallback_think_chain(
+    def __init__(
         self,
-        messages: Optional[List[Dict[str, str]]] = None,
-        use_tools: bool = True,
-        remember_messages: bool = True,
-        **kwargs,
-    ) -> Optional[Dict[str, Any]]:
-        """Fallback thinking chain method when agent reference is not available."""
-        try:
-            if not self.model_provider:
-                return None
+        strategy_class: type[BaseReasoningStrategy],
+        name: str,
+        description: str,
+        version: str = "1.0.0",
+        author: str = "unknown",
+        capabilities: Optional[List[StrategyCapabilities]] = None,
+        config_schema: Optional[Dict[str, Any]] = None,
+    ):
+        self.strategy_class = strategy_class
+        self.name = name
+        self.description = description
+        self.version = version
+        self.author = author
+        self.capabilities = capabilities or []
+        self.config_schema = config_schema or {}
 
-            kwargs.setdefault("messages", messages or self.context.session.messages)
+    def create_instance(
+        self, infrastructure: "Infrastructure"
+    ) -> BaseReasoningStrategy:
+        """Create an instance of the strategy."""
+        return self.strategy_class(infrastructure)
 
-            if use_tools:
-                tool_signatures = self.context.get_tool_signatures()
-                result = await self.model_provider.get_chat_completion(
-                    tools=tool_signatures,
-                    tool_use_required=bool(tool_signatures),
-                    **kwargs,
-                )
-            else:
-                result = await self.model_provider.get_completion(**kwargs)
-
-            if result and result.message:
-                return {
-                    "content": result.message.content,
-                    "tool_calls": getattr(result.message, "tool_calls", []),
-                }
-        except Exception as e:
-            if self.agent_logger:
-                self.agent_logger.warning(f"Fallback think chain failed: {e}")
-        return None
-
-    # --- Legacy compatibility methods (deprecated) ---
-
-    async def _think_and_decide(
-        self, prompt: str, **kwargs
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Legacy method for backward compatibility.
-
-        DEPRECATED: Use _generate_structured_response instead.
-        """
-        if self.agent_logger:
-            self.agent_logger.warning(
-                "_think_and_decide is deprecated, use _generate_structured_response instead"
-            )
-
-        return await self._generate_structured_response(
-            system_prompt=prompt,
-            user_prompt=kwargs.get("user_prompt", "Proceed with the analysis."),
-            use_tools=False,
-            **kwargs,
-        )
-
-    async def _execute_tool_if_needed(
-        self, step_info: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Legacy method for backward compatibility.
-
-        DEPRECATED: Use _execute_tool_decision instead.
-        """
-        if self.agent_logger:
-            self.agent_logger.warning(
-                "_execute_tool_if_needed is deprecated, use _execute_tool_decision instead"
-            )
-
-        return await self._execute_tool_decision(step_info)
-
-    # --- Utility methods ---
-
-    def _detect_stagnation(self, reasoning_context: ReasoningContext) -> bool:
-        """Detect if the agent is stuck or making no progress."""
-        return (
-            reasoning_context.stagnation_count > 3
-            or reasoning_context.error_count > 2
-            or (
-                reasoning_context.iteration_count > 5
-                and not reasoning_context.success_indicators
-            )
-        )
-
-    def _update_reasoning_context(
-        self,
-        reasoning_context: ReasoningContext,
-        action_result: Optional[Dict[str, Any]] = None,
-        success: bool = True,
-    ) -> ReasoningContext:
-        """Update reasoning context with latest iteration results."""
-
-        # Update counters
-        reasoning_context.iteration_count += 1
-
-        if success and action_result:
-            reasoning_context.stagnation_count = 0
-            if "tool" in str(action_result):
-                tool_name = action_result.get("tool_name", "unknown")
-                reasoning_context.tool_usage_history.append(tool_name)
-        else:
-            reasoning_context.stagnation_count += 1
-            reasoning_context.error_count += 1
-
-        reasoning_context.last_action_result = action_result
-
-        return reasoning_context
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert plugin info to dictionary."""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "version": self.version,
+            "author": self.author,
+            "capabilities": [cap.value for cap in self.capabilities],
+            "config_schema": self.config_schema,
+        }

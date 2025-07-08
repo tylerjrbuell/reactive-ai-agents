@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from reactive_agents.app.agents.reactive_agent import ReactiveAgent
+    from reactive_agents.app.agents.base import Agent
 
 from reactive_agents.config.mcp_config import MCPConfig
 from reactive_agents.utils.logging import Logger
@@ -35,7 +36,8 @@ from reactive_agents.core.types.status_types import TaskStatus
 from reactive_agents.core.metrics.metrics_manager import MetricsManager
 from reactive_agents.core.memory.memory_manager import MemoryManager
 from reactive_agents.core.memory.vector_memory import VectorMemoryManager
-from reactive_agents.core.reasoning.reflection_manager import ReflectionManager
+
+# ReflectionManager is no longer used with simplified infrastructure
 from reactive_agents.core.workflows.workflow_manager import WorkflowManager
 from reactive_agents.core.tools.tool_manager import ToolManager
 
@@ -134,13 +136,21 @@ class AgentContext(BaseModel):
     # Component Managers (Remain in Context)
     metrics_manager: Optional["MetricsManager"] = None
     memory_manager: Optional[Union["MemoryManager", "VectorMemoryManager"]] = None
-    reflection_manager: Optional["ReflectionManager"] = None
     workflow_manager: Optional["WorkflowManager"] = None
     tool_manager: Optional["ToolManager"] = None
 
     # --- Add State Observer ---
     state_observer: Optional[AgentStateObserver] = None
     enable_state_observation: bool = True
+
+    # Event Bus for observability
+    event_bus: Optional[Any] = Field(default=None)  # EventBus for context observability
+
+    # Observability
+    observability: Optional[Any] = Field(default=None)  # ContextObservabilityManager
+
+    # Event bus for observability and monitoring
+    event_bus: Optional[Any] = Field(default=None)  # EventBus
 
     # Tool use policy: controls when tools are allowed in the agent loop
     tool_use_policy: Literal["always", "required_only", "adaptive", "never"] = (
@@ -193,6 +203,9 @@ class AgentContext(BaseModel):
         # Call Pydantic's __init__ first to set up fields correctly
         super().__init__(**data)
 
+        # Initialize observability manager
+        # Remove initialization of observability field
+
         # Now, initialize components and managers *after* super().__init__
         self._initialize_loggers()
         assert self.agent_logger is not None
@@ -243,8 +256,7 @@ class AgentContext(BaseModel):
             self.agent_logger.info(f"Memory manager disabled for {self.agent_name}")
             self.memory_manager = None
 
-        if self.reflect_enabled:
-            self.reflection_manager = ReflectionManager(context=self)
+        # Reflection is now handled by the simplified infrastructure
 
         self.workflow_manager = WorkflowManager(
             context=self,
@@ -378,9 +390,8 @@ class AgentContext(BaseModel):
         return self.memory_manager
 
     def get_reflection_manager(self):
-        if not self.reflection_manager:
-            raise RuntimeError("ReflectionManager is not initialized in this context.")
-        return self.reflection_manager
+        # Reflection is now handled by the simplified infrastructure
+        return None
 
     def get_workflow_manager(self):
         if not self.workflow_manager:
@@ -405,8 +416,7 @@ class AgentContext(BaseModel):
         return None
 
     def get_reflections(self):
-        if self.reflection_manager:
-            return self.reflection_manager.reflections
+        # Reflection is now handled by the simplified infrastructure
         return []
 
     def get_session_history(self):
@@ -794,10 +804,19 @@ Provide a concise summary:
 
     async def manage_context(self):
         """
-        Streamlined context management: summarizes and/or prunes context as needed.
-        Ensures system message is first, keeps most recent user message, last summary, and current assistant turn.
-        Summarizes tool/assistant messages into a single summary message when needed, and prunes detailed messages that have been summarized.
+        Clean context management using strategy-specific adapters.
+        Delegates to appropriate context adapter based on current strategy.
         """
+        # Start observability tracking
+        start_time = None
+        # Remove observability tracking code
+
+        # Capture before state
+        before_state = {
+            "messages": self.session.messages.copy(),
+            "token_estimate": self.estimate_context_tokens(),
+        }
+
         config = self.get_optimal_pruning_config()
         should_summarize, should_prune = self.summarize_and_prune_context(
             self.session.iterations
@@ -808,103 +827,256 @@ Provide a concise summary:
         self.inject_context_message()
         messages = self.session.messages
         system_message = messages[0]
-        non_system_messages = messages[1:]
 
-        # Identify the most recent user message
-        user_messages = [m for m in non_system_messages if m.get("role") == "user"]
-        last_user_message = user_messages[-1] if user_messages else None
+        # Get strategy-specific context adapter
+        context_adapter = self._get_context_adapter()
 
-        # Identify the most recent summary message (assistant, content starts with [SUMMARY])
-        summary_messages = [
-            i
-            for i, m in enumerate(self.session.messages)
-            if m.get("role") == "assistant"
-            and m.get("content", "").strip().startswith("[SUMMARY]")
-        ]
-        last_summary_index = summary_messages[-1] if summary_messages else 0
-        last_summary_message = (
-            self.session.messages[last_summary_index] if summary_messages else None
+        # Delegate to strategy-specific context management
+        await context_adapter.manage_context(
+            should_summarize=should_summarize,
+            should_prune=should_prune,
+            config=config,
+            messages=messages,
+            system_message=system_message,
         )
-        # Store last summary index in session for future incremental summarization
-        self.session.last_summary_index = last_summary_index
 
-        # Identify the current assistant turn (last assistant message not a summary)
-        assistant_messages = [
-            m
-            for m in non_system_messages
-            if m.get("role") == "assistant"
-            and not m.get("content", "").strip().startswith("[SUMMARY]")
-        ]
-        current_assistant_turn = assistant_messages[-1] if assistant_messages else None
+        # Capture after state
+        after_state = {
+            "messages": self.session.messages.copy(),
+            "token_estimate": self.estimate_context_tokens(),
+        }
 
-        # If summarization is needed, perform incremental/rolling summary
-        if should_summarize:
-            # Only summarize messages after the last summary (or after system if no summary yet)
-            start_idx = last_summary_index + 1 if summary_messages else 1
-            # Find messages to summarize: tool or assistant messages (including tool summaries)
-            to_summarize = [
-                m
-                for m in self.session.messages[start_idx:]
-                if m.get("role") in ("assistant", "tool")
-                and m is not current_assistant_turn
-            ]
-            summary_text = "\n".join(
-                f"[{m['role']}] {m['content']}"
-                for m in to_summarize
-                if m.get("content")
+        # Record context change
+        # Remove observability tracking code
+
+        # Take periodic snapshot
+        # Remove observability tracking code
+
+    def _get_context_adapter(self):
+        """Get the appropriate context adapter for the current strategy."""
+        strategy = getattr(self, "reasoning_strategy", "default")
+
+        if strategy == "plan_execute_reflect":
+            from reactive_agents.core.context.adapters.plan_execute_reflect_context import (
+                PlanExecuteReflectContextAdapter,
             )
-            summary_content = ""
-            if summary_text.strip() and self.model_provider:
-                summary_prompt = CONTEXT_SUMMARIZATION_PROMPT + "\n\n" + summary_text
-                try:
-                    response = await self.model_provider.get_completion(
-                        system="You are a summarization assistant for an AI agent.",
-                        prompt=summary_prompt,
-                        options=self.model_provider_options,
-                    )
-                    summary_content = (
-                        response.message.content.strip()
-                        if response
-                        else "Summary unavailable."
-                    )
-                except Exception as e:
-                    if self.agent_logger:
-                        self.agent_logger.error(f"Summarization failed: {e}")
-                    summary_content = "Summary unavailable due to error."
-            summary_message = {
-                "role": "assistant",
-                "content": f"[SUMMARY OF EARLIER CONTEXT]\n{summary_content}",
-            }
-            # Build new message list: keep all messages up to last summary, insert new summary, then keep unsummarized messages
-            new_messages = self.session.messages[:start_idx]
-            new_messages.append(summary_message)
-            # Keep any messages after the summarized block that are not tool/assistant (e.g., user, current assistant turn)
-            for m in self.session.messages[start_idx:]:
-                if m not in to_summarize:
-                    new_messages.append(m)
-            self.session.messages = new_messages
-            # Update last_summary_index
-            self.session.last_summary_index = len(new_messages) - 1
-            if self.agent_logger:
-                self.agent_logger.info(
-                    f"Incrementally summarized context to {len(new_messages)} messages (~{self.estimate_context_tokens()} tokens). Last summary index: {self.session.last_summary_index}"
-                )
-            return  # If summarized, no further pruning needed in this pass
 
-        # If only pruning is needed (not summarizing), keep system, last user, last summary, and current assistant turn
-        if should_prune:
-            new_messages = [system_message]
-            if last_user_message:
-                new_messages.append(last_user_message)
-            if last_summary_message:
-                new_messages.append(last_summary_message)
-            if current_assistant_turn:
-                new_messages.append(current_assistant_turn)
-            self.session.messages = new_messages
-            if self.agent_logger:
-                self.agent_logger.info(
-                    f"Pruned context to {len(new_messages)} messages (~{self.estimate_context_tokens()} tokens)."
-                )
+            return PlanExecuteReflectContextAdapter(self)
+        else:
+            from reactive_agents.core.context.adapters.default_context import (
+                DefaultContextAdapter,
+            )
+
+            return DefaultContextAdapter(self)
+
+    async def _extract_structured_data_from_messages(
+        self, messages: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Extract structured data from a list of messages using the existing DataExtractor."""
+        if not hasattr(self, "tool_manager") or not self.tool_manager:
+            return {}
+
+        # Get all search data from the tool manager's SearchDataManager
+        all_search_data = self.tool_manager.search_data_manager.get_all_search_data()
+
+        # Also extract data from message content using DataExtractor
+        combined_text = "\n".join([msg.get("content", "") for msg in messages])
+        extracted_data = self.tool_manager.data_extractor.extract_all(combined_text)
+
+        # Combine search data with extracted data
+        combined_data = {
+            "search_tool_data": all_search_data,
+            "extracted_content": extracted_data.dict(),
+        }
+
+        return combined_data
+
+    def _create_enhanced_summarization_prompt(
+        self, summary_text: str, extracted_data: Dict[str, Any]
+    ) -> str:
+        """Create an enhanced summarization prompt that includes extracted data context."""
+        from reactive_agents.core.reasoning.prompts.agent_prompts import (
+            CONTEXT_SUMMARIZATION_PROMPT,
+        )
+
+        prompt = CONTEXT_SUMMARIZATION_PROMPT + "\n\n"
+
+        # Add extracted data context if available
+        if extracted_data:
+            prompt += "\nIMPORTANT STRUCTURED DATA TO PRESERVE:\n"
+
+            # Include search tool data (comprehensive data preservation)
+            search_data = extracted_data.get("search_tool_data", {})
+            for tool_name, tool_data in search_data.items():
+                prompt += f"\n{tool_name.upper()} RESULTS:\n"
+                tool_extracted = tool_data.get("extracted_data", {})
+
+                # Preserve all data types found by the DataExtractor
+                for data_type, values in tool_extracted.items():
+                    if values:
+                        if isinstance(values, list) and values:
+                            # Limit output but preserve more items for critical data
+                            limit = (
+                                10
+                                if data_type in ["emails", "urls", "phone_numbers"]
+                                else 5
+                            )
+                            prompt += f"  - {data_type}: {values[:limit]}\n"
+                        elif values:
+                            prompt += f"  - {data_type}: {str(values)[:200]}\n"  # Truncate very long values
+
+                # Include raw result snippets for pattern matching
+                raw_result = str(tool_data.get("result", ""))
+                if raw_result and len(raw_result) > 100:
+                    # Extract key patterns that might contain IDs or important data
+                    import re
+
+                    # Generic ID patterns (hexadecimal, numeric, alphanumeric with specific lengths)
+                    id_patterns = [
+                        r"\b[a-f0-9]{16,}\b",  # Long hex strings (like email IDs)
+                        r"\b[A-Za-z0-9]{20,}\b",  # Long alphanumeric strings (API keys, tokens)
+                        r"\b\d{10,}\b",  # Long numeric IDs
+                        r"\b[A-Z]{2,}[0-9]{6,}\b",  # Codes like ABC123456
+                    ]
+
+                    found_ids = []
+                    for pattern in id_patterns:
+                        matches = re.findall(pattern, raw_result)
+                        found_ids.extend(matches[:5])  # Limit to prevent overwhelm
+
+                    if found_ids:
+                        # Remove duplicates
+                        unique_ids = list(dict.fromkeys(found_ids))
+                        prompt += f"  - potential_ids: {unique_ids[:10]}\n"
+
+            # Include content-extracted data
+            content_data = extracted_data.get("extracted_content", {})
+            if content_data:
+                prompt += f"\nCONTENT ANALYSIS:\n"
+                for data_type, values in content_data.items():
+                    if values and data_type not in [
+                        "structured_data"
+                    ]:  # Skip complex nested data
+                        if isinstance(values, list) and values:
+                            prompt += f"  - {data_type}: {values[:5]}\n"
+                        elif isinstance(values, dict) and values:
+                            # Show first few key-value pairs from structured data
+                            items = list(values.items())[:3]
+                            prompt += f"  - {data_type}: {dict(items)}\n"
+
+        prompt += f"\nCONTENT TO SUMMARIZE:\n{summary_text}"
+
+        return prompt
+
+    def _format_extracted_data_for_summary(self, extracted_data: Dict[str, Any]) -> str:
+        """Format extracted data for inclusion in summary - generic for all data types."""
+        if not extracted_data:
+            return ""
+
+        formatted_lines = ["\n\n[EXTRACTED DATA FOR FUTURE REFERENCE]"]
+
+        # Format search tool data
+        search_data = extracted_data.get("search_tool_data", {})
+        for tool_name, tool_data in search_data.items():
+            tool_extracted = tool_data.get("extracted_data", {})
+
+            # Process all types of extracted data generically
+            if tool_extracted:
+                formatted_lines.append(f"\n{tool_name.upper()} FINDINGS:")
+
+                # Extract and preserve IDs from raw results using comprehensive patterns
+                result_str = str(tool_data.get("result", ""))
+                if result_str:
+                    all_ids = self._extract_all_ids_from_text(result_str)
+                    if all_ids:
+                        formatted_lines.append(f"  IDs found: {all_ids}")
+
+                # Include all extracted data types
+                for data_type, values in tool_extracted.items():
+                    if values:
+                        if isinstance(values, list) and values:
+                            # Format list data clearly
+                            display_values = values[:8]  # Show more for better context
+                            if len(values) > 8:
+                                display_values.append(f"... and {len(values) - 8} more")
+                            formatted_lines.append(f"  {data_type}: {display_values}")
+                        elif isinstance(values, dict) and values:
+                            # Show key-value pairs for structured data
+                            items = list(values.items())[:5]
+                            formatted_lines.append(f"  {data_type}: {dict(items)}")
+                        else:
+                            # Single values
+                            formatted_lines.append(
+                                f"  {data_type}: {str(values)[:100]}"
+                            )
+
+        # Include content analysis data
+        content_data = extracted_data.get("extracted_content", {})
+        if content_data and any(content_data.values()):
+            formatted_lines.append(f"\nCONTENT ANALYSIS:")
+            for data_type, values in content_data.items():
+                if values and data_type != "structured_data":
+                    if isinstance(values, list) and values:
+                        formatted_lines.append(f"  {data_type}: {values[:5]}")
+
+        return "\n".join(formatted_lines) if len(formatted_lines) > 1 else ""
+
+    def _extract_all_ids_from_text(self, text: str) -> List[str]:
+        """Extract all potential IDs from text using comprehensive patterns."""
+        import re
+
+        all_ids = []
+
+        # Comprehensive ID patterns for different systems
+        id_patterns = [
+            # Email/Message IDs (Gmail, Outlook, etc.)
+            r"\b[a-f0-9]{16,24}\b",  # Gmail message IDs
+            r"\b[A-Za-z0-9+/]{20,}={0,2}\b",  # Base64-like IDs
+            # Database/API IDs
+            r'\bid["\']?\s*:\s*["\']?([A-Za-z0-9_-]+)["\']?',  # JSON id fields
+            r'\b(?:user_id|session_id|token|key|ref)\s*[=:]\s*["\']?([A-Za-z0-9_-]+)["\']?',
+            # File/Path IDs
+            r"\/([A-Za-z0-9_-]{10,})\/",  # IDs in file paths
+            # Transaction/Confirmation codes
+            r"\b[A-Z]{2,}[0-9]{6,}\b",  # Codes like ABC123456
+            r"\b[0-9]{8,15}\b",  # Long numeric IDs
+            # UUIDs and similar
+            r"\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b",
+            r"\b[A-Za-z0-9]{32}\b",  # 32-character IDs
+        ]
+
+        for pattern in id_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if isinstance(matches[0], tuple) if matches else False:
+                # Handle grouped patterns
+                matches = [
+                    match[0] if isinstance(match, tuple) else match for match in matches
+                ]
+            all_ids.extend(matches)
+
+        # Remove duplicates while preserving order, filter out common false positives
+        unique_ids = []
+        false_positives = {
+            "function",
+            "return",
+            "string",
+            "number",
+            "boolean",
+            "object",
+            "array",
+        }
+
+        for id_val in all_ids:
+            if (
+                id_val not in unique_ids
+                and len(id_val) >= 8  # Minimum reasonable ID length
+                and id_val.lower() not in false_positives
+                and not id_val.isdigit()
+                or len(id_val) >= 10
+            ):  # Avoid short numbers
+                unique_ids.append(id_val)
+
+        return unique_ids[:15]  # Limit to prevent overwhelming the summary
 
     def has_completed_required_tools(self) -> tuple[bool, set[str]]:
         """
@@ -922,21 +1094,46 @@ Provide a concise summary:
     def summarize_and_prune_context(self, current_iteration: int = 0):
         """
         Check if summarization/pruning should occur based on frequency, token budget, and aggressiveness.
+        For plan-execute-reflect strategy: uses more conservative thresholds to preserve step history.
         """
         config = self.get_optimal_pruning_config()
+
+        # Check if we're using plan-execute-reflect strategy
+        is_plan_execute_reflect = (
+            hasattr(self, "reasoning_strategy")
+            and self.reasoning_strategy == "plan_execute_reflect"
+        )
+
+        if is_plan_execute_reflect:
+            # More conservative settings for plan-execute-reflect
+            summarization_frequency = max(
+                6, self.context_summarization_frequency * 2
+            )  # Less frequent
+            max_tokens_threshold = config["max_tokens"] * 1.5  # Higher threshold
+            max_messages_threshold = config["max_messages"] * 1.5  # Higher threshold
+        else:
+            # Standard settings for other strategies
+            summarization_frequency = self.context_summarization_frequency
+            max_tokens_threshold = config["max_tokens"]
+            max_messages_threshold = config["max_messages"]
+
         should_summarize = self.enable_context_summarization and (
-            current_iteration % self.context_summarization_frequency == 0
+            current_iteration % summarization_frequency == 0
         )
         should_prune = self.enable_context_pruning and (
-            self.estimate_context_tokens() > config["max_tokens"]
-            or len(self.session.messages) > config["max_messages"]
+            self.estimate_context_tokens() > max_tokens_threshold
+            or len(self.session.messages) > max_messages_threshold
         )
+
         if self.agent_logger:
+            strategy_info = (
+                "plan-execute-reflect" if is_plan_execute_reflect else "standard"
+            )
             self.agent_logger.debug(
-                f"summarize_and_prune_context: iteration={current_iteration}, "
+                f"summarize_and_prune_context ({strategy_info}): iteration={current_iteration}, "
                 f"should_summarize={should_summarize}, should_prune={should_prune}, "
-                f"tokens={self.estimate_context_tokens()}, max_tokens={config['max_tokens']}, "
-                f"messages={len(self.session.messages)}, max_messages={config['max_messages']}"
+                f"tokens={self.estimate_context_tokens()}, max_tokens={max_tokens_threshold}, "
+                f"messages={len(self.session.messages)}, max_messages={max_messages_threshold}"
             )
         return should_summarize, should_prune
 
@@ -982,7 +1179,7 @@ Provide a concise summary:
 # This allows them to correctly resolve the 'AgentContext' forward reference.
 MetricsManager.model_rebuild(force=True)
 MemoryManager.model_rebuild(force=True)
-ReflectionManager.model_rebuild(force=True)
+# ReflectionManager is no longer used with simplified infrastructure
 WorkflowManager.model_rebuild(force=True)
 ToolManager.model_rebuild(force=True)
 # --- End Rebuild Models ---

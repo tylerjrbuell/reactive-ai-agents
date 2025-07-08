@@ -7,8 +7,6 @@ Internal framework components and utilities.
 # Engine components
 from .engine import (
     ExecutionEngine,
-    ReactiveExecutionEngine,
-    TaskExecutor,
     TaskClassifier,
     MetricsManager,
     AgentContext,
@@ -43,8 +41,7 @@ from .tools import (
 
 # Reasoning system
 from .reasoning import (
-    ReflectionManager,
-    PlanManager,
+    StrategyManager,
 )
 
 # Workflow system
@@ -127,8 +124,7 @@ __all__ = [
     "DataExtractor",
     "SearchDataManager",
     # Reasoning
-    "ReflectionManager",
-    "PlanManager",
+    "StrategyManager",
     # Workflows
     "WorkflowManager",
     # Framework initialization

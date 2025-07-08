@@ -17,7 +17,7 @@ from reactive_agents.core.types.status_types import TaskStatus
 from reactive_agents.core.types.session_types import AgentSession
 
 if TYPE_CHECKING:
-    from reactive_agents.core.engine.execution_engine import AgentExecutionEngine
+    from reactive_agents.core.engine.execution_engine import ExecutionEngine
 
 
 class AgentLifecycleProtocol(Protocol):
@@ -71,7 +71,7 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
     """
 
     context: AgentContext
-    execution_engine: Optional["AgentExecutionEngine"] = None
+    execution_engine: Optional["ExecutionEngine"] = None
     _closed: bool = False
     _initialized: bool = False
     config: Optional[Any] = None  # Optional config attribute for subclasses
@@ -86,6 +86,9 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
         self.context = context
         self._closed = False
         self._initialized = False
+
+        # Set agent reference in context for Infrastructure to use
+        self.context._agent = self  # type: ignore
 
         # Ensure logger is initialized before using it
         if not self.context.agent_logger:
@@ -149,15 +152,19 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
         pass
 
     # --- Core thinking methods ---
-    async def _think(self, **kwargs) -> dict | None:
+    async def _think(
+        self, response_format: Optional[str] = None, **kwargs
+    ) -> dict | None:
         """Directly calls the model provider for a simple completion."""
         start_time = time.time()
         try:
             self.agent_logger.info("Thinking (direct completion)...")
-            # Pass messages directly if provided, otherwise use context messages
-            kwargs.setdefault("messages", self.context.session.messages)
-            result = await self.model_provider.get_completion(**kwargs)
 
+            # Add response format to kwargs if specified
+            if response_format:
+                kwargs["response_format"] = response_format
+
+            result = await self.model_provider.get_completion(**kwargs)
             # Metric Tracking
             execution_time = time.time() - start_time
             if self.context.metrics_manager:
@@ -168,7 +175,20 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
                         "completion_tokens": result.completion_tokens or 0,
                     }
                 )
-            return result.model_dump()
+
+            if not result or not result.message:
+                self.agent_logger.warning(
+                    "Direct completion did not return a valid message structure."
+                )
+                return None
+
+            message = result.message
+            message_content: str = message.content or ""
+
+            return {
+                "content": message_content,
+                "result": result.model_dump(),
+            }
         except Exception as e:
             self.agent_logger.error(f"Direct Completion Error: {e}")
             return None
@@ -331,26 +351,50 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
         processed_calls = []
         for tool_call in tool_calls:
             try:
-                tool_name = tool_call.get("name", "unknown")
-                tool_args = tool_call.get("arguments", {})
+                # Handle both dict and ToolCall object structures
+                if hasattr(tool_call, "function") and not isinstance(tool_call, dict):
+                    # ToolCall object with function attribute
+                    function_obj = getattr(tool_call, "function")
+                    tool_name = getattr(function_obj, "name", "unknown")
+                    tool_args = getattr(function_obj, "arguments", {})
+                elif isinstance(tool_call, dict):
+                    # Dict structure - check for nested function
+                    if "function" in tool_call:
+                        tool_name = tool_call["function"].get("name", "unknown")
+                        tool_args = tool_call["function"].get("arguments", {})
+                    else:
+                        # Legacy dict structure
+                        tool_name = tool_call.get("name", "unknown")
+                        tool_args = tool_call.get("arguments", {})
+                else:
+                    tool_name = "unknown"
+                    tool_args = {}
 
                 self.agent_logger.info(f"Executing tool: {tool_name}")
 
+                # Extract tool_call_id safely BEFORE reassigning tool_call
+                tool_call_id = None
+                if hasattr(tool_call, "id") and not isinstance(tool_call, dict):
+                    tool_call_id = getattr(tool_call, "id", None)
+                elif isinstance(tool_call, dict):
+                    tool_call_id = tool_call.get("id")
+
                 # Execute the tool using tool manager
                 if self.context.tool_manager:
-                    tool_call = {
+                    tool_call_dict = {
                         "function": {"name": tool_name, "arguments": tool_args}
                     }
-                    result = await self.context.tool_manager.use_tool(tool_call)
+                    result = await self.context.tool_manager.use_tool(tool_call_dict)
                 else:
                     result = f"Tool {tool_name} not available (no tool manager)"
 
                 # Add tool result to message history
+
                 self.context.session.messages.append(
                     {
                         "role": "tool",
                         "content": str(result),
-                        "tool_call_id": tool_call.get("id"),
+                        "tool_call_id": tool_call_id,
                         "name": tool_name,
                     }
                 )
@@ -365,13 +409,29 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
                 )
 
             except Exception as e:
+                # Extract tool name safely for error reporting
+                error_tool_name = "unknown"
+                error_tool_args = {}
+
+                if hasattr(tool_call, "function") and not isinstance(tool_call, dict):
+                    function_obj = getattr(tool_call, "function")
+                    error_tool_name = getattr(function_obj, "name", "unknown")
+                    error_tool_args = getattr(function_obj, "arguments", {})
+                elif isinstance(tool_call, dict):
+                    if "function" in tool_call:
+                        error_tool_name = tool_call["function"].get("name", "unknown")
+                        error_tool_args = tool_call["function"].get("arguments", {})
+                    else:
+                        error_tool_name = tool_call.get("name", "unknown")
+                        error_tool_args = tool_call.get("arguments", {})
+
                 self.agent_logger.error(
-                    f"Tool execution error for {tool_call.get('name', 'unknown')}: {e}"
+                    f"Tool execution error for {error_tool_name}: {e}"
                 )
                 processed_calls.append(
                     {
-                        "name": tool_call.get("name", "unknown"),
-                        "arguments": tool_call.get("arguments", {}),
+                        "name": error_tool_name,
+                        "arguments": error_tool_args,
                         "result": str(e),
                         "success": False,
                     }

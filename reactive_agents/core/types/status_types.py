@@ -16,3 +16,18 @@ class TaskStatus(Enum):
 
     def __str__(self):
         return self.value
+
+
+class StepStatus(Enum):
+    """Status values for individual execution steps."""
+
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    BLOCKED = "blocked"
+    RETRYING = "retrying"
+
+    def __str__(self):
+        return self.value

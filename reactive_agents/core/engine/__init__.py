@@ -1,13 +1,11 @@
 """
-Execution Engine
+Core Engine Module
 
-Core execution loop and task management.
+Provides the execution engine for reactive agents.
 """
 
 # Core engine components
-from .execution_engine import AgentExecutionEngine as ExecutionEngine
-from .reactive_execution_engine import ReactiveExecutionEngine
-from .task_executor import TaskExecutor
+from .execution_engine import ExecutionEngine
 from reactive_agents.core.reasoning.task_classifier import TaskClassifier
 from reactive_agents.core.metrics.metrics_manager import MetricsManager
 
@@ -32,8 +30,8 @@ from reactive_agents.core.tools.tool_processor import ToolProcessor
 from reactive_agents.core.tools.data_extractor import DataExtractor
 
 # Reasoning components
-from reactive_agents.core.reasoning.reflection_manager import ReflectionManager
-from reactive_agents.core.reasoning.plan_manager import PlanManager
+from reactive_agents.core.reasoning.strategy_manager import StrategyManager
+from reactive_agents.core.reasoning.infrastructure import Infrastructure
 
 # Workflow management
 from reactive_agents.core.workflows.workflow_manager import WorkflowManager
@@ -60,8 +58,7 @@ __all__ = [
     "ToolProcessor",
     "DataExtractor",
     # Reasoning
-    "ReflectionManager",
-    "PlanManager",
+    "StrategyManager",
     # Workflows
     "WorkflowManager",
 ]

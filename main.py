@@ -13,6 +13,7 @@ from reactive_agents.app.builders.agent import (
     ConfirmationConfig,
     LogLevel,
 )
+from reactive_agents.config.mcp_config import MCPConfig, MCPServerConfig
 from reactive_agents.core.tools.decorators import tool
 from reactive_agents.core.types.reasoning_types import ReasoningStrategies
 
@@ -539,18 +540,21 @@ async def test():
     print("\n=== Simple Test ===")
 
     try:
-        agent = await (
-            Builder()
-            .with_name("Test Agent")
-            .with_model("ollama:cogito:14b")
-            .with_mcp_tools(["brave-search"])
-            .with_log_level(LogLevel.DEBUG)
-            .with_reflection(True)
-            .with_vector_memory()
-            .with_model_provider_options(
-                {"num_gpu": 256, "num_ctx": 4000, "temperature": 0.2}
+        agent = (
+            await (
+                Builder()
+                .with_name("Test Agent")
+                .with_model("ollama:cogito:14b")
+                .with_mcp_tools(["brave-search"])
+                .with_log_level(LogLevel.DEBUG)
+                .with_max_iterations(5)
+                # .with_reflection(True)
+                # .with_vector_memory()
+                .with_model_provider_options(
+                    {"num_gpu": 256, "num_ctx": 4000, "temperature": 0.2}
+                )
+                .build()
             )
-            .build()
         )
 
         result = await agent.run("What is the current price of xrp, bitcoin, ethereum?")
@@ -583,11 +587,28 @@ async def test_reflect_decide_act():
             await (
                 Builder()
                 .with_name("RDA Test Agent")
+                # .with_model("google:gemini-2.5-flash")
                 .with_model("ollama:cogito:14b")
-                .with_role("Strategy Testing Agent")
-                .with_instructions("Solve the task by using the tools provided.")
-                .with_reasoning_strategy(ReasoningStrategies.REFLECT_DECIDE_ACT)
+                .with_role("Gmail Assistant")
+                .with_instructions(
+                    "You are a gmail assistant. You are able to search for emails, move them to the trash, and send emails."
+                )
+                .with_mcp_config(
+                    MCPConfig(
+                        mcpServers={
+                            "gmail": MCPServerConfig(
+                                command="mcp-proxy",
+                                args=["http://localhost:5000/mcp"],
+                            )
+                        }
+                    )
+                )
+                .with_model_provider_options(
+                    {"num_gpu": 256, "num_ctx": 10000, "temperature": 0.2}
+                )
                 # .with_mcp_tools(["brave-search", "time"])
+                .with_reasoning_strategy(ReasoningStrategies.REFLECT_DECIDE_ACT)
+                .with_dynamic_strategy_switching(False)
                 .with_custom_tools(
                     [
                         # custom_weather_tool,
@@ -595,16 +616,15 @@ async def test_reflect_decide_act():
                         # crypto_price_simulator,
                     ]
                 )
-                .with_max_iterations(10)
-                .with_dynamic_strategy_switching(False)  # Force the strategy
+                .with_max_iterations(8)
                 .with_log_level(LogLevel.DEBUG)
                 .build()
             )
         )
 
         # Test with a task that should use reflect-decide-act
-        task = "Get the current weather in three different cities (New York, London, Tokyo) and compare their temperatures."
-
+        # task = "Get the current weather in three different cities (New York, London, Tokyo) and compare their temperatures."
+        task = "Authenticate to gmail with the browser, then search for a batch of emails from notifications@github.com and trash them, then send tylerjrbuell@gmail.com a summary of the task."
         print(f"Running task: {task}")
         await agent.pause()
         result = await agent.run(task)

@@ -9,6 +9,7 @@ from .ollama import OllamaModelProvider
 from .groq import GroqModelProvider
 from .openai import OpenAIModelProvider
 from .anthropic import AnthropicModelProvider
+from .google import GoogleModelProvider
 
 __all__ = [
     "BaseModelProvider",
@@ -18,4 +19,5 @@ __all__ = [
     "GroqModelProvider",
     "OpenAIModelProvider",
     "AnthropicModelProvider",
+    "GoogleModelProvider",
 ]

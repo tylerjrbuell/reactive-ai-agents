@@ -50,6 +50,7 @@ class TaskClassifier:
             response = await self.model_provider.get_completion(
                 system=classification_prompt,
                 prompt=f"Classify this task: {task}",
+                format="json",  # Request JSON format to trigger cleaning
                 options=self.context.model_provider_options,
             )
 

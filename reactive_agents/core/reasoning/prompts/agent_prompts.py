@@ -431,5 +431,44 @@ Focus on actionable data that could be used in subsequent steps.
 
 # --- Context Summarization ---
 CONTEXT_SUMMARIZATION_PROMPT = """
-Summarize the following conversation so far, preserving all key facts, decisions, and tool results. Be concise but do not omit important information.
+Summarize the following conversation, preserving all key facts, decisions, and tool results. 
+
+CRITICAL: You must preserve and extract ALL structured data that might be needed by subsequent steps. This includes:
+
+**Data Identifiers:**
+- IDs of any kind (email IDs, file IDs, database IDs, user IDs, session IDs, etc.)
+- Reference numbers, confirmation codes, transaction IDs
+- API keys, tokens, or authentication data (redacted for security)
+
+**Location & Path Data:**
+- File paths, directory paths, URLs, links
+- Database table names, column names
+- API endpoints, service URLs
+
+**Extracted Values:**
+- Numbers, measurements, quantities, prices, percentages
+- Dates, times, timestamps, deadlines
+- Names, titles, descriptions, labels
+- Contact information (emails, phones, addresses)
+
+**Workflow State:**
+- What tools were used and what they found/returned
+- Which steps completed successfully vs failed
+- What data was created, modified, or retrieved
+- Dependencies between steps (what depends on what)
+
+**Critical Context:**
+- Search queries and their results
+- Filter criteria and conditions used
+- Configuration settings or parameters
+- Error messages or warnings encountered
+
+Format your summary as:
+- **Progress**: What was accomplished in this conversation segment
+- **Key Data**: List ALL important structured data with clear labels
+- **Tool Results**: Specific outcomes from each tool execution
+- **State**: Current workflow state and what's ready for next steps
+- **Dependencies**: What future steps will need from this segment
+
+NEVER omit structured data - if unsure whether something is important, include it. Future steps may depend on seemingly minor details.
 """

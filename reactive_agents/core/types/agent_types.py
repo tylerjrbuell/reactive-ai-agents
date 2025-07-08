@@ -144,6 +144,16 @@ class ReactAgentConfig(BaseModel):
         description="Whether to enable dynamic strategy switching based on task classification.",
     )
 
+    # Strategy execution mode configuration
+    strategy_mode: str = Field(
+        default="adaptive",
+        description="Strategy mode: 'static' for fixed strategy, 'adaptive' for dynamic switching.",
+    )
+    static_strategy: str = Field(
+        default="reflect_decide_act",
+        description="Strategy to use when strategy_mode is 'static'.",
+    )
+
     # Store extra kwargs passed, e.g. for specific context managers
     kwargs: Dict[str, Any] = Field(
         default_factory=dict,

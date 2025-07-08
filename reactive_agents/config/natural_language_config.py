@@ -354,5 +354,5 @@ async def create_agent_from_nl(
     factory = AgentFactory(model_provider)
     # Always use ReactiveAgentV2 for the convenience function
     result = await factory.create_agent_from_description(description, "ReactiveAgent")
-    # Type cast since we know it's ReactiveAgentV2 when agent_class is "ReactiveAgentV2"
+    # Type cast since we know it's ReactiveAgent when agent_class is "ReactiveAgent"
     return cast("ReactiveAgent", result)

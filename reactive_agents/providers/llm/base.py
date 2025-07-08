@@ -135,7 +135,13 @@ class BaseModelProvider(ABC, metaclass=AutoRegisterModelMeta):
         Abstract method to get a chat completion from the model.
 
         Args:
-            **kwargs: Arbitrary keyword arguments. Should include 'messages' (list of dicts) and may include 'options' (dict) for model-specific parameters like temperature or num_ctx.
+            **kwargs: Arbitrary keyword arguments. Should include:
+                - messages: List of message dictionaries
+                - options: Dict of model-specific parameters (temperature, max_tokens, etc.)
+                - format: Response format ("json" or "")
+                - stream: Whether to stream the response
+                - tools: List of tool/function definitions
+                - tool_choice: Tool choice preference
         """
         pass
 
@@ -145,7 +151,11 @@ class BaseModelProvider(ABC, metaclass=AutoRegisterModelMeta):
         Abstract method to get a text completion from the model.
 
         Args:
-            **kwargs: Arbitrary keyword arguments. Should include 'prompt' (str) and may include 'options' (dict) for model-specific parameters.
+            **kwargs: Arbitrary keyword arguments. Should include:
+                - prompt: The input prompt string
+                - system: Optional system message
+                - options: Dict of model-specific parameters
+                - format: Response format ("json" or "")
         """
         pass
 
