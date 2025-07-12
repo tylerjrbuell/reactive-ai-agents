@@ -48,16 +48,17 @@ class ExecutionEngine:
         """Initialize strategy management components."""
         from reactive_agents.core.reasoning.strategy_manager import StrategyManager
         from reactive_agents.core.reasoning.task_classifier import TaskClassifier
-        from reactive_agents.core.reasoning.infrastructure import (
-            get_reasoning_infrastructure,
+        from reactive_agents.core.reasoning.engine import (
+            get_reasoning_engine,
         )
 
-        # Get shared infrastructure
-        self.infrastructure = get_reasoning_infrastructure(self.context)
+        # Get shared engine
+        self.engine = get_reasoning_engine(self.context)
 
-        # Initialize strategy manager
-        self.strategy_manager = StrategyManager(self.infrastructure, self.context)
+        # Initialize managers
+        self.strategy_manager = StrategyManager(self.context)
         self.task_classifier = TaskClassifier(self.context)
+        self.context_manager = self.engine.get_context_manager()
 
     async def execute(
         self,
@@ -129,6 +130,9 @@ class ExecutionEngine:
         # Reset strategy system
         self.strategy_manager.reset()
 
+        # Reset context manager state
+        self.context_manager.set_active_strategy(None)
+
         # Emit start event
         self.context.emit_event(
             AgentStateEvent.SESSION_STARTED,
@@ -140,35 +144,64 @@ class ExecutionEngine:
 
     async def _select_strategy(self, task: str):
         """Select execution strategy based on configuration."""
-        strategy_mode = getattr(self.context, "strategy_mode", "adaptive")
+        # Check if dynamic strategy switching is enabled
+        dynamic_switching = getattr(
+            self.context, "enable_dynamic_strategy_switching", True
+        )
+        configured_strategy = getattr(
+            self.context,
+            "reasoning_strategy",
+            "reactive",  # Changed default to reactive
+        )
 
-        if strategy_mode == "static":
-            # Use configured strategy
-            static_strategy = getattr(
-                self.context, "static_strategy", "reflect_decide_act"
-            )
-            self.strategy_manager.set_strategy(static_strategy)
+        # Convert strategy name to string if it's an enum
+        if hasattr(configured_strategy, "value") and not isinstance(
+            configured_strategy, str
+        ):
+            strategy_name = configured_strategy.value
+        else:
+            strategy_name = str(configured_strategy)
 
+        # If dynamic switching is disabled, use configured strategy
+        if not dynamic_switching:
+            self.strategy_manager.set_strategy(strategy_name)
+            self.context_manager.set_active_strategy(strategy_name)
             if self.agent_logger:
-                self.agent_logger.info(f"🎯 Using static strategy: {static_strategy}")
+                self.agent_logger.info(
+                    f"🎯 Using configured strategy: {strategy_name} (dynamic switching disabled)"
+                )
+            return
 
-        elif strategy_mode in ["adaptive", "dynamic"]:
-            # Classify and select optimal strategy
+        # For reactive or unset strategy, use task classification
+        if strategy_name in ["reactive", "adaptive"]:
             if self.task_classifier:
                 classification = await self.task_classifier.classify_task(task)
                 strategy = self.strategy_manager.select_optimal_strategy(classification)
+
+                self.context_manager.set_active_strategy(strategy)
 
                 if self.agent_logger:
                     self.agent_logger.info(
                         f"📋 Task: {classification.task_type.value} "
                         f"(confidence: {classification.confidence:.2f})"
                     )
-                    self.agent_logger.info(f"🎯 Strategy: {strategy}")
+                    self.agent_logger.info(f"🎯 Selected strategy: {strategy}")
             else:
-                # Default fallback
-                self.strategy_manager.set_strategy("reflect_decide_act")
+                # Fallback to reactive if no classifier
+                self.strategy_manager.set_strategy("reactive")
+                self.context_manager.set_active_strategy("reactive")
                 if self.agent_logger:
-                    self.agent_logger.warning("Using default strategy (no classifier)")
+                    self.agent_logger.warning(
+                        "Using reactive strategy (no classifier available)"
+                    )
+        else:
+            # Use configured strategy but allow dynamic switching
+            self.strategy_manager.set_strategy(strategy_name)
+            self.context_manager.set_active_strategy(strategy_name)
+            if self.agent_logger:
+                self.agent_logger.info(
+                    f"🎯 Using configured strategy: {strategy_name} (dynamic switching enabled)"
+                )
 
     async def _execute_loop(
         self, task: str, cancellation_event: Optional[asyncio.Event] = None
@@ -221,17 +254,75 @@ class ExecutionEngine:
                 iteration_result = strategy_result.to_dict()
                 iteration_results.append(iteration_result)
 
+                # Handle task completion
+                if iteration_result.get("action_taken") == "task_completed":
+                    final_answer = iteration_result.get("final_answer")
+                    completion_status = iteration_result.get("status", "unknown")
+                    evaluation = iteration_result.get("evaluation", {})
+
+                    if self.agent_logger:
+                        self.agent_logger.debug(
+                            f"Task completion status: {completion_status}"
+                        )
+                        self.agent_logger.debug(
+                            f"Final answer present: {bool(final_answer)}"
+                        )
+                        self.agent_logger.debug(f"Evaluation result: {evaluation}")
+
+                    # Check if task is actually complete based on evaluation
+                    is_complete = evaluation.get("is_complete", False)
+                    if is_complete and final_answer:
+                        self.context.session.final_answer = final_answer
+                        self.context.session.task_status = TaskStatus.COMPLETE
+                        if self.agent_logger:
+                            self.agent_logger.info(
+                                "✅ Task completed with final answer"
+                            )
+                        break
+                    elif not is_complete:
+                        # Task not complete according to evaluation
+                        if self.agent_logger:
+                            self.agent_logger.warning(
+                                f"Task evaluation indicates incomplete: {evaluation.get('reasoning', 'No reason provided')}"
+                            )
+                        # Update iteration result with evaluation
+                        iteration_result["evaluation"] = evaluation
+                        # Don't break - let strategy continue
+                        continue
+                    else:
+                        # Complete but no final answer
+                        if self.agent_logger:
+                            self.agent_logger.warning(
+                                "Task evaluation indicates complete but missing final answer"
+                            )
+                        # Update iteration result with evaluation
+                        iteration_result["evaluation"] = evaluation
+                        # Don't break - let strategy try to generate final answer
+                        continue
+
                 # Update context
                 reasoning_context.iteration_count = self.context.session.iterations
 
                 # Check if should continue
                 if not iteration_result.get("should_continue", True):
-                    if self.agent_logger:
-                        self.agent_logger.info("🏁 Strategy completed")
-                    break
+                    # Only break if we have a final answer
+                    if self.context.session.final_answer:
+                        if self.agent_logger:
+                            self.agent_logger.info(
+                                "🏁 Strategy completed with final answer"
+                            )
+                        break
+                    else:
+                        if self.agent_logger:
+                            self.agent_logger.warning(
+                                "Strategy wants to complete but no final answer - continuing"
+                            )
 
                 # Check for final answer
-                if self.context.session.final_answer:
+                if (
+                    self.context.session.final_answer
+                    and self.context.session.task_status == TaskStatus.COMPLETE
+                ):
                     if self.agent_logger:
                         self.agent_logger.info("✅ Final answer provided")
                     break
@@ -245,8 +336,8 @@ class ExecutionEngine:
                     },
                 )
 
-                # Manage context
-                # await self.context.manage_context()
+                # Summarize and prune context after each iteration
+                self.context_manager.summarize_and_prune()
 
             except Exception as e:
                 if self.agent_logger:
@@ -254,6 +345,8 @@ class ExecutionEngine:
                         f"Iteration {self.context.session.iterations} failed: {e}"
                     )
 
+                # Set error status on exception
+                self.context.session.task_status = TaskStatus.ERROR
                 iteration_results.append(
                     {"error": str(e), "iteration": self.context.session.iterations}
                 )
@@ -319,6 +412,33 @@ class ExecutionEngine:
         elif self.context.session.task_status == TaskStatus.RUNNING:
             self.context.session.task_status = TaskStatus.ERROR
 
+        # Get task metrics from context
+        task_metrics = {}
+        if self.context.metrics_manager:
+            # Finalize metrics before getting them
+            self.context.metrics_manager.finalize_run_metrics()
+            task_metrics = self.context.metrics_manager.get_metrics()
+
+        # Get session data for additional context
+        session_data = {}
+        if self.context.session:
+            session_data = {
+                "session_id": getattr(self.context.session, "session_id", "unknown"),
+                "iterations": self.context.session.iterations,
+                "successful_tools": (
+                    list(self.context.session.successful_tools)
+                    if self.context.session.successful_tools
+                    else []
+                ),
+                "task_status": (
+                    str(self.context.session.task_status)
+                    if self.context.session.task_status
+                    else "unknown"
+                ),
+                "final_answer": self.context.session.final_answer,
+                "completion_score": self.context.session.completion_score,
+            }
+
         result = {
             "status": self.context.session.task_status.value,
             "final_answer": self.context.session.final_answer,
@@ -327,6 +447,8 @@ class ExecutionEngine:
             "strategy": execution_result.get("strategy", "unknown"),
             "execution_details": execution_result,
             "session_id": getattr(self.context.session, "session_id", "unknown"),
+            "task_metrics": task_metrics,
+            "session_data": session_data,
         }
 
         # Emit session end

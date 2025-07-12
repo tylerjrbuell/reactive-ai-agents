@@ -347,8 +347,10 @@ async def main():
                     "Demonstrate comprehensive event handling capabilities."
                 )
                 .with_reasoning_strategy(ReasoningStrategies.REFLECT_DECIDE_ACT)
-                .with_mcp_tools(["brave-search", "time"])
-                .with_custom_tools([custom_weather_tool, crypto_price_simulator])
+                .with_tools(
+                    mcp_tools=["brave-search", "time"],
+                    custom_tools=[custom_weather_tool, crypto_price_simulator],
+                )
                 .with_max_iterations(10)
                 .build()
             )
@@ -583,54 +585,33 @@ async def test_reflect_decide_act():
     print("\n=== Testing Reflect-Decide-Act Strategy ===")
 
     try:
-        agent = (
-            await (
-                Builder()
-                .with_name("RDA Test Agent")
-                # .with_model("google:gemini-2.5-flash")
-                .with_model("ollama:cogito:14b")
-                .with_role("Gmail Assistant")
-                .with_instructions(
-                    "You are a gmail assistant. You are able to search for emails, move them to the trash, and send emails."
-                )
-                .with_mcp_config(
-                    MCPConfig(
-                        mcpServers={
-                            "gmail": MCPServerConfig(
-                                command="mcp-proxy",
-                                args=["http://localhost:5000/mcp"],
-                            )
-                        }
-                    )
-                )
-                .with_model_provider_options(
-                    {"num_gpu": 256, "num_ctx": 10000, "temperature": 0.2}
-                )
-                # .with_mcp_tools(["brave-search", "time"])
-                .with_reasoning_strategy(ReasoningStrategies.REFLECT_DECIDE_ACT)
-                .with_dynamic_strategy_switching(False)
-                .with_custom_tools(
-                    [
-                        # custom_weather_tool,
-                        multi_city_weather_tool,
-                        # crypto_price_simulator,
-                    ]
-                )
-                .with_max_iterations(8)
-                .with_log_level(LogLevel.DEBUG)
-                .build()
+        agent = await (
+            Builder()
+            .with_name("RDA Test Agent")
+            .with_model("ollama:cogito:14b")
+            .with_role("Test Assistant")
+            .with_instructions(
+                "You are a test assistant for the reflect-decide-act strategy."
             )
+            .with_reasoning_strategy(ReasoningStrategies.REFLECT_DECIDE_ACT)
+            .with_mcp_tools(["brave-search", "filesystem"])
+            .with_custom_tools([custom_weather_tool])
+            .with_max_iterations(5)
+            .with_log_level(LogLevel.DEBUG)
+            .with_model_provider_options(
+                {"num_gpu": 256, "num_ctx": 4000, "temperature": 0}
+            )
+            .build()
         )
 
         # Test with a task that should use reflect-decide-act
-        # task = "Get the current weather in three different cities (New York, London, Tokyo) and compare their temperatures."
-        task = "Authenticate to gmail with the browser, then search for a batch of emails from notifications@github.com and trash them, then send tylerjrbuell@gmail.com a summary of the task."
+        task = "What is the current price of bitcoin, xrp, ethereum, solana? Create a markdown file called ./prices.md with the prices in a nice markdown table"
         print(f"Running task: {task}")
-        await agent.pause()
         result = await agent.run(task)
 
         print("RDA Strategy Test Result:")
-        print(json.dumps(result, indent=2, default=str))
+        print(result.get("final_answer", "No final answer"))
+        # print(json.dumps(result, indent=2, default=str))
 
         await agent.close()
 
@@ -639,8 +620,115 @@ async def test_reflect_decide_act():
         traceback.print_exc()
 
 
+async def test_reactive_strategy():
+    """
+    Test the reactive strategy specifically.
+    """
+    print("\n=== Testing Reactive Strategy ===")
+
+    try:
+        agent = await (
+            Builder()
+            .with_name("Reactive Test Agent")
+            .with_model("ollama:cogito:14b")
+            .with_role("Quick Response Assistant")
+            .with_instructions(
+                "Provide quick, reactive responses to simple queries using the reactive strategy."
+            )
+            .with_reasoning_strategy(ReasoningStrategies.REACTIVE)
+            .with_mcp_tools(["time", "brave-search"])
+            .with_custom_tools([crypto_price_simulator, custom_weather_tool])
+            .with_max_iterations(10)
+            .with_log_level(LogLevel.DEBUG)
+            .with_dynamic_strategy_switching(False)  # Force reactive strategy
+            .build()
+        )
+
+        # Run a simple task
+        task = "Get the current price of bitcoin, xrp, ethereum, solana"
+        print(f"Running reactive strategy task: {task}")
+
+        result = await agent.run(task)
+
+        print("Reactive Strategy Test Result:")
+        print(json.dumps(result, indent=4))
+
+        # Check if the task was completed successfully
+        success = (
+            result.get("status") == "complete"
+            and result.get("final_answer") is not None
+        )
+        print(f"\n✅ Reactive Strategy Test: {'PASSED' if success else 'FAILED'}")
+
+        if success:
+            print(f"✅ Final Answer: {result.get('final_answer', 'No final answer')}")
+        else:
+            print(f"❌ Status: {result.get('status', 'unknown')}")
+            print(f"❌ Completion Score: {result.get('completion_score', 0)}")
+
+        await agent.close()
+        return result
+
+    except Exception as e:
+        print(f"Error during reactive strategy test: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return None
+
+
+async def test_plan_execute_reflect():
+    """
+    Test the plan_execute_reflect strategy specifically.
+    """
+    print("\n=== Testing Plan-Execute-Reflect Strategy ===")
+
+    try:
+        agent = (
+            await (
+                Builder()
+                .with_name("Plan-Execute-Reflect Test Agent")
+                .with_model("ollama:cogito:14b")
+                .with_role("Test Assistant")
+                .with_instructions("You are an agent that can plan and execute tasks.")
+                .with_reasoning_strategy(ReasoningStrategies.PLAN_EXECUTE_REFLECT)
+                # .with_mcp_tools(["brave-search", "filesystem"])
+                .with_custom_tools([custom_weather_tool])
+                .with_max_iterations(10)
+                .with_log_level(LogLevel.DEBUG)
+                .with_model_provider_options(
+                    {"num_gpu": 256, "num_ctx": 4000, "temperature": 0}
+                )
+                .build()
+            )
+        )
+
+        # Test with a task that should use plan_execute_reflect
+        task = "Get the weather in Tokyo"
+        print(f"Running task: {task}")
+        result = await agent.run(task)
+
+        print("Plan-Execute-Reflect Strategy Test Result:")
+
+        def json_serializer(obj):
+            if hasattr(obj, "model_dump"):
+                return obj.model_dump()
+            elif hasattr(obj, "dict"):
+                return obj.dict()
+            return str(obj)
+
+        # Print the main result structure
+        print(json.dumps(result, indent=4, default=json_serializer))
+
+        await agent.close()
+
+    except Exception as e:
+        print(f"Error in plan_execute_reflect test: {e}")
+        traceback.print_exc()
+
+
 if __name__ == "__main__":
-    # Run the main examples
+    # Run the main examples (includes reactive strategy test)
     # asyncio.run(main())
 
     # Run additional examples
@@ -649,4 +737,10 @@ if __name__ == "__main__":
     # asyncio.run(test())
 
     # Test reflect_decide_act strategy
-    asyncio.run(test_reflect_decide_act())
+    # asyncio.run(test_reflect_decide_act())
+
+    # Test reactive strategy specifically
+    # asyncio.run(test_reactive_strategy())
+
+    # Test plan_execute_reflect strategy
+    asyncio.run(test_plan_execute_reflect())

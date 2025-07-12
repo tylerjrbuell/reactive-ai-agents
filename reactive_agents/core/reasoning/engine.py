@@ -1,5 +1,5 @@
 """
-Simplified Reasoning Infrastructure
+Simplified Reasoning engine
 
 Essential shared components for reasoning strategies without over-engineering.
 Provides basic prompt access, tool execution, and context preservation.
@@ -8,6 +8,11 @@ Provides basic prompt access, tool execution, and context preservation.
 from __future__ import annotations
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
 import json
+
+from reactive_agents.core.types.agent_types import (
+    AgentThinkChainResult,
+    AgentThinkResult,
+)
 
 # Import the class-based prompt system
 from .prompts.base import (
@@ -23,13 +28,16 @@ from .prompts.base import (
     ToolSelectionPrompt,
     StrategyTransitionPrompt,
     PlanExtensionPrompt,
+    TaskGoalEvaluationPrompt,
 )
+
+from reactive_agents.core.context.context_manager import ContextManager
 
 if TYPE_CHECKING:
     from reactive_agents.core.context.agent_context import AgentContext
 
 
-class Infrastructure:
+class ReasoningEngine:
     """
     Simple, clean infrastructure for reasoning strategies.
 
@@ -62,10 +70,13 @@ class Infrastructure:
             "tool_selection": ToolSelectionPrompt(context),
             "strategy_transition": StrategyTransitionPrompt(context),
             "plan_extension": PlanExtensionPrompt(context),
+            "task_goal_evaluation": TaskGoalEvaluationPrompt(context),
         }
 
     # === Prompt Management ===
-    async def think_chain(self, use_tools: bool = False) -> Optional[Dict[str, Any]]:
+    async def think_chain(
+        self, use_tools: bool = False
+    ) -> Optional[AgentThinkChainResult]:
         """Execute a thinking step with optional tool use."""
         if not hasattr(self.context, "_agent") or not self.context._agent:
             return None
@@ -80,13 +91,13 @@ class Infrastructure:
 
     async def think(
         self, prompt: str, response_format: Optional[str] = None, **kwargs
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[AgentThinkResult]:
         """Execute a thinking step with optional tool use."""
         if not hasattr(self.context, "_agent") or not self.context._agent:
             return None
         try:
             return await self.context._agent._think(
-                prompt=prompt, response_format=response_format, **kwargs
+                prompt=prompt, format=response_format, **kwargs
             )
         except Exception as e:
             if self.agent_logger:
@@ -95,9 +106,6 @@ class Infrastructure:
 
     def get_prompt(self, prompt_type: str, **kwargs) -> str:
         """Get a sophisticated prompt using the class-based system."""
-        if prompt_type not in self._prompts:
-            # Fallback to basic prompts for backward compatibility
-            return self._get_fallback_prompt(prompt_type, **kwargs)
 
         try:
             return self._prompts[prompt_type].generate(**kwargs)
@@ -289,8 +297,8 @@ Is the task complete? Provide a yes/no answer with brief reasoning:""",
             result = await self.think(completion_prompt)
 
             # Parse the result for completion information
-            if result and "content" in result:
-                content = result["content"]
+            if result and result.content:
+                content = result.content
                 # Try to extract completion information from the response
                 is_complete = any(
                     phrase in content.lower()
@@ -343,14 +351,14 @@ Is the task complete? Provide a yes/no answer with brief reasoning:""",
         )
 
         result = await self.think(reflection_prompt)
-        if result and "content" in result:
-            return result["content"]
+        if result and result.content:
+            return result.content
 
         return None
 
     # === Reset ===
     def reset(self):
-        """Reset infrastructure for new task."""
+        """Reset engine for new task."""
         self._preserved_context.clear()
         self._completed_actions.clear()
 
@@ -397,8 +405,8 @@ Is the task complete? Provide a yes/no answer with brief reasoning:""",
 
             result = await self.think(completion_prompt)
 
-            if result and "content" in result:
-                content = result["content"]
+            if result and result.content:
+                content = result.content
                 # Try to parse structured response
                 try:
                     import json
@@ -476,64 +484,60 @@ Is the task complete? Provide a yes/no answer with brief reasoning:""",
                 execution_summary=execution_summary,
                 **kwargs,
             )
+
+            self.context.session.messages.append(
+                {
+                    "role": "assistant",
+                    "content": f"I will now generate a final answer for the task: {task}",
+                }
+            )
             self.context.session.messages.append(
                 {"role": "user", "content": final_prompt}
             )
+
+            # Use direct thinking instead of tool-based thinking for final answer
             result = await self.think_chain(use_tools=True)
-            if result and result.get("content"):
-                result = json.loads(result.get("content", "{}"))
-                return result
+            if self.agent_logger:
+                self.agent_logger.info(f"Final answer result: {result}")
+            if result and result.content:
+                # Try to parse as JSON first
+                try:
+                    import json
+
+                    final_answer_data = json.loads(result.content)
+                    return final_answer_data
+                except json.JSONDecodeError:
+                    # If not valid JSON, wrap in a final_answer structure
+                    return {"final_answer": result.content}
+
             return None
         except Exception as e:
             if self.agent_logger:
                 self.agent_logger.error(f"Final answer generation failed: {e}")
             return None
 
-    async def complete_task_if_ready(
-        self, task: str, execution_summary: str = "", **kwargs
-    ) -> Dict[str, Any]:
+    def get_context_manager(self) -> ContextManager:
         """
-        Check if task should be completed and generate final answer if so.
-
-        Args:
-            task: The original task
-            execution_summary: Summary of what was accomplished
-            **kwargs: Additional context
+        Get or create a context manager for the agent.
 
         Returns:
-            Dict with completion info: {should_complete, final_answer, completion_info}
+            ContextManager instance
         """
-        completion_info = await self.should_complete_task(
-            task, execution_summary=execution_summary, **kwargs
-        )
-
-        should_complete = completion_info.get("is_complete", False)
-        final_answer = None
-
-        if should_complete:
-            result = await self.generate_final_answer(task, execution_summary, **kwargs)
-
-            # Store final answer in session
-            if result and self.context.session:
-                self.context.session.final_answer = str(result)
-
-        return {
-            "should_complete": should_complete,
-            "final_answer": final_answer,
-            "completion_info": completion_info,
-        }
+        if not hasattr(self, "_context_manager"):
+            self._context_manager = ContextManager(self.context)
+        return self._context_manager
 
 
-# Global infrastructure cache
-_infrastructure_cache: Dict[str, Infrastructure] = {}
+# Global engine cache
+_engine_cache: Dict[str, ReasoningEngine] = {}
 
 
-def get_reasoning_infrastructure(context: "AgentContext") -> Infrastructure:
-    """Get or create infrastructure instance for the given context."""
+def get_reasoning_engine(context: "AgentContext") -> ReasoningEngine:
+    """Get or create engine instance for the given context."""
     # Use agent name as cache key
     cache_key = getattr(context, "agent_name", "default")
 
-    if cache_key not in _infrastructure_cache:
-        _infrastructure_cache[cache_key] = Infrastructure(context)
+    if cache_key not in _engine_cache:
+        _engine_cache[cache_key] = ReasoningEngine(context)
 
-    return _infrastructure_cache[cache_key]
+    return _engine_cache[cache_key]

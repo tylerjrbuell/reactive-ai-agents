@@ -188,7 +188,7 @@ def plugins():
 @click.option(
     "--strategy",
     "-s",
-    default="reflect_decide_act",
+    default="reactive",
     type=click.Choice(
         ["reflect_decide_act", "plan_execute_reflect", "reactive", "adaptive"]
     ),
@@ -255,7 +255,7 @@ def agent(
 @click.option(
     "--strategy",
     "-s",
-    default="reflect_decide_act",
+    default="reactive",
     type=click.Choice(
         ["reflect_decide_act", "plan_execute_reflect", "reactive", "adaptive"]
     ),

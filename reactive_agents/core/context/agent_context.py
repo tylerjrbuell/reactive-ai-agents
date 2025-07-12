@@ -127,7 +127,6 @@ class AgentContext(BaseModel):
     mcp_client: Optional[MCPClient] = None
     mcp_config: Optional[MCPConfig] = None
     tools: List[Any] = Field(default_factory=list)
-
     # Loggers (Remain in Context)
     agent_logger: Optional[Logger] = None
     tool_logger: Optional[Logger] = None
@@ -828,17 +827,12 @@ Provide a concise summary:
         messages = self.session.messages
         system_message = messages[0]
 
-        # Get strategy-specific context adapter
-        context_adapter = self._get_context_adapter()
-
         # Delegate to strategy-specific context management
-        await context_adapter.manage_context(
-            should_summarize=should_summarize,
-            should_prune=should_prune,
-            config=config,
-            messages=messages,
-            system_message=system_message,
-        )
+        # The ContextManager will handle the actual context management logic
+        # based on the current strategy and the provided config.
+        # For now, we just call manage_context on the workflow_manager,
+        # which will in turn manage its own context.
+        await self.manage_context()
 
         # Capture after state
         after_state = {
@@ -852,22 +846,7 @@ Provide a concise summary:
         # Take periodic snapshot
         # Remove observability tracking code
 
-    def _get_context_adapter(self):
-        """Get the appropriate context adapter for the current strategy."""
-        strategy = getattr(self, "reasoning_strategy", "default")
-
-        if strategy == "plan_execute_reflect":
-            from reactive_agents.core.context.adapters.plan_execute_reflect_context import (
-                PlanExecuteReflectContextAdapter,
-            )
-
-            return PlanExecuteReflectContextAdapter(self)
-        else:
-            from reactive_agents.core.context.adapters.default_context import (
-                DefaultContextAdapter,
-            )
-
-            return DefaultContextAdapter(self)
+    # Remove the _get_context_adapter method and all references to context adapters
 
     async def _extract_structured_data_from_messages(
         self, messages: List[Dict[str, Any]]

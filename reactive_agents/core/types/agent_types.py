@@ -1,9 +1,33 @@
 from typing import List, Literal, Optional, Dict, Any, Set
 from pydantic import BaseModel, Field, model_validator
 
+from reactive_agents.core.types.tool_types import ProcessedToolCall
 from reactive_agents.providers.external.client import MCPClient
 from reactive_agents.core.types.confirmation_types import ConfirmationCallbackProtocol
 from reactive_agents.config.mcp_config import MCPConfig
+
+
+class AgentThinkResult(BaseModel):
+    """Result of a single thinking step."""
+
+    result: dict = Field(description="The result of the thinking step.")
+    result_json: dict = Field(
+        default={}, description="The result of the thinking step as a JSON object."
+    )
+    content: str = Field(description="The content of the thinking step.")
+
+
+class AgentThinkChainResult(BaseModel):
+    """Result of a chain of thinking steps."""
+
+    result: dict = Field(description="The result of the thinking chain.")
+    content: str = Field(description="The content of the thinking chain.")
+    result_json: dict = Field(
+        default={}, description="The result of the thinking chain as a JSON object."
+    )
+    tool_calls: List[ProcessedToolCall] = Field(
+        default_factory=list, description="The tool calls of the thinking chain."
+    )
 
 
 # --- Agent Configuration Model ---
@@ -58,7 +82,7 @@ class ReactAgentConfig(BaseModel):
     tool_use_enabled: Optional[bool] = Field(
         default=True, description="Whether the agent can use tools."
     )
-    custom_tools: Optional[List[Any]] = Field(
+    tools: Optional[List[Any]] = Field(
         default_factory=list,
         description="List of custom tool instances to use with the agent.",
     )
@@ -134,7 +158,7 @@ class ReactAgentConfig(BaseModel):
 
     # Advanced reasoning strategy configuration
     reasoning_strategy: str = Field(
-        default="reflect_decide_act", description="Initial reasoning strategy to use."
+        default="reactive", description="Initial reasoning strategy to use."
     )
     enable_reactive_execution: bool = Field(
         default=True, description="Whether to enable reactive execution engine."
@@ -150,7 +174,7 @@ class ReactAgentConfig(BaseModel):
         description="Strategy mode: 'static' for fixed strategy, 'adaptive' for dynamic switching.",
     )
     static_strategy: str = Field(
-        default="reflect_decide_act",
+        default="reactive",
         description="Strategy to use when strategy_mode is 'static'.",
     )
 

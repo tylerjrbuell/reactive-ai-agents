@@ -3,8 +3,12 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from enum import Enum
 import json
+from reactive_agents.core.types.agent_types import (
+    AgentThinkChainResult,
+    AgentThinkResult,
+)
 from reactive_agents.core.types.reasoning_types import ReasoningContext
-from reactive_agents.core.reasoning.infrastructure import Infrastructure
+from reactive_agents.core.reasoning.engine import ReasoningEngine
 
 if TYPE_CHECKING:
     from reactive_agents.core.context.agent_context import AgentContext
@@ -22,40 +26,85 @@ class StrategyCapabilities(Enum):
 
 
 class StrategyResult:
-    """Standardized result from strategy execution."""
+    """Result from a strategy iteration."""
 
     def __init__(
         self,
         action_taken: str,
-        result: Dict[str, Any],
         should_continue: bool = True,
-        confidence: float = 0.5,
-        strategy_used: str = "unknown",
-        next_strategy: Optional[str] = None,
         final_answer: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        status: str = "unknown",
+        evaluation: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ):
+        """
+        Initialize a strategy result.
+
+        Args:
+            action_taken: The action that was taken
+            should_continue: Whether to continue executing
+            final_answer: Optional final answer if task is complete
+            status: Status of the action
+            evaluation: Task evaluation result if available
+            **kwargs: Additional result data
+        """
         self.action_taken = action_taken
-        self.result = result
         self.should_continue = should_continue
-        self.confidence = confidence
-        self.strategy_used = strategy_used
-        self.next_strategy = next_strategy
         self.final_answer = final_answer
-        self.metadata = metadata or {}
+        self.status = status
+        self.evaluation = evaluation or {}
+        self.additional_data = kwargs
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization."""
-        return {
+        """Convert to dictionary with proper serialization."""
+
+        # Create a temporary instance to use _make_serializable
+        # We'll create a simple helper function here
+        def make_serializable(obj: Any) -> Any:
+            """Convert objects to JSON-serializable format."""
+            try:
+                # Handle Pydantic models
+                if hasattr(obj, "model_dump"):
+                    return obj.model_dump()
+                elif hasattr(obj, "dict"):
+                    return obj.dict()
+
+                # Handle dictionaries
+                if isinstance(obj, dict):
+                    return {k: make_serializable(v) for k, v in obj.items()}
+
+                # Handle lists and tuples
+                if isinstance(obj, (list, tuple)):
+                    return [make_serializable(item) for item in obj]
+
+                # Handle basic types
+                if isinstance(obj, (str, int, float, bool, type(None))):
+                    return obj
+
+                # Handle sets
+                if isinstance(obj, set):
+                    return list(obj)
+
+                # For other objects, try to convert to string
+                return str(obj)
+
+            except Exception:
+                # If all else fails, return string representation
+                return str(obj)
+
+        result_dict = {
             "action_taken": self.action_taken,
-            "result": self.result,
             "should_continue": self.should_continue,
-            "confidence": self.confidence,
-            "strategy_used": self.strategy_used,
-            "next_strategy": self.next_strategy,
             "final_answer": self.final_answer,
-            "metadata": self.metadata,
+            "status": self.status,
+            "evaluation": make_serializable(self.evaluation),
         }
+
+        # Add additional data with serialization
+        for key, value in self.additional_data.items():
+            result_dict[key] = make_serializable(value)
+
+        return result_dict
 
 
 class BaseReasoningStrategy(ABC):
@@ -66,16 +115,16 @@ class BaseReasoningStrategy(ABC):
     reasoning strategies that can be plugged into the framework.
     """
 
-    def __init__(self, infrastructure: "Infrastructure"):
+    def __init__(self, engine: "ReasoningEngine"):
         """
-        Initialize the strategy with shared infrastructure.
+        Initialize the strategy with shared engine.
 
         Args:
-            infrastructure: The reasoning infrastructure providing shared services
+            engine: The reasoning engine providing shared services
         """
-        self.infrastructure = infrastructure
-        self.context = infrastructure.context
-        self.agent_logger = infrastructure.context.agent_logger
+        self.engine = engine
+        self.context = engine.context
+        self.agent_logger = engine.context.agent_logger
 
     @property
     @abstractmethod
@@ -109,6 +158,138 @@ class BaseReasoningStrategy(ABC):
             StrategyResult with execution results
         """
         pass
+
+    # === Standardized Strategy Contract ===
+
+    async def execute_with_tools(
+        self, task: str, step_description: str, use_native_tools: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Standard method for executing tools in any strategy.
+
+        Args:
+            task: The main task
+            step_description: What to accomplish in this step
+            use_native_tools: Whether to use native tool calling or manual prompting
+
+        Returns:
+            Execution results with consistent format
+        """
+        return await self._execute_tool_for_task(
+            task, step_description, use_native_tools
+        )
+
+    async def reflect_on_progress(
+        self,
+        task: str,
+        execution_results: Dict[str, Any],
+        reasoning_context: ReasoningContext,
+    ) -> Dict[str, Any]:
+        """
+        Standard method for reflecting on progress in any strategy.
+
+        Args:
+            task: The main task
+            execution_results: Results from tool execution
+            reasoning_context: Current reasoning context
+
+        Returns:
+            Reflection results with consistent format
+        """
+        # Convert execution results to JSON-serializable format
+        serializable_results = self._make_serializable(execution_results)
+
+        # Create reflection prompt
+        reflection_prompt = f"""Task: {task}
+        
+Recent execution results:
+{json.dumps(serializable_results, indent=2)}
+
+Current context:
+- Iteration: {reasoning_context.iteration_count}
+- Error count: {reasoning_context.error_count}
+- Tools used: {reasoning_context.tool_usage_history}
+
+Please reflect on the progress and provide guidance in this JSON format:
+{{
+    "progress_assessment": "Brief summary of what has been accomplished",
+    "goal_achieved": true/false,
+    "completion_score": 0.0-1.0,
+    "next_action": "continue|retry|complete",
+    "confidence": 0.0-1.0,
+    "blockers": ["list of current blockers"],
+    "success_indicators": ["list of positive indicators"],
+    "reasoning": "Your reasoning about the current state"
+}}
+
+Only respond with valid JSON, no additional text."""
+
+        # Add to context and get response
+        self.context_manager.add_message(role="user", content=reflection_prompt)
+        result = await self._think_chain(use_tools=False)
+
+        if result and result.result_json:
+            return result.result_json
+
+        # Fallback reflection
+        return {
+            "progress_assessment": "Unable to generate proper reflection",
+            "goal_achieved": False,
+            "completion_score": 0.0,
+            "next_action": "continue",
+            "confidence": 0.2,
+            "blockers": ["Reflection generation failed"],
+            "success_indicators": [],
+            "reasoning": "Failed to generate reflection",
+        }
+
+    async def evaluate_task_completion(
+        self, task: str, execution_summary: str = "", **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Standard method for evaluating task completion.
+
+        Args:
+            task: The main task
+            execution_summary: Summary of what was accomplished
+            **kwargs: Additional context
+
+        Returns:
+            Evaluation results with consistent format
+        """
+        # Use the engine's completion checking
+        return await self.engine.should_complete_task(
+            task, execution_summary=execution_summary, **kwargs
+        )
+
+    async def generate_final_answer(
+        self, task: str, execution_summary: str = "", **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Standard method for generating final answers.
+
+        Args:
+            task: The main task
+            execution_summary: Summary of what was accomplished
+            **kwargs: Additional context
+
+        Returns:
+            Final answer with consistent format
+        """
+        # Use the engine's final answer generation
+        result = await self.engine.generate_final_answer(
+            task, execution_summary=execution_summary, **kwargs
+        )
+
+        if result:
+            return result
+
+        # Fallback final answer
+        return {
+            "final_answer": f"I worked on the task: {task}. {execution_summary}",
+            "confidence": 0.5,
+            "method": "fallback",
+        }
 
     async def initialize(self, task: str, reasoning_context: ReasoningContext) -> None:
         """
@@ -145,102 +326,150 @@ class BaseReasoningStrategy(ABC):
         return None
 
     # Utility methods for strategies
-    async def _think(self, prompt: str) -> Optional[Dict[str, Any]]:
-        """Execute a thinking step using the infrastructure."""
-        return await self.infrastructure.think(prompt)
+    async def _think(self, prompt: str) -> Optional[AgentThinkResult]:
+        """Execute a thinking step using the engine."""
+        return await self.engine.think(prompt)
 
-    async def _think_chain(self, use_tools: bool = False) -> Optional[Dict[str, Any]]:
-        """Execute a thinking step using the infrastructure."""
-        return await self.infrastructure.think_chain(use_tools)
+    async def _think_chain(
+        self, use_tools: bool = False
+    ) -> Optional[AgentThinkChainResult]:
+        """Execute a thinking step using the engine."""
+        return await self.engine.think_chain(use_tools)
 
     async def _execute_tools(
         self, tool_calls: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """Execute tool calls using the infrastructure."""
-        return await self.infrastructure.execute_tools(tool_calls)
+        """Execute tool calls using the engine."""
+        return await self.engine.execute_tools(tool_calls)
 
-    def _preserve_context(self, key: str, value: Any) -> None:
-        """Preserve important context using the infrastructure."""
-        self.infrastructure.preserve_context(key, value)
-
-    def _get_preserved_context(self, key: Optional[str] = None) -> Dict[str, Any]:
-        """Get preserved context using the infrastructure."""
-        return self.infrastructure.get_preserved_context(key)
-
-    # === Centralized Task Completion ===
-    async def check_task_completion(
-        self, task: str, progress_summary: str = "", **kwargs
+    async def _execute_tool_for_task(
+        self, task: str, step_description: str, use_tools: bool = True
     ) -> Dict[str, Any]:
         """
-        Check if the task should be completed using centralized logic.
+        Unified tool execution method that works for both native and non-native models.
 
         Args:
-            task: The original task
-            progress_summary: Summary of progress made
-            **kwargs: Additional context for completion checking
+            task: The main task
+            step_description: Description of the current step
+            use_tools: Whether to use native tool calling (True) or manual prompting (False)
 
         Returns:
-            Dict with completion information
+            Dictionary with tool execution results
         """
-        return await self.infrastructure.should_complete_task(
-            task, progress_summary=progress_summary, **kwargs
-        )
+        if use_tools:
+            # Try native tool calling first
+            try:
+                # Add context for tool selection
+                self.context_manager.add_message(
+                    role="user",
+                    content=f"Task: {task}\nStep: {step_description}\nPlease use the appropriate tool to complete this step.",
+                )
 
-    async def generate_final_answer(
-        self, task: str, execution_summary: str = "", **kwargs
-    ) -> Optional[Dict[str, Any]]:
+                result = await self._think_chain(use_tools=True)
+                if result and result.tool_calls:
+                    return {
+                        "tool_calls": result.tool_calls,
+                        "reasoning": result.content,
+                        "method": "native_tool_calling",
+                    }
+                else:
+                    # Fall back to manual prompting
+                    return await self._manual_tool_prompting(task, step_description)
+            except Exception as e:
+                if self.agent_logger:
+                    self.agent_logger.warning(
+                        f"Native tool calling failed: {e}, falling back to manual prompting"
+                    )
+                return await self._manual_tool_prompting(task, step_description)
+        else:
+            # Use manual tool prompting for non-native models
+            return await self._manual_tool_prompting(task, step_description)
+
+    async def _manual_tool_prompting(
+        self, task: str, step_description: str
+    ) -> Dict[str, Any]:
         """
-        Generate a final answer using centralized logic.
+        Manual tool prompting for models that don't support native tool calling.
 
         Args:
-            task: The original task
-            execution_summary: Summary of what was accomplished
-            **kwargs: Additional context for answer generation
+            task: The main task
+            step_description: Description of the current step
 
         Returns:
-            Final answer string or None
+            Dictionary with tool execution results
         """
-        return await self.infrastructure.generate_final_answer(
-            task, execution_summary, **kwargs
-        )
+        # Get available tools for prompting
+        tool_signatures = []
+        if self.context.tool_manager:
+            tool_signatures = [
+                {
+                    "name": tool.name,
+                    "description": tool.tool_definition.get("function", {}).get(
+                        "description", ""
+                    ),
+                    "parameters": tool.tool_definition.get("function", {}).get(
+                        "parameters", {}
+                    ),
+                }
+                for tool in self.context.tool_manager.tools
+            ]
 
-    async def complete_task_if_ready(
-        self, task: str, execution_summary: str = "", **kwargs
-    ) -> StrategyResult:
-        """
-        Check completion and generate final answer if ready using centralized logic.
+        # Create manual tool selection prompt
+        prompt = f"""Task: {task}
+Step: {step_description}
 
-        Args:
-            task: The original task
-            execution_summary: Summary of what was accomplished
-            **kwargs: Additional context
+Available tools:
+{json.dumps(tool_signatures, indent=2)}
 
-        Returns:
-            StrategyResult indicating whether task was completed
-        """
-        completion_data = await self.infrastructure.complete_task_if_ready(
-            task, execution_summary, **kwargs
-        )
-        print(completion_data)
+Please select the most appropriate tool and provide the parameters in this exact JSON format:
+{{
+    "tool_calls": [
+        {{
+            "function": {{
+                "name": "<tool_name>",
+                "arguments": {{"param": "value"}}
+            }}
+        }}
+    ],
+    "reasoning": "Why I chose this tool and these parameters"
+}}
 
-        should_complete = completion_data.get("should_complete", False)
-        final_answer = completion_data.get("final_answer")
-        completion_info = completion_data.get("completion_info", {})
+Only respond with valid JSON, no additional text."""
 
-        action_taken = "task_completed" if should_complete else "completion_checked"
+        # Add the prompt to context
+        self.context_manager.add_message(role="user", content=prompt)
 
-        return StrategyResult(
-            action_taken=action_taken,
-            result={
-                "completion_check": completion_info,
-                "execution_summary": execution_summary,
-                "is_complete": should_complete,
-            },
-            should_continue=not should_complete,
-            confidence=completion_info.get("confidence", 0.5),
-            strategy_used=self.name,
-            final_answer=final_answer,
-        )
+        # Get model response
+        result = await self._think_chain(use_tools=False)
+        if result and result.result_json:
+            tool_calls = result.result_json.get("tool_calls", [])
+            if tool_calls:
+                # Execute the selected tools
+                execution_results = await self._execute_tools(tool_calls)
+                return {
+                    "tool_calls": tool_calls,
+                    "execution_results": execution_results,
+                    "reasoning": result.result_json.get("reasoning", ""),
+                    "method": "manual_tool_prompting",
+                }
+
+        return {
+            "error": "Failed to select or execute tools",
+            "method": "manual_tool_prompting",
+        }
+
+    @property
+    def context_manager(self):
+        """Get the context manager from the engine."""
+        return self.engine.get_context_manager()
+
+    def _preserve_context(self, key: str, value: Any) -> None:
+        """Preserve important context using the engine."""
+        self.engine.preserve_context(key, value)
+
+    def _get_preserved_context(self, key: Optional[str] = None) -> Dict[str, Any]:
+        """Get preserved context using the engine."""
+        return self.engine.get_preserved_context(key)
 
     def _extract_required_actions(self, task: str) -> List[str]:
         """Extract required actions from task description."""
@@ -297,6 +526,46 @@ class BaseReasoningStrategy(ABC):
 
         return actions if actions else ["execute_task"]
 
+    def _make_serializable(self, obj: Any) -> Any:
+        """
+        Convert objects to JSON-serializable format.
+
+        Args:
+            obj: Object to serialize
+
+        Returns:
+            JSON-serializable version of the object
+        """
+        try:
+            # Handle Pydantic models
+            if hasattr(obj, "model_dump"):
+                return obj.model_dump()
+            elif hasattr(obj, "dict"):
+                return obj.dict()
+
+            # Handle dictionaries
+            if isinstance(obj, dict):
+                return {k: self._make_serializable(v) for k, v in obj.items()}
+
+            # Handle lists and tuples
+            if isinstance(obj, (list, tuple)):
+                return [self._make_serializable(item) for item in obj]
+
+            # Handle basic types
+            if isinstance(obj, (str, int, float, bool, type(None))):
+                return obj
+
+            # Handle sets
+            if isinstance(obj, set):
+                return list(obj)
+
+            # For other objects, try to convert to string
+            return str(obj)
+
+        except Exception:
+            # If all else fails, return string representation
+            return str(obj)
+
     def _format_error_result(
         self, error: Exception, action: str = "unknown"
     ) -> StrategyResult:
@@ -333,11 +602,9 @@ class StrategyPlugin:
         self.capabilities = capabilities or []
         self.config_schema = config_schema or {}
 
-    def create_instance(
-        self, infrastructure: "Infrastructure"
-    ) -> BaseReasoningStrategy:
+    def create_instance(self, engine: "ReasoningEngine") -> BaseReasoningStrategy:
         """Create an instance of the strategy."""
-        return self.strategy_class(infrastructure)
+        return self.strategy_class(engine)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert plugin info to dictionary."""

@@ -6,6 +6,60 @@ import time
 from .status_types import TaskStatus, StepStatus
 from .agent_types import TaskSuccessCriteria
 from .task_types import PlanStep
+from .reasoning_types import ReflectDecideActState
+
+
+class ReactiveState(BaseModel):
+    """State tracking specific to Reactive strategy."""
+
+    # Execution state
+    execution_history: List[Dict[str, Any]] = Field(default_factory=list)
+    error_count: int = 0
+    max_errors: int = 3
+    last_response: str = ""
+    tool_responses: List[str] = Field(default_factory=list)
+
+    # Metrics
+    tool_success_rate: float = 0.0
+    response_quality_score: float = 0.0
+
+    def get_execution_summary(self) -> Dict[str, Any]:
+        """Get a structured summary of execution progress."""
+        successful_responses = [
+            r for r in self.execution_history if r.get("success", False)
+        ]
+        failed_responses = [
+            r for r in self.execution_history if not r.get("success", False)
+        ]
+
+        return {
+            "total_responses": len(self.execution_history),
+            "successful_responses": len(successful_responses),
+            "failed_responses": len(failed_responses),
+            "error_count": self.error_count,
+            "tool_success_rate": self.tool_success_rate,
+            "response_quality_score": self.response_quality_score,
+        }
+
+    def record_response_result(self, response_result: Dict[str, Any]) -> None:
+        """Record a response result and update metrics."""
+        self.execution_history.append(response_result)
+        self.last_response = response_result.get("content", "")
+
+        # Update success rates
+        total_responses = len(self.execution_history)
+        successful_responses = len(
+            [r for r in self.execution_history if r.get("success", False)]
+        )
+        self.tool_success_rate = (
+            successful_responses / total_responses if total_responses > 0 else 0.0
+        )
+
+        # Track tool responses
+        if "tool_calls" in response_result:
+            for call in response_result["tool_calls"]:
+                if isinstance(call, dict) and "result" in call:
+                    self.tool_responses.append(str(call["result"]))
 
 
 class PlanExecuteReflectState(BaseModel):
@@ -153,16 +207,25 @@ class AgentSession(BaseModel):
     plan_steps: List[PlanStep] = Field(default_factory=list)
     current_step_index: int = 0
 
-    # Strategy-specific state
-    per_strategy_state: Optional[PlanExecuteReflectState] = None
+    # Strategy-specific state - updated to support multiple strategies
+    per_strategy_state: Optional[
+        PlanExecuteReflectState | ReactiveState | ReflectDecideActState
+    ] = None
 
     def initialize_strategy_state(self, strategy_name: str) -> None:
         """Initialize state tracking for a specific strategy."""
         if strategy_name == "plan_execute_reflect":
             self.per_strategy_state = PlanExecuteReflectState()
-        # Add other strategy states as needed
+        elif strategy_name == "reactive":
+            self.per_strategy_state = ReactiveState()
+        elif strategy_name == "reflect_decide_act":
+            self.per_strategy_state = ReflectDecideActState()
+        else:
+            raise ValueError(f"Unknown strategy: {strategy_name}")
 
-    def get_strategy_state(self) -> Optional[PlanExecuteReflectState]:
+    def get_strategy_state(
+        self,
+    ) -> Optional[PlanExecuteReflectState | ReactiveState | ReflectDecideActState]:
         """Get the current strategy state."""
         return self.per_strategy_state
 
@@ -222,17 +285,3 @@ class AgentSession(BaseModel):
         if not self.plan_steps:
             return False
         return all(step.status == StepStatus.COMPLETED for step in self.plan_steps)
-
-    def get_completion_percentage(self) -> float:
-        """Get the percentage of completed steps."""
-        if self.final_answer:
-            return 100.0
-        if not self.plan_steps:
-            return 0.0
-        completed = sum(
-            1 for step in self.plan_steps if step.status == StepStatus.COMPLETED
-        )
-        return (completed / len(self.plan_steps)) * 100.0
-
-    class Config:
-        arbitrary_types_allowed = True

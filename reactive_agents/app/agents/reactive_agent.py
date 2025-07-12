@@ -30,6 +30,7 @@ class ReactiveAgent(Agent):
         tool_processor: Optional[ToolProcessor] = None,
     ):
         self.config = config
+        print("config", config)
         # Create context if not provided (for builder pattern compatibility)
         if context is None:
             # Convert ReactAgentConfig to AgentContext by extracting fields
@@ -98,17 +99,19 @@ class ReactiveAgent(Agent):
         """
         Run the agent with a specific strategy.
 
-        Temporarily overrides the configured strategy mode.
+        Temporarily overrides the configured strategy settings.
         """
         # Store original settings
-        original_mode = getattr(self.context, "strategy_mode", "adaptive")
+        original_switching = getattr(
+            self.context, "enable_dynamic_strategy_switching", True
+        )
         original_strategy = getattr(
-            self.context, "static_strategy", "reflect_decide_act"
+            self.context, "reasoning_strategy", "reflect_decide_act"
         )
 
-        # Set to static mode with specified strategy
-        setattr(self.context, "strategy_mode", "static")
-        setattr(self.context, "static_strategy", strategy)
+        # Set to use specific strategy with dynamic switching disabled
+        setattr(self.context, "enable_dynamic_strategy_switching", False)
+        setattr(self.context, "reasoning_strategy", strategy)
 
         try:
             if self.agent_logger:
@@ -119,13 +122,30 @@ class ReactiveAgent(Agent):
 
         finally:
             # Restore original settings
-            setattr(self.context, "strategy_mode", original_mode)
-            setattr(self.context, "static_strategy", original_strategy)
+            setattr(
+                self.context, "enable_dynamic_strategy_switching", original_switching
+            )
+            setattr(self.context, "reasoning_strategy", original_strategy)
 
     # === Agent Interface Implementation ===
     async def _execute_task(self, task: str) -> Dict[str, Any]:
         """Execute a task (required by base Agent class)."""
         return await self.run(task)
+
+    def _register_event_callbacks(self):
+        """
+        Subscribe all registered event handler callbacks in _event_callbacks to the event manager.
+        """
+        if not hasattr(self, "_event_callbacks"):
+            return
+        event_manager = getattr(self, "_event_manager", None)
+        if event_manager is None:
+            return
+        for event_type, callbacks in self._event_callbacks.items():
+            subscribe_method = getattr(event_manager, f"on_{event_type}", None)
+            if callable(subscribe_method):
+                for cb in callbacks:
+                    subscribe_method(cb)
 
     async def initialize(self) -> None:
         """Initialize the agent."""
@@ -135,13 +155,16 @@ class ReactiveAgent(Agent):
         # Basic initialization
         await super().initialize()
 
+        # Register event callbacks with the event manager
+        self._register_event_callbacks()
+
         if self.agent_logger:
             self.agent_logger.info("✅ Reactive agent initialized")
 
-        async def cleanup(self) -> None:
-            """Cleanup resources."""
-            if self.agent_logger:
-                self.agent_logger.info("🧹 Cleaning up reactive agent...")
+    async def cleanup(self) -> None:
+        """Cleanup resources."""
+        if self.agent_logger:
+            self.agent_logger.info("🧹 Cleaning up reactive agent...")
 
         # Basic cleanup - no parent cleanup method exists
         pass
@@ -180,9 +203,11 @@ class ReactiveAgent(Agent):
         )
         return {
             "agent_name": self.context.agent_name,
-            "strategy_mode": getattr(self.context, "strategy_mode", "adaptive"),
-            "static_strategy": getattr(
-                self.context, "static_strategy", "reflect_decide_act"
+            "reasoning_strategy": getattr(
+                self.context, "reasoning_strategy", "reflect_decide_act"
+            ),
+            "dynamic_strategy_switching": getattr(
+                self.context, "enable_dynamic_strategy_switching", True
             ),
             "session_active": self.context.session is not None,
             "iterations": (
@@ -202,7 +227,9 @@ class ReactiveAgent(Agent):
             and hasattr(self.execution_engine, "strategy_manager")
             and self.execution_engine.strategy_manager
         ):
-            return self.execution_engine.strategy_manager.get_available_strategies()
+            return list(
+                self.execution_engine.strategy_manager.get_available_strategies().keys()
+            )
         return []
 
     def get_strategy_info(self, strategy_name: str) -> Dict[str, Any]:
@@ -216,3 +243,186 @@ class ReactiveAgent(Agent):
                 strategy_name
             )
         return {"error": "No strategy manager available"}
+
+    # === Event Handler Registration Methods ===
+    def on_session_started(self, callback):
+        """Register a callback for session started events."""
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "session_started" not in self._event_callbacks:
+            self._event_callbacks["session_started"] = []
+        self._event_callbacks["session_started"].append(callback)
+
+    def on_session_ended(self, callback):
+        """Register a callback for session ended events."""
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "session_ended" not in self._event_callbacks:
+            self._event_callbacks["session_ended"] = []
+        self._event_callbacks["session_ended"].append(callback)
+
+    def on_iteration_started(self, callback):
+        """Register a callback for iteration started events."""
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "iteration_started" not in self._event_callbacks:
+            self._event_callbacks["iteration_started"] = []
+        self._event_callbacks["iteration_started"].append(callback)
+
+    def on_iteration_completed(self, callback):
+        """Register a callback for iteration completed events."""
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "iteration_completed" not in self._event_callbacks:
+            self._event_callbacks["iteration_completed"] = []
+        self._event_callbacks["iteration_completed"].append(callback)
+
+    def on_tool_called(self, callback):
+        """Register a callback for tool called events."""
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "tool_called" not in self._event_callbacks:
+            self._event_callbacks["tool_called"] = []
+        self._event_callbacks["tool_called"].append(callback)
+
+    def on_tool_completed(self, callback):
+        """Register a callback for tool completed events."""
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "tool_completed" not in self._event_callbacks:
+            self._event_callbacks["tool_completed"] = []
+        self._event_callbacks["tool_completed"].append(callback)
+
+    def on_tool_failed(self, callback):
+        """Register a callback for tool failed events."""
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "tool_failed" not in self._event_callbacks:
+            self._event_callbacks["tool_failed"] = []
+        self._event_callbacks["tool_failed"].append(callback)
+
+    def on_task_status_changed(self, callback):
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "task_status_changed" not in self._event_callbacks:
+            self._event_callbacks["task_status_changed"] = []
+        self._event_callbacks["task_status_changed"].append(callback)
+
+    def on_reflection_generated(self, callback):
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "reflection_generated" not in self._event_callbacks:
+            self._event_callbacks["reflection_generated"] = []
+        self._event_callbacks["reflection_generated"].append(callback)
+
+    def on_final_answer_set(self, callback):
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "final_answer_set" not in self._event_callbacks:
+            self._event_callbacks["final_answer_set"] = []
+        self._event_callbacks["final_answer_set"].append(callback)
+
+    def on_metrics_updated(self, callback):
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "metrics_updated" not in self._event_callbacks:
+            self._event_callbacks["metrics_updated"] = []
+        self._event_callbacks["metrics_updated"].append(callback)
+
+    def on_error_occurred(self, callback):
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "error_occurred" not in self._event_callbacks:
+            self._event_callbacks["error_occurred"] = []
+        self._event_callbacks["error_occurred"].append(callback)
+
+    def on_pause_requested(self, callback):
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "pause_requested" not in self._event_callbacks:
+            self._event_callbacks["pause_requested"] = []
+        self._event_callbacks["pause_requested"].append(callback)
+
+    def on_paused(self, callback):
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "paused" not in self._event_callbacks:
+            self._event_callbacks["paused"] = []
+        self._event_callbacks["paused"].append(callback)
+
+    def on_resume_requested(self, callback):
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "resume_requested" not in self._event_callbacks:
+            self._event_callbacks["resume_requested"] = []
+        self._event_callbacks["resume_requested"].append(callback)
+
+    def on_resumed(self, callback):
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "resumed" not in self._event_callbacks:
+            self._event_callbacks["resumed"] = []
+        self._event_callbacks["resumed"].append(callback)
+
+    def on_stop_requested(self, callback):
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "stop_requested" not in self._event_callbacks:
+            self._event_callbacks["stop_requested"] = []
+        self._event_callbacks["stop_requested"].append(callback)
+
+    def on_stopped(self, callback):
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "stopped" not in self._event_callbacks:
+            self._event_callbacks["stopped"] = []
+        self._event_callbacks["stopped"].append(callback)
+
+    def on_terminate_requested(self, callback):
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "terminate_requested" not in self._event_callbacks:
+            self._event_callbacks["terminate_requested"] = []
+        self._event_callbacks["terminate_requested"].append(callback)
+
+    def on_terminated(self, callback):
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "terminated" not in self._event_callbacks:
+            self._event_callbacks["terminated"] = []
+        self._event_callbacks["terminated"].append(callback)
+
+    def on_cancelled(self, callback):
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "cancelled" not in self._event_callbacks:
+            self._event_callbacks["cancelled"] = []
+        self._event_callbacks["cancelled"].append(callback)
+
+    def on_context_changed(self, callback):
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "context_changed" not in self._event_callbacks:
+            self._event_callbacks["context_changed"] = []
+        self._event_callbacks["context_changed"].append(callback)
+
+    def on_operation_completed(self, callback):
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "operation_completed" not in self._event_callbacks:
+            self._event_callbacks["operation_completed"] = []
+        self._event_callbacks["operation_completed"].append(callback)
+
+    def on_tokens_used(self, callback):
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "tokens_used" not in self._event_callbacks:
+            self._event_callbacks["tokens_used"] = []
+        self._event_callbacks["tokens_used"].append(callback)
+
+    def on_snapshot_taken(self, callback):
+        if not hasattr(self, "_event_callbacks"):
+            self._event_callbacks = {}
+        if "snapshot_taken" not in self._event_callbacks:
+            self._event_callbacks["snapshot_taken"] = []
+        self._event_callbacks["snapshot_taken"].append(callback)

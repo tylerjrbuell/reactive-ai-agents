@@ -87,7 +87,7 @@ class AgentSettings:
     """Default agent settings"""
 
     # Reasoning settings
-    default_strategy: str = "reflect_decide_act"
+    default_strategy: str = "reactive"  # Changed from reflect_decide_act
     max_iterations: int = 10
     min_completion_score: float = 0.7
 

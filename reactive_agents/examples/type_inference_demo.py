@@ -8,8 +8,8 @@ event data types with full IntelliSense support.
 """
 
 from typing import TYPE_CHECKING
-from reactive_agents.core.types.agent_protocols import EventHandlerProtocol
-from reactive_agents.core.types.event_mappings import (
+from reactive_agents.core.types.agent_protocol_types import EventHandlerProtocol
+from reactive_agents.core.types.event_mapping_types import (
     get_available_event_methods,
     get_event_categories,
     get_events_by_category,

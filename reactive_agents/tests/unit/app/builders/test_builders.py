@@ -254,13 +254,11 @@ async def test_diagnose_agent_tools():
 # Tool Unification Logic Tests
 @pytest.mark.asyncio
 async def test_unify_tool_registration():
-    """Test the _unify_tool_registration method"""
-    builder = ReactiveAgentBuilder()
+    """Test the tool manager's _unify_tool_registration method"""
+    from reactive_agents.core.tools.tool_manager import ToolManager
 
-    # Create a mock agent
-    mock_agent = MagicMock()
+    # Create a mock context
     mock_context = MagicMock()
-    mock_tool_manager = MagicMock()
 
     # Set up context tools list
     context_tool1 = MagicMock()
@@ -270,33 +268,25 @@ async def test_unify_tool_registration():
     context_tools = [context_tool1, context_tool2]
     mock_context.tools = context_tools
 
+    # Create tool manager
+    tool_manager = ToolManager(context=mock_context)
+
     # Set up tool manager tools
     manager_tool1 = MagicMock()
     manager_tool1.name = "tool1"
     manager_tool3 = MagicMock()
     manager_tool3.name = "tool3"
-    mock_tool_manager.tools = [manager_tool1, manager_tool3]
-
-    # Connect everything
-    mock_context.tool_manager = mock_tool_manager
-    mock_agent.context = mock_context
-
-    # Create a mock for generate_signatures
-    mock_generate_signatures = MagicMock()
-    mock_tool_manager._generate_tool_signatures = mock_generate_signatures
+    tool_manager.tools = [manager_tool1, manager_tool3]
 
     # Call the method
-    builder._unify_tool_registration(mock_agent)
+    tool_manager._unify_tool_registration()
 
     # Verify tools were unified
     all_tools_names = {tool.name for tool in mock_context.tools}
     assert all_tools_names == {"tool1", "tool2", "tool3"}
 
-    all_manager_tools_names = {tool.name for tool in mock_tool_manager.tools}
+    all_manager_tools_names = {tool.name for tool in tool_manager.tools}
     assert all_manager_tools_names == {"tool1", "tool2", "tool3"}
-
-    # Verify generate_signatures was called
-    mock_generate_signatures.assert_called_once()
 
 
 # Factory Methods Tests

@@ -31,7 +31,7 @@ from reactive_agents.core.tools.data_extractor import DataExtractor
 
 # Reasoning components
 from reactive_agents.core.reasoning.strategy_manager import StrategyManager
-from reactive_agents.core.reasoning.infrastructure import Infrastructure
+from reactive_agents.core.reasoning.engine import ReasoningEngine
 
 # Workflow management
 from reactive_agents.core.workflows.workflow_manager import WorkflowManager

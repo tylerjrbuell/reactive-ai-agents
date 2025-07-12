@@ -228,7 +228,7 @@ class ReactiveAgentBuilder:
             "tool_use_policy": "adaptive",
             "tool_use_max_consecutive_calls": 3,
             # Advanced configuration
-            "reasoning_strategy": "reflect_decide_act",
+            "reasoning_strategy": "reactive",  # Changed from reflect_decide_act
             "enable_reactive_execution": True,
             "enable_dynamic_strategy_switching": True,
             "kwargs": {},
@@ -841,65 +841,6 @@ class ReactiveAgentBuilder:
 
         return agent
 
-    # Tool registration helper methods
-    def _unify_tool_registration(self, agent: ReactiveAgent) -> None:
-        """
-        Unify tool registration to ensure all tools are accessible in both
-        agent.context.tools and agent.context.tool_manager.tools
-
-        Args:
-            agent: The ReactiveAgent instance to modify
-        """
-        if not hasattr(agent, "context"):
-            return
-
-        context = agent.context
-        tool_manager = getattr(context, "tool_manager", None)
-        tools_list = getattr(context, "tools", [])
-
-        if not tool_manager:
-            return
-
-        # First, collect all tools from both sources
-        all_tools = {}
-
-        # Add tools from the tool_manager
-        for tool in getattr(tool_manager, "tools", []):
-            tool_name = getattr(tool, "name", str(id(tool)))
-            all_tools[tool_name] = tool
-
-        # Add tools from the context.tools list
-        for tool in tools_list:
-            tool_name = getattr(tool, "name", str(id(tool)))
-            all_tools[tool_name] = tool
-
-        # Now ensure both collections have all tools
-
-        # 1. Update context.tools
-        if tools_list:
-            # Clear the current list
-            while tools_list:
-                tools_list.pop()
-
-            # Add all unified tools
-            for tool_name, tool in all_tools.items():
-                tools_list.append(tool)
-
-        # 2. Update tool_manager.tools
-        tool_manager_tools = getattr(tool_manager, "tools", [])
-        if tool_manager_tools:
-            # Clear the current list carefully (tools might be used by references elsewhere)
-            tool_manager.tools = []
-
-            # Add all unified tools
-            for tool_name, tool in all_tools.items():
-                tool_manager.tools.append(tool)
-
-        # 3. Regenerate tool signatures if the method exists
-        generate_signatures = getattr(tool_manager, "_generate_tool_signatures", None)
-        if callable(generate_signatures):
-            generate_signatures()
-
     # Diagnostic methods
     def debug_tools(self) -> Dict[str, Any]:
         """
@@ -1260,7 +1201,7 @@ class ReactiveAgentBuilder:
                 #         "agent_name",
                 #         "role",
                 #     ]:  # Preserve explicit settings
-                #         self._config[key] = value
+                #         self._config[key] = value0
             except Exception as e:
                 self._logger.warning(f"Failed to process natural language config: {e}")
 
@@ -1279,17 +1220,13 @@ class ReactiveAgentBuilder:
 
         # Add custom tools to the configuration
         if self._custom_tools:
-            self._config["custom_tools"] = self._custom_tools
+            self._config["tools"] = self._custom_tools
 
         try:
             # Create ReactAgentConfig and ReactiveAgent
             agent_config = ReactAgentConfig(**self._config)
             agent = ReactiveAgent(config=agent_config)
             await agent.initialize()
-
-            # Post-initialization hook for custom tools
-            if self._custom_tools:
-                self._unify_tool_registration(agent)
 
             # Set up event callbacks if any were registered
             if hasattr(self, "_event_callbacks"):

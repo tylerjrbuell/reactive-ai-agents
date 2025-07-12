@@ -1,21 +1,20 @@
 from __future__ import annotations
-from typing import Dict, Any, Optional, TYPE_CHECKING
-from reactive_agents.core.types.reasoning_types import (
-    ReasoningStrategies,
-    ReasoningContext,
+from typing import Dict, Any, Optional, List
+from reactive_agents.core.types.reasoning_types import ReasoningContext
+from reactive_agents.core.reasoning.engine import ReasoningEngine
+from reactive_agents.core.reasoning.strategies.base import (
+    BaseReasoningStrategy,
+    StrategyResult,
+    StrategyCapabilities,
 )
-from .base import BaseReasoningStrategy, StrategyResult, StrategyCapabilities
-from ..infrastructure import Infrastructure
-
-if TYPE_CHECKING:
-    from reactive_agents.core.context.agent_context import AgentContext
 
 
 class ReflectDecideActStrategy(BaseReasoningStrategy):
     """
-    Simple Reflect-Decide-Act strategy.
-    Each iteration: reflect on progress, decide next action, then execute it.
-    Uses the simplified infrastructure for all operations.
+    Simplified Reflect-Decide-Act strategy.
+    1. Reflect: Evaluate current progress and blockers
+    2. Decide: Choose the next action or plan
+    3. Act: Execute the chosen action (tool or answer)
     """
 
     @property
@@ -23,183 +22,194 @@ class ReflectDecideActStrategy(BaseReasoningStrategy):
         return "reflect_decide_act"
 
     @property
-    def capabilities(self) -> list[StrategyCapabilities]:
+    def capabilities(self) -> List[StrategyCapabilities]:
         return [
             StrategyCapabilities.REFLECTION,
             StrategyCapabilities.PLANNING,
             StrategyCapabilities.TOOL_EXECUTION,
         ]
 
-    def __init__(self, infrastructure: "Infrastructure"):
-        super().__init__(infrastructure)
+    @property
+    def description(self) -> str:
+        return "Reflect-decide-act reasoning with reflection, decision, and action."
+
+    async def initialize(self, task: str, reasoning_context: ReasoningContext) -> None:
+        """Initialize the reflect-decide-act strategy."""
+        # Set the strategy in context manager
+        self.context_manager.set_active_strategy(self.name)
+
+        # Initialize cycle tracking
+        self.engine.preserve_context("cycle_count", 0)
+        self.engine.preserve_context("last_action_result", None)
+
+        # Add initial context
+        self.context_manager.add_message(
+            role="user",
+            content=f"Task: {task}\nI will approach this using reflect-decide-act cycles.",
+        )
 
     async def execute_iteration(
         self, task: str, reasoning_context: ReasoningContext
     ) -> StrategyResult:
-        """Execute reflect-decide-act iteration."""
+        """
+        Execute one iteration of the reflect-decide-act strategy:
+        1. Reflect on current progress
+        2. Decide next action
+        3. Act on the decision
+        4. Evaluate if should continue or complete
+        """
         try:
-            if self.agent_logger:
-                self.agent_logger.debug("🔄 Reflect-Decide-Act iteration")
+            # Get cycle state
+            cycle_count = self.engine.get_preserved_context("cycle_count") or 0
+            last_action_result = self.engine.get_preserved_context("last_action_result")
 
-            # Phase 1: Reflect on current progress
-            reflection = await self._reflect_phase(task, reasoning_context)
-
-            # Phase 2: Decide next action based on reflection
-            decision = await self._decide_phase(task, reflection)
-
-            # Phase 3: Act on the decision
-            action_result = await self._act_phase(decision)
-
-            # Preserve the iteration context
-            self._preserve_context(
-                f"rda_iteration_{reasoning_context.iteration_count}",
-                {
-                    "reflection": reflection,
-                    "decision": decision,
-                    "action": action_result,
-                },
+            # Phase 1: Reflection
+            reflection = await self.reflect_on_progress(
+                task, last_action_result or {}, reasoning_context
             )
 
+            # Phase 2: Decision - determine next action
+            decision = await self._make_decision(task, reflection, reasoning_context)
+
+            # Phase 3: Act - execute the decision
+            action_result = await self._execute_decision(
+                task, decision, reasoning_context
+            )
+
+            # Update preserved context
+            self.engine.preserve_context("cycle_count", cycle_count + 1)
+            self.engine.preserve_context("last_action_result", action_result)
+
+            # Phase 4: Evaluate if task is complete
+            if (
+                reflection.get("goal_achieved", False)
+                or reflection.get("next_action") == "complete"
+            ):
+                return await self._handle_task_completion(
+                    task, action_result, reflection, cycle_count + 1
+                )
+
+            # Continue with next cycle
             return StrategyResult(
-                action_taken="reflect_decide_act",
+                action_taken="reflect_decide_act_cycle",
+                should_continue=True,
+                status="in_progress",
+                evaluation=reflection,
                 result={
+                    "cycle_count": cycle_count + 1,
                     "reflection": reflection,
                     "decision": decision,
-                    "action": action_result,
+                    "action_result": action_result,
                 },
-                should_continue=action_result.get("should_continue", True),
-                strategy_used="reflect_decide_act",
-                final_answer=action_result.get("final_answer"),
             )
 
         except Exception as e:
             if self.agent_logger:
-                self.agent_logger.error(f"Reflect-Decide-Act iteration failed: {e}")
-            return self._format_error_result(e, "reflect_decide_act")
+                self.agent_logger.error(f"Error in reflect-decide-act strategy: {e}")
 
-    async def _reflect_phase(
-        self, task: str, reasoning_context: ReasoningContext
-    ) -> Dict[str, Any]:
-        """Reflect on current progress and state."""
-        if self.agent_logger:
-            self.agent_logger.debug("🤔 Phase 1: Reflection")
-
-        # Use infrastructure's enhanced reflection method with full context
-        reflection_text = await self.infrastructure.reflect(
-            task=task,
-            progress=f"Iteration {reasoning_context.iteration_count}",
-            last_result=str(reasoning_context.last_action_result or "None"),
-        )
-
-        if not reflection_text:
-            return {
-                "progress_assessment": "Unable to generate reflection",
-                "completion_score": 0.5,
-                "next_action_type": "continue",
-                "reasoning": "Reflection generation failed, continuing",
-            }
-
-        # Use centralized completion check
-        completion_info = await self.check_task_completion(task)
-        is_complete = completion_info.get("is_complete", False)
-
-        return {
-            "progress_assessment": reflection_text,
-            "completion_score": completion_info.get("confidence", 0.5),
-            "next_action_type": "finalize" if is_complete else "continue",
-            "reasoning": "Based on current progress analysis",
-        }
-
-    async def _decide_phase(
-        self, task: str, reflection: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Decide on the next best action based on reflection."""
-        if self.agent_logger:
-            self.agent_logger.debug("🎯 Phase 2: Decision")
-
-        # If reflection suggests completion
-        if reflection.get("next_action_type") == "finalize":
-            return {
-                "next_step": "Provide final answer",
-                "rationale": "Task appears complete based on reflection",
-                "action_type": "finalize",
-                "confidence": reflection.get("completion_score", 0.8),
-            }
-
-        # Otherwise, continue with next step
-        return {
-            "next_step": "Continue task execution",
-            "rationale": "More work needed based on reflection",
-            "action_type": "continue",
-            "confidence": 0.7,
-        }
-
-    async def _act_phase(self, decision: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute the decided action."""
-        if self.agent_logger:
-            self.agent_logger.debug("⚡ Phase 3: Action")
-
-        action_type = decision.get("action_type", "continue")
-
-        if action_type == "finalize":
-            # Use centralized final answer generation
-            final_answer = await self.generate_final_answer(
-                task=decision.get("next_step", "the current task"),
-                execution_summary=f"Reflect-Decide-Act strategy finalization after reflection analysis",
+            return StrategyResult(
+                action_taken="error_occurred",
+                should_continue=True,
+                status="error",
+                result={"error": str(e), "recovery_action": "retry_current_cycle"},
             )
 
-            if final_answer:
-                return {
-                    "action_type": "finalize",
-                    "result": final_answer,
-                    "should_continue": False,
-                    "final_answer": final_answer,
-                }
-            else:
-                # Fallback if centralized generation fails
-                return {
-                    "action_type": "finalize_failed",
-                    "result": "Failed to generate final answer",
-                    "should_continue": True,
-                }
+    async def _make_decision(
+        self, task: str, reflection: Dict[str, Any], reasoning_context: ReasoningContext
+    ) -> Dict[str, Any]:
+        """Make a decision about the next action based on reflection."""
+        decision_prompt = f"""Task: {task}
 
-        # Continue with task execution
-        prompt = f"Continue working on the task. {decision.get('rationale', '')}"
-        result = await self._think_chain(use_tools=True)
+Current reflection:
+{reflection}
 
+Based on the reflection, what should I do next? Please provide a decision in this JSON format:
+{{
+    "next_action": "use_tool|provide_answer|gather_info",
+    "action_description": "Detailed description of what to do",
+    "reasoning": "Why this action is the best choice",
+    "expected_outcome": "What I expect to achieve"
+}}
+
+Only respond with valid JSON, no additional text."""
+
+        self.context_manager.add_message(role="user", content=decision_prompt)
+        result = await self._think_chain(use_tools=False)
+
+        if result and result.result_json:
+            return result.result_json
+
+        # Fallback decision
         return {
-            "action_type": "continue",
-            "result": (
-                result.get("content", "Continued task execution")
-                if result
-                else "Action failed"
-            ),
-            "should_continue": True,
+            "next_action": "use_tool",
+            "action_description": f"Continue working on the task: {task}",
+            "reasoning": "Fallback decision due to decision generation failure",
+            "expected_outcome": "Make progress on the task",
         }
 
-    def should_switch_strategy(
-        self, reasoning_context: ReasoningContext
-    ) -> Optional[str]:
-        """Consider switching strategy based on context."""
-        # Switch to planning if many iterations without progress
-        if (
-            reasoning_context.iteration_count >= 5
-            and reasoning_context.stagnation_count >= 3
-        ):
-            return "plan_execute_reflect"
+    async def _execute_decision(
+        self, task: str, decision: Dict[str, Any], reasoning_context: ReasoningContext
+    ) -> Dict[str, Any]:
+        """Execute the decision made in the decide phase."""
+        next_action = decision.get("next_action", "use_tool")
+        action_description = decision.get(
+            "action_description", "Continue working on the task"
+        )
 
-        # Switch to reactive if task seems simple
-        if (
-            reasoning_context.iteration_count >= 2
-            and reasoning_context.error_count == 0
-        ):
-            completion_hints = ["simple", "quick", "direct", "straightforward"]
-            last_result = str(reasoning_context.last_action_result or "")
-            if any(hint in last_result.lower() for hint in completion_hints):
-                return "reactive"
+        if next_action == "use_tool":
+            # Execute tools to complete the action
+            use_native_tools = getattr(
+                self.context, "supports_native_tool_calling", True
+            )
+            return await self.execute_with_tools(
+                task, action_description, use_native_tools=use_native_tools
+            )
+        elif next_action == "provide_answer":
+            # Generate final answer
+            return await self.generate_final_answer(task, action_description)
+        elif next_action == "gather_info":
+            # Gather more information through thinking
+            info_prompt = f"Task: {task}\n\n{action_description}\n\nPlease provide the requested information."
+            self.context_manager.add_message(role="user", content=info_prompt)
+            result = await self._think_chain(use_tools=False)
 
-        return None
+            return {
+                "action_type": "gather_info",
+                "information": (
+                    result.content if result else "Unable to gather information"
+                ),
+                "method": "thinking",
+            }
+        else:
+            # Default to tool execution
+            use_native_tools = getattr(
+                self.context, "supports_native_tool_calling", True
+            )
+            return await self.execute_with_tools(
+                task, action_description, use_native_tools=use_native_tools
+            )
 
-    def get_strategy_name(self) -> ReasoningStrategies:
-        """Return the strategy identifier."""
-        return ReasoningStrategies.REFLECT_DECIDE_ACT
+    async def _handle_task_completion(
+        self,
+        task: str,
+        action_result: Dict[str, Any],
+        reflection: Dict[str, Any],
+        cycle_count: int,
+    ) -> StrategyResult:
+        """Handle task completion."""
+        execution_summary = f"Completed task using reflect-decide-act strategy after {cycle_count} cycles"
+        final_answer = await self.generate_final_answer(task, execution_summary)
+
+        return StrategyResult(
+            action_taken="task_completed",
+            should_continue=False,
+            final_answer=final_answer.get("final_answer"),
+            status="completed",
+            evaluation=reflection,
+            result={
+                "cycle_count": cycle_count,
+                "action_result": action_result,
+                "reflection": reflection,
+                "final_answer": final_answer,
+            },
+        )

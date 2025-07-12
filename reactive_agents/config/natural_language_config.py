@@ -216,7 +216,9 @@ Parse this description into a valid JSON configuration:"""
         }
 
         # Set reasoning strategy in kwargs (since it's not a direct ReactAgentConfig parameter)
-        reasoning = config.get("reasoning_strategy", "reflect_decide_act")
+        reasoning = config.get(
+            "reasoning_strategy", "reactive"
+        )  # Changed from reflect_decide_act
         enhanced["kwargs"] = {
             "reasoning_strategy": reasoning,
             "enable_reactive_execution": True,

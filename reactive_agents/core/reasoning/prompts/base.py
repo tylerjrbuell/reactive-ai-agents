@@ -1,12 +1,29 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, List, TYPE_CHECKING
+from typing import Dict, Any, Optional, List, TYPE_CHECKING, Literal
 from pydantic import BaseModel
 from datetime import datetime
 import json
 
 if TYPE_CHECKING:
     from reactive_agents.core.context.agent_context import AgentContext
+
+# All valid prompt keys for registration and lookup
+PromptKey = Literal[
+    "system",
+    "planning",
+    "reflection",
+    "plan_generation",
+    "step_execution",
+    "completion_validation",
+    "plan_progress_reflection",
+    "error_recovery",
+    "final_answer",
+    "tool_selection",
+    "strategy_transition",
+    "plan_extension",
+    "task_goal_evaluation",
+]
 
 
 class PromptContext(BaseModel):
@@ -164,6 +181,7 @@ class TaskPlanningPrompt(BasePrompt):
         import json  # Add import here for json usage
 
         context = self._get_prompt_context(**kwargs)
+        goal_evaluation = kwargs.get("goal_evaluation", None)
 
         prompt = f"""You are a task planning specialist. Create a single, optimal next step for this task.
 
@@ -193,6 +211,12 @@ Current Iteration: {context.iteration_count}"""
                 content = memory.get("content", "")[:150]
                 success = memory.get("metadata", {}).get("success", True)
                 prompt += f"\n{i}. [{memory_type.upper()}] {'✅' if success else '❌'}: {content}..."
+
+        # Add goal evaluation feedback if provided
+        if goal_evaluation:
+            prompt += (
+                f"\n\nGOAL EVALUATION FEEDBACK: {json.dumps(goal_evaluation, indent=2)}"
+            )
 
         prompt += """
 
@@ -230,6 +254,7 @@ class ReflectionPrompt(BasePrompt):
 
         context = self._get_prompt_context(**kwargs)
         last_result = kwargs.get("last_result", {})
+        goal_evaluation = kwargs.get("goal_evaluation", None)
 
         # Extract execution summary from last_result
         execution_summary = last_result.get("execution_summary", [])
@@ -265,9 +290,9 @@ EXECUTION SUMMARY:"""
         # Add detailed execution summary
         if execution_summary:
             for step in execution_summary:
-                prompt += f"\n{step['status']} {step['step']}"
+                prompt += f"\n{step.status} {step.step}"
                 if step.get("tool_results"):
-                    for result in step["tool_results"]:
+                    for result in step.tool_results:
                         prompt += f"\n  → {result}"
 
         # Add previous reflection context if available
@@ -279,7 +304,7 @@ EXECUTION SUMMARY:"""
             )
             prompt += f"\nNext Action: {last_reflection.get('next_action', 'unknown')}"
             if last_reflection.get("blockers"):
-                prompt += f"\nBlockers: {', '.join(last_reflection['blockers'])}"
+                prompt += f"\nBlockers: {', '.join(last_reflection.blockers)}"
 
         if context.task_classification:
             prompt += f"\n\nTask Type: {context.task_classification.get('task_type')}"
@@ -287,12 +312,19 @@ EXECUTION SUMMARY:"""
         if context.recent_messages:
             prompt += f"\n\nRecent Progress: {json.dumps(context.recent_messages[-3:], indent=2)}"
 
+        # Add goal evaluation feedback if provided
+        if goal_evaluation:
+            prompt += (
+                f"\n\nGOAL EVALUATION FEEDBACK: {json.dumps(goal_evaluation, indent=2)}"
+            )
+
         prompt += """
 
 CRITICAL: You MUST respond with ONLY valid JSON. Do not include any other text or explanation.
 Your response must be parseable by JSON.parse() without any preprocessing.
 
 {
+    "progress_assessment": "<summary of current progress>",
     "goal_achieved": <boolean - true ONLY if ALL steps succeeded AND no errors>,
     "completion_score": <float 0.0-1.0 based on successful_steps/total_steps>,
     "next_action": "<continue|retry|complete>",
@@ -325,7 +357,8 @@ Guidelines (remember to ONLY output valid JSON):
    - Set completion_score based on step_success_rate
    - Set confidence based on success rates and recovery rates
    - List ONLY ACTUAL blockers from execution
-   - Include specific success indicators from completed steps"""
+   - Include specific success indicators from completed steps
+5. The 'progress_assessment' field MUST be a concise summary of the agent's current progress toward the task, referencing any completed steps, partial results, or blockers. This field is REQUIRED for correct operation of the agent."""
 
         return prompt
 
@@ -702,10 +735,15 @@ ACTUAL EXECUTION HISTORY:"""
                 if tool_calls:
                     for tc in tool_calls:
                         tool_name = tc.get("name", "unknown")
-                        tool_result = tc.get("result", ["No result"])
-                        result_summary = (
-                            str(tool_result[0])[:100] if tool_result else "No result"
-                        )
+                        tool_result = tc.get("result")
+                        if isinstance(tool_result, list) and tool_result:
+                            result_summary = str(tool_result[0])[:100]
+                        elif isinstance(tool_result, str):
+                            result_summary = tool_result[:100]
+                        elif tool_result is not None:
+                            result_summary = str(tool_result)[:100]
+                        else:
+                            result_summary = "No result"
                         prompt += f"\n  Tool: {tool_name} -> {result_summary}"
 
         prompt += f"""
@@ -862,4 +900,52 @@ Guidelines:
 - Don't duplicate existing completed work
 - Focus on what's missing to complete the task"""
 
+        return prompt
+
+
+class TaskGoalEvaluationPrompt(BasePrompt):
+    """
+    Reusable prompt for LLM-powered task completion evaluation.
+    Generates a prompt for the LLM to assess whether the task is complete, confidence, reasoning, and missing requirements.
+    """
+
+    def generate(self, **kwargs) -> str:
+        context = self._get_prompt_context(**kwargs)
+        progress_summary = kwargs.get("progress_summary", "")
+        latest_output = kwargs.get("latest_output", "")
+        execution_log = kwargs.get("execution_log", "")
+        meta = kwargs.get("meta", {})
+        success_criteria = kwargs.get(
+            "success_criteria", meta.get("success_criteria", "None provided")
+        )
+
+        prompt = f"""You are a task evaluator. Determine whether the task has been completed using the task description and context provided.
+
+Task Description:
+{context.task}
+
+Progress Summary:
+{progress_summary}
+
+Latest Output:
+{latest_output}
+
+Execution Log:
+{execution_log}
+
+Success Criteria (if available):
+{success_criteria}
+
+Evaluate the following:
+1. Is the task completed successfully?
+2. What is your confidence score between 0 and 1?
+3. If the task is not complete, what is missing?
+4. Provide a short reasoning explanation.
+
+Return your answer in JSON format with:
+- completion: true/false
+- completion_score: float (0.0 to 1.0)
+- reasoning: string
+- missing_requirements: list
+"""
         return prompt

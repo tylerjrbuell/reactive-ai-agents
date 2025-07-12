@@ -2,11 +2,11 @@
 Reasoning System
 
 Core reasoning components and strategies for intelligent task execution.
-Provides centralized infrastructure, strategy management, and task classification.
+Provides centralized engine, strategy management, and task classification.
 """
 
 # Core reasoning module
-from .infrastructure import Infrastructure
+from .engine import ReasoningEngine
 from .strategy_manager import StrategyManager
 from .task_classifier import TaskClassifier
 
@@ -19,7 +19,7 @@ from .strategies.plan_execute_reflect import PlanExecuteReflectStrategy
 from .strategies.base import BaseReasoningStrategy, StrategyResult, StrategyCapabilities
 
 __all__ = [
-    "Infrastructure",
+    "ReasoningEngine",
     "StrategyManager",
     "TaskClassifier",
     "ReactiveStrategy",

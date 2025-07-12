@@ -3,11 +3,18 @@ import traceback
 import asyncio
 from typing import List, Dict, Any, Optional, TYPE_CHECKING, Protocol, Callable
 from abc import ABC, abstractmethod
+import json
+import re
 
 # Import the AgentContext
 from reactive_agents.core.context.agent_context import AgentContext
 
 # Keep for type hinting if needed
+from reactive_agents.core.types.agent_types import (
+    AgentThinkChainResult,
+    AgentThinkResult,
+)
+from reactive_agents.core.types.tool_types import ProcessedToolCall
 from reactive_agents.utils.logging import Logger
 from reactive_agents.providers.llm.base import BaseModelProvider
 import time  # Keep time for metric tracking
@@ -87,7 +94,7 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
         self._closed = False
         self._initialized = False
 
-        # Set agent reference in context for Infrastructure to use
+        # Set agent reference in context for engine to use
         self.context._agent = self  # type: ignore
 
         # Ensure logger is initialized before using it
@@ -154,7 +161,7 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
     # --- Core thinking methods ---
     async def _think(
         self, response_format: Optional[str] = None, **kwargs
-    ) -> dict | None:
+    ) -> AgentThinkResult | None:
         """Directly calls the model provider for a simple completion."""
         start_time = time.time()
         try:
@@ -181,14 +188,19 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
                     "Direct completion did not return a valid message structure."
                 )
                 return None
-
+            result_json = {}
             message = result.message
             message_content: str = message.content or ""
 
-            return {
-                "content": message_content,
-                "result": result.model_dump(),
-            }
+            # Parse JSON from result.content if present and assign to result_json if available
+            if message_content:
+                result_json = extract_json_from_string(message_content)
+
+            return AgentThinkResult(
+                content=message_content,
+                result_json=result_json,
+                result=result.model_dump(),
+            )
         except Exception as e:
             self.agent_logger.error(f"Direct Completion Error: {e}")
             return None
@@ -247,7 +259,7 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
         remember_messages: bool = True,
         use_tools: bool = True,
         **kwargs,
-    ) -> dict | None:
+    ) -> AgentThinkChainResult | None:
         """
         Performs a chat completion with tool support and message management.
 
@@ -305,6 +317,9 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
             message_content: str = message.content or ""
             tool_calls: List[Dict[str, Any]] = message.tool_calls or []
 
+            result_json = {}
+            if message_content:
+                result_json = extract_json_from_string(message_content)
             if message_content.strip() and remember_messages:
                 # Add assistant response to context's message history
                 self.context.session.messages.append(
@@ -317,17 +332,19 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
             # Process tool calls if any
             if tool_calls:
                 processed_calls = await self._process_tool_calls(tool_calls)
-                return {
-                    "content": message_content,
-                    "tool_calls": processed_calls,
-                    "result": result.model_dump(),
-                }
+                return AgentThinkChainResult(
+                    content=message_content,
+                    result_json=result_json,
+                    tool_calls=processed_calls or [],
+                    result=result.model_dump(),
+                )
 
-            return {
-                "content": message_content,
-                "tool_calls": [],
-                "result": result.model_dump(),
-            }
+            return AgentThinkChainResult(
+                content=message_content,
+                tool_calls=[],
+                result_json=result_json,
+                result=result.model_dump(),
+            )
 
         except Exception as e:
             self.agent_logger.error(f"Think chain error: {e}")
@@ -335,7 +352,7 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
 
     async def _process_tool_calls(
         self, tool_calls: List[Dict[str, Any]]
-    ) -> list | None:
+    ) -> list[ProcessedToolCall] | None:
         """
         Process tool calls and execute them.
 
@@ -348,7 +365,7 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
         if not tool_calls:
             return []
 
-        processed_calls = []
+        processed_calls: list[ProcessedToolCall] = []
         for tool_call in tool_calls:
             try:
                 # Handle both dict and ToolCall object structures
@@ -400,12 +417,12 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
                 )
 
                 processed_calls.append(
-                    {
-                        "name": tool_name,
-                        "arguments": tool_args,
-                        "result": result,
-                        "success": True,
-                    }
+                    ProcessedToolCall(
+                        name=tool_name,
+                        arguments=tool_args,
+                        result=str(result),
+                        success=True,
+                    )
                 )
 
             except Exception as e:
@@ -429,12 +446,12 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
                     f"Tool execution error for {error_tool_name}: {e}"
                 )
                 processed_calls.append(
-                    {
-                        "name": error_tool_name,
-                        "arguments": error_tool_args,
-                        "result": str(e),
-                        "success": False,
-                    }
+                    ProcessedToolCall(
+                        name=error_tool_name,
+                        arguments=error_tool_args,
+                        result=str(e),
+                        success=False,
+                    )
                 )
 
         return processed_calls
@@ -478,7 +495,7 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
 
             # Initialize tool manager
             if self.context.tool_manager:
-                await self.context.tool_manager._initialize_tools()
+                await self.context.tool_manager.initialize()
 
             self._initialized = True
             self.agent_logger.info(
@@ -750,3 +767,28 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
                 enhanced_result[key] = value
 
         return enhanced_result
+
+
+def extract_json_from_string(s: str):
+    """
+    Try to extract and parse the first valid JSON object or array from a string.
+    Returns the parsed object (dict/list) or {} if not found/invalid.
+    """
+    s = s.strip()
+    # Try parsing the whole string first
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+
+    # Try to find the first { ... } or [ ... ] block (greedy)
+    import re
+
+    match = re.search(r"({.*})|(\[.*\])", s, re.DOTALL)
+    if match:
+        json_str = match.group(0)
+        try:
+            return json.loads(json_str)
+        except Exception:
+            return {}
+    return {}

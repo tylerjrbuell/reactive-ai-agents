@@ -243,7 +243,7 @@ class ToolGuard:
         if tool_name in self.cooldowns:
             cooldown_seconds = self.cooldowns[tool_name]
             timestamps = self.usage_log.get(tool_name, [])
-            if timestamps and (now - timestamps[-1]) < cooldown_seconds:
+            if timestamps and (now - timestamps[-1]) < cooldown_seconds:  # type: ignore
                 return False
 
         return True
@@ -274,7 +274,7 @@ class ToolGuard:
                 "recent_calls": recent_calls,
                 "remaining_calls": max_calls - recent_calls,
                 "window_remaining": (
-                    per_seconds - (now - timestamps[-1]) if timestamps else 0
+                    per_seconds - (now - timestamps[-1]) if timestamps else 0  # type: ignore
                 ),
             }
         return {}
@@ -288,7 +288,7 @@ class ToolGuard:
 
             now = time.time()
             if timestamps:
-                time_since_last = now - timestamps[-1]
+                time_since_last = now - timestamps[-1]  # type: ignore
                 cooldown_remaining = max(0, cooldown_seconds - time_since_last)
                 return {
                     "cooldown_seconds": cooldown_seconds,
@@ -357,14 +357,15 @@ class ToolManager(BaseModel):
         assert self.context.model_provider is not None
         return self.context.model_provider
 
-    async def _initialize_tools(self, attempts: int = 0):
-        """Populates tools and signatures from MCP client and/or local list."""
-        generate = False
+    async def initialize(self):
+        """Initialize the tool manager."""
+        await self._initialize_tools()
 
+    async def _initialize_tools(self):
+        """Populates tools and signatures from MCP client and/or local list."""
         # Initialize tools list to accumulate both MCP and custom tools
         self.tools = []
         self.tool_signatures = []
-
         # Load MCP tools if available
         if self.context.mcp_client:
             # Ensure MCP client tools are loaded (might need await if not already done)
@@ -374,10 +375,9 @@ class ToolManager(BaseModel):
                 MCPToolWrapper(t, self.context.mcp_client) for t in mcp_tools
             ]
             self.tools.extend(mcp_wrapped_tools)
-
+            ## Set
             mcp_signatures = getattr(self.context.mcp_client, "tool_signatures", [])
             self.tool_signatures.extend(mcp_signatures)
-
             self.agent_logger.info(
                 f"Initialized {len(mcp_wrapped_tools)} tools via MCP."
             )
@@ -388,13 +388,11 @@ class ToolManager(BaseModel):
             self.agent_logger.info(
                 f"MCP Tools: {[t.name for tool in servers.values() for t in tool]}"
             )
-            generate = True
 
         # Load custom tools if available
         if self.context.tools:
             # Add locally provided tools
             self.tools.extend(self.context.tools)
-
             custom_signatures = [
                 tool.tool_definition
                 for tool in self.context.tools
@@ -405,7 +403,6 @@ class ToolManager(BaseModel):
             self.agent_logger.info(
                 f"Initialized {len(self.context.tools)} custom tools."
             )
-            generate = True
 
         # Check if we have any tools at all
         if not self.tools:
@@ -417,15 +414,8 @@ class ToolManager(BaseModel):
             self.tool_logger.info("Injecting internal 'final_answer' tool.")
             internal_final_answer_tool = FinalAnswerTool(context=self.context)
             self.tools.append(internal_final_answer_tool)
-            generate = True
 
-        # Generate signatures AFTER all tools (including injected ones) are loaded
-        if generate:
-            self._generate_tool_signatures()
-            self.tool_logger.info(
-                f"Initialized with {len(self.tools)} total tool(s): \n{', '.join([tool.name for tool in self.tools])}"
-            )
-            generated = True
+        self.register_tools()
 
     def get_tool(self, tool_name: str) -> Optional[ToolProtocol]:
         """Finds a tool by name."""
@@ -1155,7 +1145,7 @@ class ToolManager(BaseModel):
     def _generate_tool_signatures(self):
         """Generates tool signatures from the schemas of available tools."""
         self.tool_signatures = []
-
+        print("Generating tool signatures...")
         for tool in self.tools:
             try:
 
@@ -1174,8 +1164,8 @@ class ToolManager(BaseModel):
                 self.tool_logger.error(
                     f"Error generating signature for tool '{getattr(tool, 'name', 'unknown')}': {e}"
                 )
-        self.tool_logger.debug(
-            f"Generated {len(self.tool_signatures)} tool signatures."
+        self.tool_logger.info(
+            f"Initialized with {len(self.tools)} total tool(s): {', '.join([tool.name for tool in self.tools])}"
         )
 
     def get_available_tools(self) -> List[Tool]:
@@ -1236,3 +1226,16 @@ class ToolManager(BaseModel):
         except Exception as e:
             if self.tool_logger:
                 self.tool_logger.warning(f"Error loading plugin tools: {e}")
+
+    def register_tools(self):
+        """
+        Register a list of tools, deduplicating by name, and update signatures.
+        """
+        seen = set(getattr(t, "name", str(id(t))) for t in self.tools)
+        for tool in self.context.tools:
+            name = getattr(tool, "name", str(id(tool)))
+            if name not in seen:
+                self.tools.append(tool)
+                seen.add(name)
+        if hasattr(self, "_generate_tool_signatures"):
+            self._generate_tool_signatures()
