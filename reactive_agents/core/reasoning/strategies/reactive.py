@@ -40,7 +40,7 @@ class ReactiveStrategy(BaseReasoningStrategy):
 
         # Add initial task message
         self.context_manager.add_message(
-            role="user", content=f"Task: {task}\nPlease work on this task step by step."
+            role="user", content=f"Task: {task}"
         )
 
     async def execute_iteration(
@@ -69,23 +69,58 @@ class ReactiveStrategy(BaseReasoningStrategy):
             )
 
             # Step 3: Check if task is complete
-            if (
-                reflection.get("goal_achieved", False)
-                or reflection.get("next_action") == "complete"
-            ):
-                if self.agent_logger:
-                    self.agent_logger.info("Goal achieved, completing task")
+            goal_achieved = reflection.get("goal_achieved", False)
+            next_action = reflection.get("next_action", "continue")
 
-                # Generate final answer
-                execution_summary = f"Completed task using {execution_result.get('method', 'unknown')} method"
-                final_answer = await self.generate_final_answer(task, execution_summary)
+            if self.agent_logger:
+                self.agent_logger.info(
+                    f"🔍 Completion check: goal_achieved={goal_achieved}, next_action={next_action}"
+                )
+
+            if goal_achieved or next_action == "complete":
+                if self.agent_logger:
+                    self.agent_logger.info(
+                        "✅ Goal achieved or next_action=complete, completing task"
+                    )
+
+                # Check if we already have a final answer in the session (set by final_answer tool)
+                session_final_answer = None
+                if self.context and self.context.session:
+                    session_final_answer = self.context.session.final_answer
+
+                if session_final_answer:
+                    final_answer = {"final_answer": session_final_answer}
+                else:
+                    if self.agent_logger:
+                        self.agent_logger.info(
+                            "🔄 No final answer in session, generating one..."
+                        )
+                    # Fallback: Generate final answer
+                    execution_summary = f"Completed task using {execution_result.get('method', 'unknown')} method"
+                    final_answer = await self.generate_final_answer(
+                        task, execution_summary
+                    )
+
+                # Create proper evaluation with is_complete flag
+                evaluation = {
+                    "is_complete": True,
+                    "confidence": reflection.get("confidence", 1.0),
+                    "reasoning": reflection.get(
+                        "reasoning", "Task completed successfully"
+                    ),
+                    "goal_achieved": reflection.get("goal_achieved", True),
+                    "completion_score": reflection.get("completion_score", 1.0),
+                    "reflection": reflection,
+                }
+
+                final_answer_value = final_answer.get("final_answer")
 
                 return StrategyResult(
                     action_taken="task_completed",
                     should_continue=False,
-                    final_answer=final_answer.get("final_answer"),
+                    final_answer=final_answer_value,
                     status="completed",
-                    evaluation=reflection,
+                    evaluation=evaluation,
                     result={
                         "execution_result": execution_result,
                         "reflection": reflection,
@@ -94,11 +129,21 @@ class ReactiveStrategy(BaseReasoningStrategy):
                 )
 
             # Continue if not complete
+            # Create proper evaluation format for progress results
+            evaluation = {
+                "is_complete": False,
+                "confidence": reflection.get("confidence", 0.5),
+                "reasoning": reflection.get("reasoning", "Task in progress"),
+                "goal_achieved": reflection.get("goal_achieved", False),
+                "completion_score": reflection.get("completion_score", 0.0),
+                "reflection": reflection,
+            }
+
             return StrategyResult(
                 action_taken="tool_executed",
                 should_continue=True,
                 status="in_progress",
-                evaluation=reflection,
+                evaluation=evaluation,
                 result={
                     "execution_result": execution_result,
                     "reflection": reflection,

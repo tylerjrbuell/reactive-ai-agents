@@ -5,7 +5,7 @@ import uuid
 import time
 from .status_types import TaskStatus, StepStatus
 from .agent_types import TaskSuccessCriteria
-from .task_types import PlanStep
+from .reasoning_component_types import PlanStep, StepResult
 from .reasoning_types import ReflectDecideActState
 
 
@@ -260,7 +260,7 @@ class AgentSession(BaseModel):
     def mark_step_completed(
         self,
         step_index: int,
-        result: str,
+        result: Optional[StepResult] = None,
         tool_used: Optional[str] = None,
         parameters: Optional[Dict[str, Any]] = None,
     ) -> None:

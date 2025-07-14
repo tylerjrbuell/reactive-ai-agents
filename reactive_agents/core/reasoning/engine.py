@@ -29,6 +29,9 @@ from .prompts.base import (
     StrategyTransitionPrompt,
     PlanExtensionPrompt,
     TaskGoalEvaluationPrompt,
+    ToolCallSystemPrompt,
+    MemorySummarizationPrompt,
+    OllamaManualToolPrompt,
 )
 
 from reactive_agents.core.context.context_manager import ContextManager
@@ -71,6 +74,9 @@ class ReasoningEngine:
             "strategy_transition": StrategyTransitionPrompt(context),
             "plan_extension": PlanExtensionPrompt(context),
             "task_goal_evaluation": TaskGoalEvaluationPrompt(context),
+            "tool_call_system": ToolCallSystemPrompt(context),
+            "memory_summarization": MemorySummarizationPrompt(context),
+            "ollama_manual_tool": OllamaManualToolPrompt(context),
         }
 
     # === Prompt Management ===
@@ -204,6 +210,18 @@ Is the task complete? Provide a yes/no answer with brief reasoning:""",
     async def get_final_answer_prompt(self, **kwargs) -> str:
         """Get a sophisticated final answer prompt with full context."""
         return self.get_prompt("final_answer", **kwargs)
+
+    async def get_tool_call_system_prompt(self, **kwargs) -> str:
+        """Get a sophisticated tool call system prompt with full context."""
+        return self.get_prompt("tool_call_system", **kwargs)
+
+    async def get_memory_summarization_prompt(self, **kwargs) -> str:
+        """Get a sophisticated memory summarization prompt with full context."""
+        return self.get_prompt("memory_summarization", **kwargs)
+
+    async def get_ollama_manual_tool_prompt(self, **kwargs) -> str:
+        """Get a sophisticated Ollama manual tool prompt with full context."""
+        return self.get_prompt("ollama_manual_tool", **kwargs)
 
     # === Tool Execution ===
     async def execute_tools(

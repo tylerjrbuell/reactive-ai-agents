@@ -25,9 +25,6 @@ from reactive_agents.core.types.reasoning_types import (
 from reactive_agents.core.types.reasoning_component_types import (
     ComponentType,
     ComponentMetadata,
-    StepResult,
-    Plan,
-    PlanStep,
     ReflectionResult,
     ToolExecutionResult,
     CompletionResult,
@@ -229,7 +226,7 @@ class ToolExecutionComponent(BaseComponent):
 
         # 2. Add the message to context.
         context_manager = self.engine.get_context_manager()
-        context_manager.add_message(role="user", content=tool_prompt_str)
+        context_manager.add_message(role="user", content=step_description)
 
         # 3. Call think_chain, which will now respond with a tool call.
         # The agent's `_think_chain` should handle the tool execution automatically.
@@ -277,19 +274,10 @@ class ReflectionComponent(BaseComponent):
             "reflection", task=task, last_result=last_result
         )
 
-        # 2. Add the message to context.
-        context_manager = self.engine.get_context_manager()
-
         # 3. Call think_chain to get the reflection.
         reflection_result = await self.engine.think(
             reflection_prompt_str, response_format="json"
         )
-
-        if reflection_result:
-            context_manager.add_message(
-                role="assistant",
-                content=f"Reflection: {reflection_result.result_json}",
-            )
 
         if not reflection_result or not reflection_result.result_json:
             if self.agent_logger:

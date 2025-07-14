@@ -2,20 +2,21 @@ from __future__ import annotations
 from typing import Dict, Any, List, Optional
 
 from reactive_agents.core.types.reasoning_types import ReasoningContext
-from reactive_agents.core.reasoning.engine import ReasoningEngine
 from reactive_agents.core.reasoning.strategies.base import (
-    BaseReasoningStrategy,
     StrategyResult,
     StrategyCapabilities,
 )
+from reactive_agents.core.reasoning.strategy_components import (
+    ComponentBasedStrategy,
+)
 
 
-class PlanExecuteReflectStrategy(BaseReasoningStrategy):
+class PlanExecuteReflectStrategy(ComponentBasedStrategy):
     """
-    Simplified Plan-Execute-Reflect strategy.
-    1. Plan: Break down goals into actionable steps
-    2. Execute: Execute specific steps with proper tool mapping
-    3. Reflect: Evaluate progress and determine next actions
+    Simplified Plan-Execute-Reflect strategy using centralized components.
+    1. Plan: Break down goals into actionable steps using PlanningComponent
+    2. Execute: Execute specific steps using ToolExecutionComponent
+    3. Reflect: Evaluate progress using ReflectionComponent
     """
 
     @property
@@ -32,16 +33,22 @@ class PlanExecuteReflectStrategy(BaseReasoningStrategy):
 
     @property
     def description(self) -> str:
-        return (
-            "Plan-execute-reflect reasoning with planning, execution, and reflection."
-        )
+        return "Plan-execute-reflect reasoning with planning, execution, and reflection using centralized components."
 
     async def initialize(self, task: str, reasoning_context: ReasoningContext) -> None:
-        """Initialize the plan-execute-reflect strategy."""
-        # Set the strategy in context manager
-        self.context_manager.set_active_strategy(self.name)
+        """Initialize the plan-execute-reflect strategy using centralized components."""
+        # Call parent initialization
+        await super().initialize(task, reasoning_context)
 
-        # Generate initial plan
+        # Get relevant memories using MemoryIntegrationComponent
+        relevant_memories = await self.get_memories(task, max_items=5)
+        if relevant_memories:
+            if self.agent_logger:
+                self.agent_logger.info(
+                    f"Found {len(relevant_memories)} relevant memories for task"
+                )
+
+        # Generate initial plan using PlanningComponent
         plan_result = await self._generate_plan(task, reasoning_context)
         plan_steps = plan_result.get("plan_steps", [])
 
@@ -51,8 +58,8 @@ class PlanExecuteReflectStrategy(BaseReasoningStrategy):
 
         # Add initial context
         self.context_manager.add_message(
-            role="user",
-            content=f"Task: {task}\nPlan created with {len(plan_steps)} steps.",
+            role="assistant",
+            content=f"I need to attempt to complete this task: {task}\n Using the following {len(plan_steps)} step plan: {plan_steps}",
         )
 
     async def execute_iteration(
@@ -90,29 +97,45 @@ class PlanExecuteReflectStrategy(BaseReasoningStrategy):
                 else str(current_step)
             )
 
-            # Execute the current step
-            use_native_tools = getattr(
-                self.context, "supports_native_tool_calling", True
-            )
-            execution_result = await self.execute_with_tools(
-                task, step_description, use_native_tools=use_native_tools
-            )
+            if self.agent_logger:
+                self.agent_logger.info(
+                    f"📋 Executing step {step_index + 1}/{len(plan)}: {step_description}"
+                )
 
-            # Reflect on the step execution
-            reflection = await self.reflect_on_progress(
-                task, execution_result, reasoning_context
-            )
+            # Execute the current step using ToolExecutionComponent
+            execution_result = await self.execute_tool(task, step_description)
+
+            # Reflect on the step execution using ReflectionComponent
+            reflection = await self.reflect(task, execution_result, reasoning_context)
 
             # Check if we have found the information needed to complete the task
-            if self._should_complete_task(task, execution_result, reflection):
+            should_complete = self._should_complete_task(
+                task, execution_result, reflection
+            )
+            if self.agent_logger:
+                self.agent_logger.info(
+                    f"🔍 _should_complete_task returned: {should_complete}"
+                )
+                if should_complete:
+                    self.agent_logger.info(
+                        "🚀 Task should complete, calling _handle_task_completion"
+                    )
+
+            if should_complete:
                 return await self._handle_task_completion(
                     task, execution_result, reflection
                 )
 
             # Determine next action based on reflection
             next_action = reflection.get("next_action", "continue")
+            if self.agent_logger:
+                self.agent_logger.info(f"🔄 Next action from reflection: {next_action}")
 
             if next_action == "complete":
+                if self.agent_logger:
+                    self.agent_logger.info(
+                        "🚀 Next action is 'complete', calling _handle_task_completion"
+                    )
                 return await self._handle_task_completion(
                     task, execution_result, reflection
                 )
@@ -123,7 +146,14 @@ class PlanExecuteReflectStrategy(BaseReasoningStrategy):
                 )
             else:  # continue
                 # Move to next step
-                self.engine.preserve_context("current_step_index", step_index + 1)
+                next_step_index = step_index + 1
+                self.engine.preserve_context("current_step_index", next_step_index)
+
+                if self.agent_logger:
+                    self.agent_logger.info(
+                        f"✅ Step {step_index + 1} completed, moving to step {next_step_index + 1}/{len(plan)}"
+                    )
+
                 return self._create_step_result(
                     "step_completed", step_description, execution_result, reflection
                 )
@@ -132,70 +162,45 @@ class PlanExecuteReflectStrategy(BaseReasoningStrategy):
             if self.agent_logger:
                 self.agent_logger.error(f"Error in plan-execute-reflect strategy: {e}")
 
+            # Use ErrorHandlingComponent to handle the error
+            error_result = await self.handle_error(
+                task=task,
+                error_context="plan_execute_reflect_strategy",
+                error_count=reasoning_context.error_count,
+                last_error=str(e),
+            )
+
             return StrategyResult(
                 action_taken="error_occurred",
                 should_continue=True,
                 status="error",
-                result={"error": str(e), "recovery_action": "retry_current_step"},
+                result={
+                    "error": str(e),
+                    "recovery_action": error_result.get(
+                        "recovery_action", "retry_current_step"
+                    ),
+                    "error_handling": error_result,
+                },
             )
 
     async def _generate_plan(
         self, task: str, reasoning_context: ReasoningContext
     ) -> Dict[str, Any]:
-        """Generate a plan for the task."""
-        plan_prompt = f"""Task: {task}
-
-Please create a detailed plan to complete this task. Break it down into specific, actionable steps.
-
-Respond with a JSON object in this format:
-{{
-    "plan_steps": [
-        {{
-            "step_number": 1,
-            "description": "Clear description of what to do",
-            "purpose": "Why this step is needed"
-        }},
-        {{
-            "step_number": 2,
-            "description": "Next step description",
-            "purpose": "Why this step is needed"
-        }}
-    ],
-    "reasoning": "Your reasoning for this plan"
-}}
-
-Only respond with valid JSON, no additional text."""
-
-        self.context_manager.add_message(role="user", content=plan_prompt)
-        result = await self._think_chain(use_tools=False)
-
-        if result and result.result_json:
-            return result.result_json
-
-        # Fallback plan
-        return {
-            "plan_steps": [
-                {
-                    "step_number": 1,
-                    "description": f"Work on the task: {task}",
-                    "purpose": "Complete the given task",
-                }
-            ],
-            "reasoning": "Fallback plan due to planning failure",
-        }
+        """Generate a plan for the task using the PlanningComponent."""
+        return await self.plan(task, reasoning_context)
 
     async def _handle_plan_completion(
         self, task: str, reasoning_context: ReasoningContext
     ) -> StrategyResult:
-        """Handle when all plan steps are completed."""
-        # Evaluate overall task completion
-        evaluation = await self.evaluate_task_completion(
-            task, "All plan steps completed"
+        """Handle when all plan steps are completed using TaskEvaluationComponent."""
+        # Evaluate overall task completion using TaskEvaluationComponent
+        evaluation = await self.evaluate(
+            task, progress_summary="All plan steps completed"
         )
 
         if evaluation.get("is_complete", False):
-            final_answer = await self.generate_final_answer(
-                task, "All plan steps completed successfully"
+            final_answer = await self.complete_task(
+                task, execution_summary="All plan steps completed successfully"
             )
             return StrategyResult(
                 action_taken="task_completed",
@@ -216,7 +221,7 @@ Only respond with valid JSON, no additional text."""
         self, task: str, execution_result: Dict[str, Any], reflection: Dict[str, Any]
     ) -> StrategyResult:
         """
-        Handle task completion and generate final answer using the model's final answer prompt.
+        Handle task completion using the CompletionComponent.
 
         Args:
             task: The original task
@@ -237,20 +242,33 @@ Only respond with valid JSON, no additional text."""
         if not execution_summary:
             execution_summary = str(execution_result)
 
-        # Use the engine's final answer prompt to get the answer from the model
-        final_answer_json = await self.engine.generate_final_answer(
-            task,
-            execution_summary=execution_summary,
-            execution_result=execution_result,
-            reflection=reflection,
-        )
-        actual_answer = (
-            final_answer_json if final_answer_json else {"final_answer": None}
-        )
-
-        # Set the session's final answer for consistency
+        # Check if we already have a final answer in the session (set by final_answer tool)
+        session_final_answer = None
         if self.context and self.context.session:
-            self.context.session.final_answer = actual_answer.get("final_answer")
+            session_final_answer = self.context.session.final_answer
+
+        if session_final_answer:
+            actual_answer = {"final_answer": session_final_answer}
+        else:
+            if self.agent_logger:
+                self.agent_logger.info(
+                    "🔄 No final answer in session, generating one..."
+                )
+            # Use the CompletionComponent to generate final answer
+            actual_answer = await self.complete_task(
+                task,
+                execution_summary=execution_summary,
+                execution_result=execution_result,
+                reflection=reflection,
+            )
+
+            # Set the session's final answer for consistency (only if we don't already have one)
+            if (
+                self.context
+                and self.context.session
+                and not self.context.session.final_answer
+            ):
+                self.context.session.final_answer = actual_answer.get("final_answer")
 
         # Get task metrics from context
         task_metrics = {}
@@ -278,12 +296,24 @@ Only respond with valid JSON, no additional text."""
                 "completion_score": self.context.session.completion_score,
             }
 
+        # Create proper evaluation with is_complete flag
+        evaluation = {
+            "is_complete": True,
+            "confidence": reflection.get("confidence", 1.0),
+            "reasoning": reflection.get("reasoning", "Task completed successfully"),
+            "goal_achieved": reflection.get("goal_achieved", True),
+            "completion_score": reflection.get("completion_score", 1.0),
+            "reflection": reflection,
+        }
+
+        final_answer_value = actual_answer.get("final_answer")
+
         return StrategyResult(
             action_taken="task_completed",
             should_continue=False,
-            final_answer=actual_answer.get("final_answer"),
+            final_answer=final_answer_value,
             status="completed",
-            evaluation=reflection,
+            evaluation=evaluation,
             result={
                 "execution_result": execution_result,
                 "reflection": reflection,
@@ -298,29 +328,75 @@ Only respond with valid JSON, no additional text."""
     ) -> bool:
         """
         Determine if the task should be completed based on execution results.
+        This method is plan-aware and only completes when all planned steps are done.
 
         Args:
             task: The original task
             execution_result: Results from tool execution
-            reflection: Reflection on the progress
+            reflection: Reflection on the progress from ReflectionComponent
 
         Returns:
             True if the task should be completed, False otherwise
         """
         # Check if we have a final answer from a tool
         if "final_answer" in execution_result:
+            if self.agent_logger:
+                self.agent_logger.info(
+                    "✅ Completion triggered: final_answer in execution_result"
+                )
             return True
 
         # Check if reflection indicates goal is achieved
         if reflection.get("goal_achieved", False):
+            if self.agent_logger:
+                self.agent_logger.info("✅ Completion triggered: goal_achieved = True")
             return True
 
-        # Check if completion score is high enough
-        if reflection.get("completion_score", 0) >= 0.7:
-            return True
-
-        # Check if reflection indicates completion
+        # Check if reflection explicitly indicates completion
         if reflection.get("next_action") == "complete":
+            if self.agent_logger:
+                self.agent_logger.info(
+                    "✅ Completion triggered: next_action = 'complete'"
+                )
+            return True
+
+        # PLAN-AWARE COMPLETION: Check if we've completed all planned steps
+        plan = self.engine.get_preserved_context("plan")
+        current_step_index = (
+            self.engine.get_preserved_context("current_step_index") or 0
+        )
+
+        if plan and current_step_index is not None:
+            total_steps = len(plan)
+            completed_steps = current_step_index
+
+            if self.agent_logger:
+                self.agent_logger.debug(
+                    f"📋 Plan progress: {completed_steps}/{total_steps} steps completed"
+                )
+
+            # Only complete if we've finished all planned steps
+            if completed_steps >= total_steps:
+                if self.agent_logger:
+                    self.agent_logger.info(
+                        f"✅ Completion triggered: All {total_steps} planned steps completed"
+                    )
+                return True
+            else:
+                if self.agent_logger:
+                    self.agent_logger.debug(
+                        f"⏳ Not completing: {total_steps - completed_steps} steps remaining"
+                    )
+                return False
+
+        # Fallback for non-plan tasks: Check completion score (but be more conservative)
+        if (
+            reflection.get("completion_score", 0) >= 0.9
+        ):  # Higher threshold for plan-based
+            if self.agent_logger:
+                self.agent_logger.info(
+                    f"✅ Completion triggered: completion_score >= 0.9 (actual: {reflection.get('completion_score', 0)})"
+                )
             return True
 
         # For price queries, check if we have specific price information
@@ -363,22 +439,8 @@ Only respond with valid JSON, no additional text."""
                         if re.search(pattern, result_text, re.IGNORECASE):
                             return True
 
-        # Safety mechanism: If we have multiple successful tool calls and the task seems to be about gathering information
-        if any(
-            keyword in task.lower()
-            for keyword in ["what", "find", "get", "search", "look"]
-        ):
-            tool_calls = execution_result.get("tool_calls", [])
-            if (
-                len(tool_calls) >= 2
-            ):  # If we've made multiple tool calls, we likely have enough info
-                return True
-
-        # Additional safety: If we have any successful tool calls and the reflection shows progress
-        tool_calls = execution_result.get("tool_calls", [])
-        if tool_calls and reflection.get("progress_assessment"):
-            # If we have tool results and the reflection indicates progress, we likely have enough info
-            return True
+        # REMOVED: The aggressive safety mechanism that was causing premature completion
+        # This was designed for reactive strategies, not plan-based ones
 
         return False
 
@@ -390,11 +452,21 @@ Only respond with valid JSON, no additional text."""
         reflection: Dict[str, Any],
     ) -> StrategyResult:
         """Create a standard step result."""
+        # Create proper evaluation format for step results
+        evaluation = {
+            "is_complete": False,
+            "confidence": reflection.get("confidence", 0.5),
+            "reasoning": reflection.get("reasoning", "Step in progress"),
+            "goal_achieved": reflection.get("goal_achieved", False),
+            "completion_score": reflection.get("completion_score", 0.0),
+            "reflection": reflection,
+        }
+
         return StrategyResult(
             action_taken=action,
             should_continue=True,
             status="in_progress",
-            evaluation=reflection,
+            evaluation=evaluation,
             result={
                 "step": step_description,
                 "execution_result": execution_result,

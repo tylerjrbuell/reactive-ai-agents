@@ -81,20 +81,39 @@ class ReflectDecideActStrategy(BaseReasoningStrategy):
             self.engine.preserve_context("last_action_result", action_result)
 
             # Phase 4: Evaluate if task is complete
-            if (
-                reflection.get("goal_achieved", False)
-                or reflection.get("next_action") == "complete"
-            ):
+            goal_achieved = reflection.get("goal_achieved", False)
+            next_action = reflection.get("next_action", "continue")
+
+            if self.agent_logger:
+                self.agent_logger.info(
+                    f"🔍 Completion check: goal_achieved={goal_achieved}, next_action={next_action}"
+                )
+
+            if goal_achieved or next_action == "complete":
+                if self.agent_logger:
+                    self.agent_logger.info(
+                        "✅ Goal achieved or next_action=complete, calling _handle_task_completion"
+                    )
                 return await self._handle_task_completion(
                     task, action_result, reflection, cycle_count + 1
                 )
 
             # Continue with next cycle
+            # Create proper evaluation format for cycle results
+            evaluation = {
+                "is_complete": False,
+                "confidence": reflection.get("confidence", 0.5),
+                "reasoning": reflection.get("reasoning", "Cycle in progress"),
+                "goal_achieved": reflection.get("goal_achieved", False),
+                "completion_score": reflection.get("completion_score", 0.0),
+                "reflection": reflection,
+            }
+
             return StrategyResult(
                 action_taken="reflect_decide_act_cycle",
                 should_continue=True,
                 status="in_progress",
-                evaluation=reflection,
+                evaluation=evaluation,
                 result={
                     "cycle_count": cycle_count + 1,
                     "reflection": reflection,
@@ -197,15 +216,40 @@ Only respond with valid JSON, no additional text."""
         cycle_count: int,
     ) -> StrategyResult:
         """Handle task completion."""
-        execution_summary = f"Completed task using reflect-decide-act strategy after {cycle_count} cycles"
-        final_answer = await self.generate_final_answer(task, execution_summary)
+        # Check if we already have a final answer in the session (set by final_answer tool)
+        session_final_answer = None
+        if self.context and self.context.session:
+            session_final_answer = self.context.session.final_answer
+
+        if session_final_answer:
+            final_answer = {"final_answer": session_final_answer}
+        else:
+            if self.agent_logger:
+                self.agent_logger.info(
+                    "🔄 No final answer in session, generating one..."
+                )
+            # Fallback: Generate final answer
+            execution_summary = f"Completed task using reflect-decide-act strategy after {cycle_count} cycles"
+            final_answer = await self.generate_final_answer(task, execution_summary)
+
+        # Create proper evaluation with is_complete flag
+        evaluation = {
+            "is_complete": True,
+            "confidence": reflection.get("confidence", 1.0),
+            "reasoning": reflection.get("reasoning", "Task completed successfully"),
+            "goal_achieved": reflection.get("goal_achieved", True),
+            "completion_score": reflection.get("completion_score", 1.0),
+            "reflection": reflection,
+        }
+
+        final_answer_value = final_answer.get("final_answer")
 
         return StrategyResult(
             action_taken="task_completed",
             should_continue=False,
-            final_answer=final_answer.get("final_answer"),
+            final_answer=final_answer_value,
             status="completed",
-            evaluation=reflection,
+            evaluation=evaluation,
             result={
                 "cycle_count": cycle_count,
                 "action_result": action_result,

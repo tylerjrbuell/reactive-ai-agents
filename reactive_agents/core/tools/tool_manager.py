@@ -60,6 +60,13 @@ class FinalAnswerTool(Tool):
 
         # Set the final answer in the context
         self.context.session.final_answer = answer
+
+        # Log final answer setting
+        if hasattr(self.context, "agent_logger") and self.context.agent_logger:
+            self.context.agent_logger.info(
+                f"🔧 FinalAnswerTool: Set session.final_answer = {answer[:50] if answer else 'None'}..."
+            )
+
         return ToolResult(answer)
 
 
@@ -530,6 +537,10 @@ class ToolManager(BaseModel):
                             self.context.session.final_answer = str(
                                 cached_result
                             )  # Ensure string
+                            if self.tool_logger:
+                                self.tool_logger.info(
+                                    f"🔧 ToolManager: final_answer from cache, set session.final_answer = {self.context.session.final_answer[:100] if self.context.session.final_answer else 'None'}..."
+                                )
                         # Emit TOOL_COMPLETED event
                         self.context.emit_event(
                             AgentStateEvent.TOOL_COMPLETED,
@@ -703,6 +714,11 @@ class ToolManager(BaseModel):
             )
             # Emit FINAL_ANSWER_SET if tool is final_answer
             if tool_name == "final_answer":
+                if self.tool_logger:
+                    self.tool_logger.info(
+                        f"🔧 ToolManager: final_answer tool completed successfully"
+                    )
+
                 self.context.emit_event(
                     AgentStateEvent.FINAL_ANSWER_SET,
                     {

@@ -3,6 +3,8 @@ from typing import Dict, Any, List, Optional, Union, Callable, Awaitable, TYPE_C
 from enum import Enum
 from pydantic import BaseModel
 
+from reactive_agents.core.types.status_types import StepStatus
+
 
 class ComponentType(Enum):
     """Types of strategy components."""
@@ -41,17 +43,26 @@ class StepResult(BaseModel):
     should_continue: bool = True
     confidence: float = 0.5
     metadata: Dict[str, Any] = {}
-
+    
 
 class PlanStep(BaseModel):
     """A step in a plan."""
 
-    step_number: int
+    index: int = 0
     description: str
     required_tools: List[str] = []
     purpose: str = ""
     is_action: bool = True
     success_criteria: str = ""
+    status: StepStatus = StepStatus.PENDING
+    result: Optional[StepResult] = None
+    error: Optional[str] = None
+    retries: int = 0
+    max_retries: int = 3
+    completed_at: Optional[float] = None
+    tool_used: Optional[str] = None
+    parameters: Optional[Dict[str, Any]] = None
+    metadata: Dict[str, Any] = {}
 
 
 class Plan(BaseModel):

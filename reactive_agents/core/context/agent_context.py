@@ -454,50 +454,15 @@ class AgentContext(BaseModel):
             )
 
         try:
-            # Create a memory-specific summarization prompt
-            if memory_type == "session":
-                summary_prompt = f"""
-Summarize this agent session memory in 1-2 sentences. Focus on:
-1. What task was accomplished
-2. Key result or outcome
-3. Any important tools or methods used
+            # Use centralized memory summarization prompt
+            from reactive_agents.core.reasoning.prompts.base import (
+                MemorySummarizationPrompt,
+            )
 
-Memory content:
-{memory_content}
-
-Provide a concise summary that captures the essential information:
-"""
-            elif memory_type == "reflection":
-                summary_prompt = f"""
-Summarize this reflection memory in 1 sentence. Focus on:
-1. Key insight or learning
-2. What was learned or improved
-
-Memory content:
-{memory_content}
-
-Provide a concise summary:
-"""
-            elif memory_type == "tool_result":
-                summary_prompt = f"""
-Summarize this tool result memory in 1 sentence. Focus on:
-1. What tool was used
-2. Key data or result obtained
-
-Memory content:
-{memory_content}
-
-Provide a concise summary:
-"""
-            else:
-                summary_prompt = f"""
-Summarize this {memory_type} memory in 1-2 sentences. Focus on the most important information:
-
-Memory content:
-{memory_content}
-
-Provide a concise summary:
-"""
+            summary_prompt = MemorySummarizationPrompt(self).generate(
+                memory_content=memory_content,
+                memory_type=memory_type,
+            )
 
             response = await self.model_provider.get_completion(
                 system="You are a memory summarization assistant. Create concise, valuable summaries that preserve key information while being easy to read and understand.",

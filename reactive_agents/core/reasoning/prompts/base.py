@@ -23,6 +23,9 @@ PromptKey = Literal[
     "strategy_transition",
     "plan_extension",
     "task_goal_evaluation",
+    "tool_call_system",
+    "memory_summarization",
+    "ollama_manual_tool",
 ]
 
 
@@ -642,11 +645,6 @@ GUIDELINES:
 - Aim for 3-7 granular steps total
 - Focus on tool usage, not reasoning steps
 
-Example for "Search and delete emails":
-Step 1: Use search_emails to find specific emails
-Step 2: Use trash_emails with the found email IDs  
-Step 3: Use write_email to send confirmation
-
 Be this specific and granular for your task."""
 
         return prompt
@@ -948,4 +946,137 @@ Return your answer in JSON format with:
 - reasoning: string
 - missing_requirements: list
 """
+        return prompt
+
+
+class ToolCallSystemPrompt(BasePrompt):
+    """Dynamic system prompt for tool calling generation."""
+
+    def generate(self, **kwargs) -> str:
+        """Generate a system prompt for tool calling with dynamic tool signatures."""
+        context = self._get_prompt_context(**kwargs)
+        tool_signatures = kwargs.get("tool_signatures", context.tool_signatures)
+        max_calls = kwargs.get("max_calls", 1)
+        task = kwargs.get("task", context.task)
+
+        prompt = f"""Role: Tool Selection and configuration Expert
+Objective: Create {max_calls} tool call(s) for the given task using the available tool signatures
+
+Guidelines:
+- The tool call must adhere to the specific task
+- Use the tool signatures to effectively create tool calls that align with the task
+- Use the context provided in conjunction with the tool signatures to create tool calls that align with the task
+- Only use valid parameters and valid parameter data types and avoid using tool signatures that are not available
+- Check all data types are correct based on the tool signatures provided in available tools to avoid issues when the tool is used
+- Pay close attention to the signatures and parameters provided
+- Do not try to consolidate multiple tool calls into one call
+- Do not try to use tools that are not available
+
+Task: {task}
+
+Available Tool signatures: {tool_signatures}
+
+Output Format: JSON with the following structure:
+{{
+    "tool_calls": [
+        {{
+            "function": {{
+                "name": "<tool_name>",
+                "arguments": <tool_parameters>
+            }}
+        }}
+    ]
+}}"""
+
+        return prompt
+
+
+class MemorySummarizationPrompt(BasePrompt):
+    """Dynamic prompt for memory summarization."""
+
+    def generate(self, **kwargs) -> str:
+        """Generate a memory summarization prompt based on memory type and content."""
+        context = self._get_prompt_context(**kwargs)
+        memory_content = kwargs.get("memory_content", "")
+        memory_type = kwargs.get("memory_type", "session")
+
+        # Create type-specific summarization prompts
+        if memory_type == "session":
+            prompt = f"""Summarize this agent session memory in 1-2 sentences. Focus on:
+1. What task was accomplished
+2. Key result or outcome
+3. Any important tools or methods used
+
+Memory content:
+{memory_content}
+
+Provide a concise summary that captures the essential information:"""
+        elif memory_type == "reflection":
+            prompt = f"""Summarize this reflection memory in 1 sentence. Focus on:
+1. Key insight or learning
+2. What was learned or improved
+
+Memory content:
+{memory_content}
+
+Provide a concise summary:"""
+        elif memory_type == "tool_result":
+            prompt = f"""Summarize this tool result memory in 1 sentence. Focus on:
+1. What tool was used
+2. Key data or result obtained
+
+Memory content:
+{memory_content}
+
+Provide a concise summary:"""
+        else:
+            prompt = f"""Summarize this {memory_type} memory in 1-2 sentences. Focus on the most important information:
+
+Memory content:
+{memory_content}
+
+Provide a concise summary:"""
+
+        return prompt
+
+
+class OllamaManualToolPrompt(BasePrompt):
+    """Dynamic prompt for Ollama manual tool calling generation."""
+
+    def generate(self, **kwargs) -> str:
+        """Generate a system prompt for manual tool calling with Ollama models."""
+        context = self._get_prompt_context(**kwargs)
+        tool_signatures = kwargs.get("tool_signatures", context.tool_signatures)
+        max_calls = kwargs.get("max_calls", 1)
+        task = kwargs.get("task", context.task)
+
+        prompt = f"""Role: Tool Selection and configuration Expert
+Objective: Create {max_calls} tool call(s) for the given task using the available tool signatures
+
+Guidelines:
+- The tool call must adhere to the specific task
+- Use the tool signatures to effectively create tool calls that align with the task
+- Use the context provided in conjunction with the tool signatures to create tool calls that align with the task
+- Only use valid parameters and valid parameter data types and avoid using tool signatures that are not available
+- Check all data types are correct based on the tool signatures provided in available tools to avoid issues when the tool is used
+- Pay close attention to the signatures and parameters provided
+- Do not try to consolidate multiple tool calls into one call
+- Do not try to use tools that are not available
+
+Task: {task}
+
+Available Tool signatures: {tool_signatures}
+
+Output Format: JSON with the following structure:
+{{
+    "tool_calls": [
+        {{
+            "function": {{
+                "name": "<tool_name>",
+                "arguments": <tool_parameters>
+            }}
+        }}
+    ]
+}}"""
+
         return prompt

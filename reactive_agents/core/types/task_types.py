@@ -46,38 +46,3 @@ class TaskComplexity(Enum):
     MODERATE = "moderate"
     COMPLEX = "complex"
     EXPERT = "expert"
-
-
-class PlanStep(BaseModel):
-    """A single step in a task execution plan."""
-
-    description: str = Field(..., description="Description of what this step does")
-    status: StepStatus = Field(
-        default=StepStatus.PENDING, description="Current status of this step"
-    )
-    suggested_tools: List[str] = Field(
-        default_factory=list, description="Tools that might be needed for this step"
-    )
-    dependencies: List[int] = Field(
-        default_factory=list,
-        description="Step indices that must complete before this step",
-    )
-    result: Optional[str] = None
-    error: Optional[str] = None
-    retries: int = Field(
-        default=0, description="Number of times this step has been retried"
-    )
-    max_retries: int = Field(default=3, description="Maximum number of retries allowed")
-    metadata: Dict[str, Any] = Field(
-        default_factory=dict, description="Additional step metadata"
-    )
-    index: int = Field(default=0, description="Index of this step in the plan")
-    completed_at: Optional[float] = Field(
-        default=None, description="Timestamp when step was completed"
-    )
-    tool_used: Optional[str] = Field(
-        default=None, description="Name of the tool used in this step"
-    )
-    parameters: Optional[Dict[str, Any]] = Field(
-        default=None, description="Parameters used with the tool"
-    )

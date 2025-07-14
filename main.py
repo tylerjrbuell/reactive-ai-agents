@@ -547,9 +547,21 @@ async def test():
                 Builder()
                 .with_name("Test Agent")
                 .with_model("ollama:cogito:14b")
-                .with_mcp_tools(["brave-search"])
+                # .with_mcp_tools(["brave-search"])
+                .with_mcp_config(
+                    MCPConfig(
+                        mcpServers={
+                            "gmail": MCPServerConfig(
+                                command="mcp-proxy",
+                                args=["http://localhost:5000/mcp"],
+                            )
+                        }
+                    )
+                )
                 .with_log_level(LogLevel.DEBUG)
-                .with_max_iterations(5)
+                .with_reasoning_strategy(ReasoningStrategies.PLAN_EXECUTE_REFLECT)
+                .with_max_iterations(10)
+                .with_tool_caching(False)
                 # .with_reflection(True)
                 # .with_vector_memory()
                 .with_model_provider_options(
@@ -559,7 +571,9 @@ async def test():
             )
         )
 
-        result = await agent.run("What is the current price of xrp, bitcoin, ethereum?")
+        result = await agent.run(
+            "Authenticate using the browser, then Perform an open search for the first 25 emails my inbox and analyze them into categories important, spam, and trash. Then move the spam and trash emails to trash. Then send an email to tylerjrbuell@gmail.com with a summary of the emails and a list of the emails that were moved to trash."
+        )
         print("Test Result:")
 
         # Use a custom JSON encoder to handle non-serializable objects
@@ -688,13 +702,13 @@ async def test_plan_execute_reflect():
             await (
                 Builder()
                 .with_name("Plan-Execute-Reflect Test Agent")
-                .with_model("ollama:cogito:14b")
+                .with_model("ollama:gemma3n")
                 .with_role("Test Assistant")
                 .with_instructions("You are an agent that can plan and execute tasks.")
                 .with_reasoning_strategy(ReasoningStrategies.PLAN_EXECUTE_REFLECT)
                 # .with_mcp_tools(["brave-search", "filesystem"])
                 .with_custom_tools([custom_weather_tool])
-                .with_max_iterations(10)
+                .with_max_iterations(5)
                 .with_log_level(LogLevel.DEBUG)
                 .with_model_provider_options(
                     {"num_gpu": 256, "num_ctx": 4000, "temperature": 0}
@@ -734,7 +748,7 @@ if __name__ == "__main__":
     # Run additional examples
     # asyncio.run(classic_main())
     # asyncio.run(context_managed_main())
-    # asyncio.run(test())
+    asyncio.run(test())
 
     # Test reflect_decide_act strategy
     # asyncio.run(test_reflect_decide_act())
@@ -743,4 +757,4 @@ if __name__ == "__main__":
     # asyncio.run(test_reactive_strategy())
 
     # Test plan_execute_reflect strategy
-    asyncio.run(test_plan_execute_reflect())
+    # asyncio.run(test_plan_execute_reflect())

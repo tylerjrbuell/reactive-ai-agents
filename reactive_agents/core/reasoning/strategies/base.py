@@ -7,6 +7,7 @@ from reactive_agents.core.types.agent_types import (
     AgentThinkChainResult,
     AgentThinkResult,
 )
+from reactive_agents.core.types.event_types import AgentStateEvent
 from reactive_agents.core.types.reasoning_types import ReasoningContext
 from reactive_agents.core.reasoning.engine import ReasoningEngine
 
@@ -166,6 +167,7 @@ class BaseReasoningStrategy(ABC):
     ) -> Dict[str, Any]:
         """
         Standard method for executing tools in any strategy.
+        This method provides a consistent interface for all strategies.
 
         Args:
             task: The main task
@@ -199,40 +201,30 @@ class BaseReasoningStrategy(ABC):
         # Convert execution results to JSON-serializable format
         serializable_results = self._make_serializable(execution_results)
 
-        # Create reflection prompt
-        reflection_prompt = f"""Task: {task}
-        
-Recent execution results:
-{json.dumps(serializable_results, indent=2)}
-
-Current context:
-- Iteration: {reasoning_context.iteration_count}
-- Error count: {reasoning_context.error_count}
-- Tools used: {reasoning_context.tool_usage_history}
-
-Please reflect on the progress and provide guidance in this JSON format:
-{{
-    "progress_assessment": "Brief summary of what has been accomplished",
-    "goal_achieved": true/false,
-    "completion_score": 0.0-1.0,
-    "next_action": "continue|retry|complete",
-    "confidence": 0.0-1.0,
-    "blockers": ["list of current blockers"],
-    "success_indicators": ["list of positive indicators"],
-    "reasoning": "Your reasoning about the current state"
-}}
-
-Only respond with valid JSON, no additional text."""
+        # Use centralized reflection prompt with dynamic context
+        reflection_prompt = await self.engine.get_reflection_prompt(
+            task=task,
+            last_result=serializable_results,
+            iteration_count=reasoning_context.iteration_count,
+            error_count=reasoning_context.error_count,
+            tool_usage_history=reasoning_context.tool_usage_history,
+        )
 
         # Add to context and get response
-        self.context_manager.add_message(role="user", content=reflection_prompt)
-        result = await self._think_chain(use_tools=False)
+        result = await self._think(reflection_prompt, response_format="json")
 
         if result and result.result_json:
+            self.context.emit_event(
+                AgentStateEvent.REFLECTION_GENERATED,
+                {
+                    "reflection": result.result_json,
+                },
+            )
+
             return result.result_json
 
         # Fallback reflection
-        return {
+        fallback_reflection = {
             "progress_assessment": "Unable to generate proper reflection",
             "goal_achieved": False,
             "completion_score": 0.0,
@@ -242,6 +234,13 @@ Only respond with valid JSON, no additional text."""
             "success_indicators": [],
             "reasoning": "Failed to generate reflection",
         }
+        self.context.emit_event(
+            AgentStateEvent.REFLECTION_GENERATED,
+            {
+                "reflection": fallback_reflection,
+            },
+        )
+        return fallback_reflection
 
     async def evaluate_task_completion(
         self, task: str, execution_summary: str = "", **kwargs
@@ -326,9 +325,11 @@ Only respond with valid JSON, no additional text."""
         return None
 
     # Utility methods for strategies
-    async def _think(self, prompt: str) -> Optional[AgentThinkResult]:
+    async def _think(
+        self, prompt: str, response_format: Optional[str] = None
+    ) -> Optional[AgentThinkResult]:
         """Execute a thinking step using the engine."""
-        return await self.engine.think(prompt)
+        return await self.engine.think(prompt, response_format=response_format)
 
     async def _think_chain(
         self, use_tools: bool = False
@@ -362,7 +363,7 @@ Only respond with valid JSON, no additional text."""
                 # Add context for tool selection
                 self.context_manager.add_message(
                     role="user",
-                    content=f"Task: {task}\nStep: {step_description}\nPlease use the appropriate tool to complete this step.",
+                    content=f"Current Step: {step_description}",
                 )
 
                 result = await self._think_chain(use_tools=True)
@@ -390,6 +391,7 @@ Only respond with valid JSON, no additional text."""
     ) -> Dict[str, Any]:
         """
         Manual tool prompting for models that don't support native tool calling.
+        This method uses the centralized prompt system for consistency.
 
         Args:
             task: The main task
@@ -398,43 +400,11 @@ Only respond with valid JSON, no additional text."""
         Returns:
             Dictionary with tool execution results
         """
-        # Get available tools for prompting
-        tool_signatures = []
-        if self.context.tool_manager:
-            tool_signatures = [
-                {
-                    "name": tool.name,
-                    "description": tool.tool_definition.get("function", {}).get(
-                        "description", ""
-                    ),
-                    "parameters": tool.tool_definition.get("function", {}).get(
-                        "parameters", {}
-                    ),
-                }
-                for tool in self.context.tool_manager.tools
-            ]
-
-        # Create manual tool selection prompt
-        prompt = f"""Task: {task}
-Step: {step_description}
-
-Available tools:
-{json.dumps(tool_signatures, indent=2)}
-
-Please select the most appropriate tool and provide the parameters in this exact JSON format:
-{{
-    "tool_calls": [
-        {{
-            "function": {{
-                "name": "<tool_name>",
-                "arguments": {{"param": "value"}}
-            }}
-        }}
-    ],
-    "reasoning": "Why I chose this tool and these parameters"
-}}
-
-Only respond with valid JSON, no additional text."""
+        # Use centralized tool selection prompt with dynamic context
+        prompt = await self.engine.get_tool_selection_prompt(
+            step_description=step_description,
+            task=task,
+        )
 
         # Add the prompt to context
         self.context_manager.add_message(role="user", content=prompt)
