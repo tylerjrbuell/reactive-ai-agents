@@ -46,7 +46,7 @@ class ReasoningEngine:
 
     Provides essential shared components:
     - Class-based prompt access
-    - Tool execution
+    - Tool execution (canonical path)
     - Context preservation
     - Basic completion checking
     """
@@ -56,7 +56,6 @@ class ReasoningEngine:
         self.agent_logger = context.agent_logger
 
         # Simple data stores
-        self._preserved_context: Dict[str, Any] = {}
         self._completed_actions: List[str] = []
 
         # Initialize prompt classes
@@ -95,16 +94,12 @@ class ReasoningEngine:
                 self.agent_logger.error(f"Think operation failed: {e}")
             return None
 
-    async def think(
-        self, prompt: str, response_format: Optional[str] = None, **kwargs
-    ) -> Optional[AgentThinkResult]:
+    async def think(self, prompt: str, **kwargs) -> Optional[AgentThinkResult]:
         """Execute a thinking step with optional tool use."""
         if not hasattr(self.context, "_agent") or not self.context._agent:
             return None
         try:
-            return await self.context._agent._think(
-                prompt=prompt, format=response_format, **kwargs
-            )
+            return await self.context._agent._think(prompt=prompt, **kwargs)
         except Exception as e:
             if self.agent_logger:
                 self.agent_logger.error(f"Think operation failed: {e}")
@@ -164,70 +159,11 @@ Is the task complete? Provide a yes/no answer with brief reasoning:""",
         template = prompts.get(prompt_type, "Please help with: {task}")
         return template.format(**kwargs)
 
-    # === Enhanced Prompt Methods ===
-    async def get_planning_prompt(self, task: str, **kwargs) -> str:
-        """Get a sophisticated planning prompt with full context."""
-        return self.get_prompt("planning", task=task, **kwargs)
-
-    async def get_reflection_prompt(
-        self, task: str, progress: str = "", last_result: str = "", **kwargs
-    ) -> str:
-        """Get a sophisticated reflection prompt with full context."""
-        return self.get_prompt(
-            "reflection",
-            task=task,
-            progress=progress,
-            last_result=last_result,
-            **kwargs,
-        )
-
-    async def get_step_execution_prompt(self, task: str, step: str, **kwargs) -> str:
-        """Get a sophisticated step execution prompt with full context."""
-        return self.get_prompt("step_execution", task=task, step=step, **kwargs)
-
-    async def get_plan_generation_prompt(self, task: str, **kwargs) -> str:
-        """Get a sophisticated plan generation prompt with full context."""
-        return self.get_prompt("plan_generation", task=task, **kwargs)
-
-    async def get_tool_selection_prompt(self, step_description: str, **kwargs) -> str:
-        """Get a sophisticated tool selection prompt with full context."""
-        return self.get_prompt(
-            "tool_selection", step_description=step_description, **kwargs
-        )
-
-    async def get_strategy_transition_prompt(
-        self, current_strategy: str, **kwargs
-    ) -> str:
-        """Get a sophisticated strategy transition prompt with full context."""
-        return self.get_prompt(
-            "strategy_transition", current_strategy=current_strategy, **kwargs
-        )
-
-    async def get_error_recovery_prompt(self, error_context: str, **kwargs) -> str:
-        """Get a sophisticated error recovery prompt with full context."""
-        return self.get_prompt("error_recovery", error_context=error_context, **kwargs)
-
-    async def get_final_answer_prompt(self, **kwargs) -> str:
-        """Get a sophisticated final answer prompt with full context."""
-        return self.get_prompt("final_answer", **kwargs)
-
-    async def get_tool_call_system_prompt(self, **kwargs) -> str:
-        """Get a sophisticated tool call system prompt with full context."""
-        return self.get_prompt("tool_call_system", **kwargs)
-
-    async def get_memory_summarization_prompt(self, **kwargs) -> str:
-        """Get a sophisticated memory summarization prompt with full context."""
-        return self.get_prompt("memory_summarization", **kwargs)
-
-    async def get_ollama_manual_tool_prompt(self, **kwargs) -> str:
-        """Get a sophisticated Ollama manual tool prompt with full context."""
-        return self.get_prompt("ollama_manual_tool", **kwargs)
-
-    # === Tool Execution ===
+    # === Canonical Tool Execution ===
     async def execute_tools(
         self, tool_calls: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """Execute tool calls and return results."""
+        """Execute tool calls and return results. This is the canonical tool execution path."""
         if not self.context.tool_manager:
             return []
 
@@ -269,35 +205,6 @@ Is the task complete? Provide a yes/no answer with brief reasoning:""",
         """Get list of completed actions."""
         return self._completed_actions.copy()
 
-    # === Context Preservation ===
-    def preserve_context(self, key: str, value: Any) -> None:
-        """Store important context data."""
-        self._preserved_context[key] = value
-
-    def get_preserved_context(self, key: Optional[str] = None) -> Any:
-        """Get preserved context data."""
-        if key:
-            return self._preserved_context.get(key)
-        return self._preserved_context.copy()
-
-    def get_context_summary(self) -> str:
-        """Get a summary of preserved context."""
-        if not self._preserved_context:
-            return "No preserved context data."
-
-        summary_parts = []
-        for key, value in self._preserved_context.items():
-            if isinstance(value, (str, int, float, bool)):
-                summary_parts.append(f"- {key}: {value}")
-            elif isinstance(value, (list, dict)):
-                summary_parts.append(
-                    f"- {key}: {type(value).__name__} with {len(value)} items"
-                )
-            else:
-                summary_parts.append(f"- {key}: {type(value).__name__}")
-
-        return "Preserved Context:\n" + "\n".join(summary_parts)
-
     # === Completion Validation ===
     async def check_completion(
         self, task: str, required_actions: Optional[List[str]] = None
@@ -309,7 +216,7 @@ Is the task complete? Provide a yes/no answer with brief reasoning:""",
                 "completion_validation",
                 task=task,
                 actions=self._completed_actions,
-                results=self.get_context_summary(),
+                results=self.context.session.get_strategy_state(),
             )
 
             result = await self.think(completion_prompt)
@@ -359,27 +266,6 @@ Is the task complete? Provide a yes/no answer with brief reasoning:""",
             "completed_actions": self._completed_actions.copy(),
         }
 
-    # === Reflection ===
-    async def reflect(
-        self, task: str, progress: str = "", last_result: str = ""
-    ) -> Optional[str]:
-        """Generate a sophisticated reflection on current progress."""
-        reflection_prompt = await self.get_reflection_prompt(
-            task=task, progress=progress, last_result=last_result
-        )
-
-        result = await self.think(reflection_prompt)
-        if result and result.content:
-            return result.content
-
-        return None
-
-    # === Reset ===
-    def reset(self):
-        """Reset engine for new task."""
-        self._preserved_context.clear()
-        self._completed_actions.clear()
-
     # === Centralized Task Completion ===
     async def should_complete_task(
         self, task: str, progress_indicators: Optional[List[str]] = None, **kwargs
@@ -400,7 +286,6 @@ Is the task complete? Provide a yes/no answer with brief reasoning:""",
             execution_context = {
                 "task": task,
                 "actions": progress_indicators or self._completed_actions,
-                "results": self.get_context_summary(),
                 "execution_summary": kwargs.get("execution_summary", ""),
                 "steps_completed": kwargs.get(
                     "steps_completed", len(self._completed_actions)
@@ -497,7 +382,8 @@ Is the task complete? Provide a yes/no answer with brief reasoning:""",
             Final answer string or None if generation failed
         """
         try:
-            final_prompt = await self.get_final_answer_prompt(
+            final_prompt = self.get_prompt(
+                "final_answer",
                 task=task,
                 execution_summary=execution_summary,
                 **kwargs,
@@ -544,6 +430,11 @@ Is the task complete? Provide a yes/no answer with brief reasoning:""",
         if not hasattr(self, "_context_manager"):
             self._context_manager = ContextManager(self.context)
         return self._context_manager
+
+    # === Reset ===
+    def reset(self):
+        """Reset engine for new task."""
+        self._completed_actions.clear()
 
 
 # Global engine cache

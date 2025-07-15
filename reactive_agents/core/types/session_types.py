@@ -5,11 +5,16 @@ import uuid
 import time
 from .status_types import TaskStatus, StepStatus
 from .agent_types import TaskSuccessCriteria
-from .reasoning_component_types import PlanStep, StepResult
-from .reasoning_types import ReflectDecideActState
+from .reasoning_component_types import Plan, PlanStep, StepResult
 
 
-class ReactiveState(BaseModel):
+class BaseStrategyState(BaseModel):
+    """Base class for all strategy-specific state models."""
+
+    pass
+
+
+class ReactiveState(BaseStrategyState):
     """State tracking specific to Reactive strategy."""
 
     # Execution state
@@ -62,11 +67,11 @@ class ReactiveState(BaseModel):
                     self.tool_responses.append(str(call["result"]))
 
 
-class PlanExecuteReflectState(BaseModel):
+class PlanExecuteReflectState(BaseStrategyState):
     """State tracking specific to Plan-Execute-Reflect strategy."""
 
     # Plan state
-    current_plan: Dict[str, Any] = Field(default_factory=lambda: {"steps": []})
+    current_plan: Plan = Field(default_factory=Plan)
     current_step: int = 0
     execution_history: List[Dict[str, Any]] = Field(default_factory=list)
     error_count: int = 0
@@ -133,6 +138,67 @@ class PlanExecuteReflectState(BaseModel):
         self.reflection_history.append(reflection_result)
 
 
+class ReflectDecideActState(BaseStrategyState):
+    """State tracking specific to Reflect-Decide-Act strategy."""
+
+    cycle_count: int = Field(default=0, description="Number of RDA cycles completed")
+    reflection_history: List[Dict[str, Any]] = Field(
+        default_factory=list, description="History of reflection results"
+    )
+    decision_history: List[Dict[str, Any]] = Field(
+        default_factory=list, description="History of decisions made"
+    )
+    action_history: List[Dict[str, Any]] = Field(
+        default_factory=list, description="History of actions taken"
+    )
+    current_action: Dict[str, Any] = Field(
+        default_factory=dict, description="Current action being executed"
+    )
+    error_count: int = Field(default=0, description="Number of errors encountered")
+    max_errors: int = Field(
+        default=3, description="Maximum allowed errors before strategy switch"
+    )
+    last_goal_evaluation: Optional[Dict[str, Any]] = Field(
+        default=None, description="Last goal evaluation result"
+    )
+
+    def record_reflection_result(self, result: Dict[str, Any]) -> None:
+        self.reflection_history.append(result)
+
+    def record_decision_result(self, result: Dict[str, Any]) -> None:
+        self.decision_history.append(result)
+
+    def record_action_result(self, result: Dict[str, Any]) -> None:
+        self.action_history.append(result)
+
+    def get_execution_summary(self) -> Dict[str, Any]:
+        return {
+            "cycle_count": self.cycle_count,
+            "reflection_count": len(self.reflection_history),
+            "decision_count": len(self.decision_history),
+            "action_count": len(self.action_history),
+            "error_count": self.error_count,
+        }
+
+
+# --- Unified Strategy & State Registration ---
+STRATEGY_REGISTRY: Dict[str, Dict[str, Any]] = {}
+
+
+def register_strategy(name: str, state_cls: type, **metadata):
+    """Register a strategy and its state class in the global registry."""
+
+    def decorator(strategy_cls):
+        STRATEGY_REGISTRY[name] = {
+            "strategy_cls": strategy_cls,
+            "state_cls": state_cls,
+            "metadata": metadata,
+        }
+        return strategy_cls
+
+    return decorator
+
+
 class AgentSession(BaseModel):
     """Session data for a single agent run."""
 
@@ -196,92 +262,35 @@ class AgentSession(BaseModel):
     last_result_timestamp: Optional[float] = None
     last_result_iteration: Optional[int] = None
 
-    # Index of the last summary message in the session (for incremental summarization)
-    last_summary_index: int = 0
-
-    # Plan tracking for hybrid planning-reflection
-    plan: Optional[list] = Field(default_factory=list)
-    plan_last_modified: Optional[float] = None
-
-    # New step tracking system
-    plan_steps: List[PlanStep] = Field(default_factory=list)
-    current_step_index: int = 0
-
     # Strategy-specific state - updated to support multiple strategies
-    per_strategy_state: Optional[
-        PlanExecuteReflectState | ReactiveState | ReflectDecideActState
-    ] = None
+    strategy_state: Dict[str, BaseStrategyState] = Field(default_factory=dict)
+    active_strategy: Optional[str] = None
 
     def initialize_strategy_state(self, strategy_name: str) -> None:
-        """Initialize state tracking for a specific strategy."""
-        if strategy_name == "plan_execute_reflect":
-            self.per_strategy_state = PlanExecuteReflectState()
-        elif strategy_name == "reactive":
-            self.per_strategy_state = ReactiveState()
-        elif strategy_name == "reflect_decide_act":
-            self.per_strategy_state = ReflectDecideActState()
-        else:
-            raise ValueError(f"Unknown strategy: {strategy_name}")
+        """
+        Initialize state tracking for a specific strategy if not already present.
+        Uses the STRATEGY_REGISTRY for dynamic state instantiation.
+        Falls back to manual mapping for legacy strategies.
+        """
+        if strategy_name not in self.strategy_state:
+            entry = STRATEGY_REGISTRY.get(strategy_name)
+            if entry and "state_cls" in entry:
+                self.strategy_state[strategy_name] = entry["state_cls"]()
+            elif strategy_name == "plan_execute_reflect":
+                self.strategy_state[strategy_name] = PlanExecuteReflectState()
+            elif strategy_name == "reactive":
+                self.strategy_state[strategy_name] = ReactiveState()
+            elif strategy_name == "reflect_decide_act":
+                self.strategy_state[strategy_name] = ReflectDecideActState()
+            else:
+                raise ValueError(f"Unknown strategy: {strategy_name}")
+        self.active_strategy = strategy_name
 
     def get_strategy_state(
-        self,
-    ) -> Optional[PlanExecuteReflectState | ReactiveState | ReflectDecideActState]:
-        """Get the current strategy state."""
-        return self.per_strategy_state
-
-    def set_min_required_tools(self, required_tools) -> None:
-        """
-        Set the min_required_tools for the session, ensuring 'final_answer' is always included.
-        Accepts any iterable of tool names.
-        """
-        tools_set = set(required_tools)
-        tools_set.add("final_answer")
-        self.min_required_tools = tools_set
-
-    def get_current_step(self) -> Optional[PlanStep]:
-        if self.current_step_index is None or self.current_step_index < 0:
-            self.current_step_index = 0
-        if 0 <= self.current_step_index < len(self.plan_steps):
-            return self.plan_steps[self.current_step_index]
-        # Fallback: return next pending step if any
-        for step in self.plan_steps:
-            if step.status == StepStatus.PENDING:
-                self.current_step_index = step.index
-                return step
-        return None
-
-    def get_next_pending_step(self) -> Optional[PlanStep]:
-        """Get the next pending step in the plan."""
-        for step in self.plan_steps:
-            if step.status == StepStatus.PENDING:
-                return step
-        return None
-
-    def mark_step_completed(
-        self,
-        step_index: int,
-        result: Optional[StepResult] = None,
-        tool_used: Optional[str] = None,
-        parameters: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """Mark a step as completed with its result."""
-        if 0 <= step_index < len(self.plan_steps):
-            step = self.plan_steps[step_index]
-            step.status = StepStatus.COMPLETED
-            step.result = result
-            step.completed_at = time.time()
-            step.tool_used = tool_used
-            step.parameters = parameters
-
-    def mark_step_failed(self, step_index: int, error: str) -> None:
-        """Mark a step as failed with an error message."""
-        if 0 <= step_index < len(self.plan_steps):
-            step = self.plan_steps[step_index]
-            step.status = StepStatus.FAILED
-            step.error = error
-
-    def is_plan_complete(self) -> bool:
-        """Check if all steps in the plan are completed."""
-        if not self.plan_steps:
-            return False
-        return all(step.status == StepStatus.COMPLETED for step in self.plan_steps)
+        self, strategy_name: Optional[str] = None
+    ) -> Optional[BaseStrategyState]:
+        """Get the state for a specific strategy, or the active one if not specified."""
+        name = strategy_name or self.active_strategy
+        if name is None:
+            return None
+        return self.strategy_state.get(name)

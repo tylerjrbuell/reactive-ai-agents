@@ -43,33 +43,25 @@ class StepResult(BaseModel):
     should_continue: bool = True
     confidence: float = 0.5
     metadata: Dict[str, Any] = {}
-    
+
 
 class PlanStep(BaseModel):
     """A step in a plan."""
 
-    index: int = 0
+    index: int
     description: str
-    required_tools: List[str] = []
-    purpose: str = ""
-    is_action: bool = True
-    success_criteria: str = ""
+    required_tools: List[str]
+    purpose: str
+    is_action: bool
+    success_criteria: str
     status: StepStatus = StepStatus.PENDING
     result: Optional[StepResult] = None
-    error: Optional[str] = None
-    retries: int = 0
-    max_retries: int = 3
-    completed_at: Optional[float] = None
-    tool_used: Optional[str] = None
-    parameters: Optional[Dict[str, Any]] = None
-    metadata: Dict[str, Any] = {}
 
 
 class Plan(BaseModel):
     """A plan with steps."""
 
     plan_steps: List[PlanStep] = []
-    plan_id: str = ""
     metadata: Dict[str, Any] = {}
 
 
@@ -84,6 +76,7 @@ class ReflectionResult(BaseModel):
     blockers: List[str] = []
     success_indicators: List[str] = []
     learning_insights: List[str] = []
+    error: Optional[str] = None
 
 
 class ToolExecutionResult(BaseModel):

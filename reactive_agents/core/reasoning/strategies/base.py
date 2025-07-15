@@ -13,6 +13,7 @@ from reactive_agents.core.reasoning.engine import ReasoningEngine
 
 if TYPE_CHECKING:
     from reactive_agents.core.context.agent_context import AgentContext
+    from reactive_agents.core.types.session_types import BaseStrategyState
 
 
 class StrategyCapabilities(Enum):
@@ -162,6 +163,50 @@ class BaseReasoningStrategy(ABC):
 
     # === Standardized Strategy Contract ===
 
+    def get_state(self) -> "BaseStrategyState":
+        """
+        Get the strategy state from session, initializing if needed.
+
+        This method dynamically determines the correct state type based on the strategy name
+        and the STRATEGY_REGISTRY. It provides type safety and eliminates the need to
+        define _get_state() in each subclass.
+
+        Returns:
+            The appropriate strategy state instance
+
+        Raises:
+            TypeError: If the state type doesn't match what's expected
+            ValueError: If the strategy is not registered
+        """
+        from reactive_agents.core.types.session_types import (
+            STRATEGY_REGISTRY,
+        )
+
+        strategy_name = self.name
+
+        # Initialize state if not present
+        if strategy_name not in self.context.session.strategy_state:
+            self.context.session.initialize_strategy_state(strategy_name)
+
+        # Get state from session
+        state = self.context.session.get_strategy_state(strategy_name)
+        if state is None:
+            raise ValueError(f"No state found for strategy: {strategy_name}")
+
+        # Get expected state class from registry
+        registry_entry = STRATEGY_REGISTRY.get(strategy_name)
+        if registry_entry and "state_cls" in registry_entry:
+            expected_state_cls = registry_entry["state_cls"]
+
+            # Type check for safety
+            if not isinstance(state, expected_state_cls):
+                raise TypeError(
+                    f"Expected {expected_state_cls.__name__} for strategy '{strategy_name}', "
+                    f"got {type(state).__name__}"
+                )
+
+        return state
+
     async def execute_with_tools(
         self, task: str, step_description: str, use_native_tools: bool = True
     ) -> Dict[str, Any]:
@@ -202,7 +247,8 @@ class BaseReasoningStrategy(ABC):
         serializable_results = self._make_serializable(execution_results)
 
         # Use centralized reflection prompt with dynamic context
-        reflection_prompt = await self.engine.get_reflection_prompt(
+        reflection_prompt = self.engine.get_prompt(
+            "reflection",
             task=task,
             last_result=serializable_results,
             iteration_count=reasoning_context.iteration_count,
@@ -211,7 +257,7 @@ class BaseReasoningStrategy(ABC):
         )
 
         # Add to context and get response
-        result = await self._think(reflection_prompt, response_format="json")
+        result = await self._think(reflection_prompt, format="json")
 
         if result and result.result_json:
             self.context.emit_event(
@@ -326,10 +372,10 @@ class BaseReasoningStrategy(ABC):
 
     # Utility methods for strategies
     async def _think(
-        self, prompt: str, response_format: Optional[str] = None
+        self, prompt: str, format: Optional[str] = None
     ) -> Optional[AgentThinkResult]:
         """Execute a thinking step using the engine."""
-        return await self.engine.think(prompt, response_format=response_format)
+        return await self.engine.think(prompt, format=format)
 
     async def _think_chain(
         self, use_tools: bool = False
@@ -340,7 +386,7 @@ class BaseReasoningStrategy(ABC):
     async def _execute_tools(
         self, tool_calls: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """Execute tool calls using the engine."""
+        """Execute tool calls using the engine's canonical path."""
         return await self.engine.execute_tools(tool_calls)
 
     async def _execute_tool_for_task(
@@ -360,11 +406,6 @@ class BaseReasoningStrategy(ABC):
         if use_tools:
             # Try native tool calling first
             try:
-                # Add context for tool selection
-                self.context_manager.add_message(
-                    role="user",
-                    content=f"Current Step: {step_description}",
-                )
 
                 result = await self._think_chain(use_tools=True)
                 if result and result.tool_calls:
@@ -401,20 +442,17 @@ class BaseReasoningStrategy(ABC):
             Dictionary with tool execution results
         """
         # Use centralized tool selection prompt with dynamic context
-        prompt = await self.engine.get_tool_selection_prompt(
+        prompt = self.engine.get_prompt(
+            "tool_selection",
             step_description=step_description,
             task=task,
         )
-
-        # Add the prompt to context
-        self.context_manager.add_message(role="user", content=prompt)
-
         # Get model response
-        result = await self._think_chain(use_tools=False)
+        result = await self._think(prompt, format="json")
         if result and result.result_json:
             tool_calls = result.result_json.get("tool_calls", [])
             if tool_calls:
-                # Execute the selected tools
+                # Execute the selected tools using canonical path
                 execution_results = await self._execute_tools(tool_calls)
                 return {
                     "tool_calls": tool_calls,
@@ -427,74 +465,6 @@ class BaseReasoningStrategy(ABC):
             "error": "Failed to select or execute tools",
             "method": "manual_tool_prompting",
         }
-
-    @property
-    def context_manager(self):
-        """Get the context manager from the engine."""
-        return self.engine.get_context_manager()
-
-    def _preserve_context(self, key: str, value: Any) -> None:
-        """Preserve important context using the engine."""
-        self.engine.preserve_context(key, value)
-
-    def _get_preserved_context(self, key: Optional[str] = None) -> Dict[str, Any]:
-        """Get preserved context using the engine."""
-        return self.engine.get_preserved_context(key)
-
-    def _extract_required_actions(self, task: str) -> List[str]:
-        """Extract required actions from task description."""
-        # Basic action extraction - strategies can override
-        action_keywords = [
-            "search",
-            "find",
-            "get",
-            "retrieve",
-            "fetch",
-            "lookup",
-            "check",
-            "send",
-            "create",
-            "write",
-            "generate",
-            "make",
-            "build",
-            "compose",
-            "delete",
-            "remove",
-            "clean",
-            "clear",
-            "purge",
-            "unsubscribe",
-            "update",
-            "modify",
-            "change",
-            "edit",
-            "alter",
-            "set",
-            "configure",
-            "analyze",
-            "review",
-            "evaluate",
-            "assess",
-            "examine",
-            "inspect",
-            "list",
-            "show",
-            "display",
-            "view",
-            "read",
-            "browse",
-            "scan",
-        ]
-
-        task_lower = task.lower()
-        actions = []
-
-        for keyword in action_keywords:
-            if keyword in task_lower:
-                actions.append(keyword)
-
-        return actions if actions else ["execute_task"]
 
     def _make_serializable(self, obj: Any) -> Any:
         """

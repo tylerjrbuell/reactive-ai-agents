@@ -3,6 +3,8 @@ from typing import List, Dict, Any, Optional, Union, Callable, TYPE_CHECKING
 from enum import Enum
 from dataclasses import dataclass, field
 
+import tiktoken
+
 if TYPE_CHECKING:
     from reactive_agents.core.context.agent_context import AgentContext
 
@@ -136,6 +138,14 @@ class ContextManager:
 
         return len(self.messages) - 1
 
+    def add_nudge(
+        self, content: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        Add a nudge message to the context.
+        """
+        self.add_message(MessageRole.USER, f"**REMINDER**: {content}", metadata)
+
     def add_window(
         self, name: str, start_idx: Optional[int] = None, importance: float = 1.0
     ) -> ContextWindow:
@@ -265,6 +275,53 @@ class ContextManager:
 
         return False
 
+    def get_optimal_pruning_config(self) -> Dict[str, Any]:
+        """
+        Get optimal pruning configuration based on model capabilities.
+        This is used by ContextManager for strategy-aware context management.
+        """
+        # Try to use the agent's method if available
+        if hasattr(self, "get_optimal_pruning_config"):
+            return self.get_optimal_pruning_config()
+
+        # Fallback to reasonable defaults
+        model_name = getattr(self, "provider_model_name", "")
+        if "gpt-4" in model_name:
+            return {"max_tokens": 120000, "max_messages": 60}
+        elif "gpt-3.5" in model_name:
+            return {"max_tokens": 12000, "max_messages": 40}
+        elif "claude-3" in model_name:
+            return {"max_tokens": 180000, "max_messages": 80}
+        else:
+            return {"max_tokens": 8000, "max_messages": 30}
+
+    def estimate_context_tokens(self) -> int:
+        """
+        Estimate the number of tokens in the current context.
+        This is used by ContextManager for pruning decisions.
+        """
+        try:
+            # Use tiktoken for accurate token counting
+            encoding = tiktoken.encoding_for_model(
+                self.agent_context.provider_model_name.replace("ollama:", "")
+            )
+            total_tokens = 0
+
+            # Count tokens in session messages
+            for message in self.agent_context.session.messages:
+                content = message.get("content", "")
+                if isinstance(content, str):
+                    total_tokens += len(encoding.encode(content))
+
+            return total_tokens
+        except Exception:
+            # Fallback to character-based estimation
+            total_chars = sum(
+                len(str(msg.get("content", "")))
+                for msg in self.agent_context.session.messages
+            )
+            return total_chars // 4  # Rough estimate: 4 chars per token
+
     def summarize_and_prune(self, force: bool = False) -> bool:
         """
         Check if summarization/pruning should occur and perform it if needed.
@@ -307,7 +364,7 @@ class ContextManager:
         should_prune = force or (
             getattr(self.agent_context, "enable_context_pruning", True)
             and (
-                self.agent_context.estimate_context_tokens() > max_tokens_threshold
+                self.estimate_context_tokens() > max_tokens_threshold
                 or len(self.messages) > max_messages_threshold
             )
         )
@@ -318,7 +375,7 @@ class ContextManager:
                 f"Context manager ({self._current_strategy or 'default'}): "
                 f"iteration={current_iteration}, "
                 f"should_summarize={should_summarize}, should_prune={should_prune}, "
-                f"tokens={self.agent_context.estimate_context_tokens()}, max_tokens={max_tokens_threshold}, "
+                f"tokens={self.estimate_context_tokens()}, max_tokens={max_tokens_threshold}, "
                 f"messages={len(self.messages)}, max_messages={max_messages_threshold}"
             )
 
@@ -338,7 +395,7 @@ class ContextManager:
         """
         # Try to use the agent's method if available
         if hasattr(self.agent_context, "get_optimal_pruning_config"):
-            return self.agent_context.get_optimal_pruning_config()
+            return self.get_optimal_pruning_config()
 
         # Fallback to reasonable defaults
         model_name = getattr(self.agent_context, "provider_model_name", "")

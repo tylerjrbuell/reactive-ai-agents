@@ -401,7 +401,7 @@ async def main():
                 .with_model("ollama:cogito:14b")
                 .with_role("Demo Agent")
                 .with_instructions("Demonstrate control operations.")
-                .with_reasoning_strategy(ReasoningStrategies.REFLECT_DECIDE_ACT)
+                .with_reasoning_strategy(ReasoningStrategies.PLAN_EXECUTE_REFLECT)
                 .with_mcp_tools(["time"])
                 .with_max_iterations(10)
                 .build()
@@ -426,10 +426,10 @@ async def main():
             print("\n--- Demonstrating Control Operations ---")
 
             await agent.pause()
-            await asyncio.sleep(1)
+            await asyncio.sleep(10)
 
             await agent.resume()
-            await asyncio.sleep(1)
+            await asyncio.sleep(3)
 
             await agent.stop()
 
@@ -470,7 +470,7 @@ async def main():
         print("🚀 Starting ReactiveAgent Framework Examples")
         print("=" * 60)
 
-        await run_examples(examples)
+        # await run_examples(examples)
 
         # Run the control operations demo
         await control_operations_demo()
@@ -548,6 +548,7 @@ async def test():
                 .with_name("Test Agent")
                 .with_model("ollama:cogito:14b")
                 # .with_mcp_tools(["brave-search"])
+                # .with_custom_tools([custom_weather_tool])
                 .with_mcp_config(
                     MCPConfig(
                         mcpServers={
@@ -559,7 +560,7 @@ async def test():
                     )
                 )
                 .with_log_level(LogLevel.DEBUG)
-                .with_reasoning_strategy(ReasoningStrategies.PLAN_EXECUTE_REFLECT)
+                .with_reasoning_strategy(ReasoningStrategies.REACTIVE)
                 .with_max_iterations(10)
                 .with_tool_caching(False)
                 # .with_reflection(True)
@@ -570,10 +571,12 @@ async def test():
                 .build()
             )
         )
+        task = """
+        Authenticate to gmail using the browser, Then pull 25 emails from my inbox, if the email subject and content indicates marketing or spam,
+        move it to the trash, Finally, send an email to tylerjrbuell@gmail.com with a summary of the emails that were moved to the trash.
+        """
 
-        result = await agent.run(
-            "Authenticate using the browser, then Perform an open search for the first 25 emails my inbox and analyze them into categories important, spam, and trash. Then move the spam and trash emails to trash. Then send an email to tylerjrbuell@gmail.com with a summary of the emails and a list of the emails that were moved to trash."
-        )
+        result = await agent.run(task)
         print("Test Result:")
 
         # Use a custom JSON encoder to handle non-serializable objects
@@ -743,12 +746,12 @@ async def test_plan_execute_reflect():
 
 if __name__ == "__main__":
     # Run the main examples (includes reactive strategy test)
-    # asyncio.run(main())
+    asyncio.run(main())
 
     # Run additional examples
     # asyncio.run(classic_main())
     # asyncio.run(context_managed_main())
-    asyncio.run(test())
+    # asyncio.run(test())
 
     # Test reflect_decide_act strategy
     # asyncio.run(test_reflect_decide_act())

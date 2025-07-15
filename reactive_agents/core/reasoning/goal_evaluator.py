@@ -93,7 +93,6 @@ class TaskGoalEvaluator:
             latest_output=self.eval_context.latest_output,
             execution_log=self.eval_context.execution_log,
             meta=self.eval_context.meta,
-            success_criteria=self.eval_context.success_criteria,
         )
         return prompt_str
 

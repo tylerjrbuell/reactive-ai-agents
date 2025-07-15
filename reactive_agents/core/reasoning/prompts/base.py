@@ -625,19 +625,6 @@ Create a plan with small, specific steps. Each step should:
 - Be specific about what data to use
 - Build on results from previous steps
 
-Output in JSON format:
-{{
-    "plan_steps": [
-        {{
-            "step_number": 1,
-            "description": "<specific tool action with parameters>",
-            "required_tools": ["<tool_name>"],
-            "success_criteria": "<specific outcome expected>"
-        }},
-        ...
-    ]
-}}
-
 GUIDELINES:
 - Break complex actions into multiple small steps
 - Be specific about tool parameters and data sources

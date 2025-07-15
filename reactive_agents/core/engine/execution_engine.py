@@ -85,8 +85,18 @@ class ExecutionEngine:
             # Select strategy based on configuration
             await self._select_strategy(initial_task)
 
+            # Initialize the active strategy for this task
+            reasoning_context = ReasoningContext(
+                current_strategy=self.strategy_manager.get_current_strategy_enum()
+            )
+            await self.strategy_manager.initialize_active_strategy(
+                initial_task, reasoning_context
+            )
+
             # Execute main loop
-            result = await self._execute_loop(initial_task, cancellation_event)
+            result = await self._execute_loop(
+                initial_task, cancellation_event, reasoning_context
+            )
 
             # Prepare final result
             return self._prepare_result(result)
@@ -173,10 +183,16 @@ class ExecutionEngine:
             return
 
         # For reactive or unset strategy, use task classification
-        if strategy_name in ["reactive", "adaptive"]:
+        if strategy_name in ["adaptive"]:
             if self.task_classifier:
                 classification = await self.task_classifier.classify_task(task)
-                strategy = self.strategy_manager.select_optimal_strategy(classification)
+                # Create reasoning context for initialization
+                reasoning_context = ReasoningContext(
+                    current_strategy=self.strategy_manager.get_current_strategy_enum()
+                )
+                strategy = await self.strategy_manager.select_and_initialize_strategy(
+                    classification, task, reasoning_context
+                )
 
                 self.context_manager.set_active_strategy(strategy)
 
@@ -204,16 +220,20 @@ class ExecutionEngine:
                 )
 
     async def _execute_loop(
-        self, task: str, cancellation_event: Optional[asyncio.Event] = None
+        self,
+        task: str,
+        cancellation_event: Optional[asyncio.Event] = None,
+        reasoning_context: Optional[ReasoningContext] = None,
     ) -> Dict[str, Any]:
         """Execute the main reasoning loop."""
         iteration_results = []
         max_iterations = self.context.max_iterations or 20
 
-        # Create reasoning context
-        reasoning_context = ReasoningContext(
-            current_strategy=ReasoningStrategies.REFLECT_DECIDE_ACT
-        )
+        # Use provided reasoning context or create one
+        if reasoning_context is None:
+            reasoning_context = ReasoningContext(
+                current_strategy=self.strategy_manager.get_current_strategy_enum()
+            )
 
         while self._should_continue():
             # Check for cancellation
@@ -245,6 +265,7 @@ class ExecutionEngine:
             )
 
             try:
+
                 # Execute one iteration using current strategy
                 strategy_result = await self.strategy_manager.execute_iteration(
                     task, reasoning_context
@@ -316,6 +337,9 @@ class ExecutionEngine:
                         if self.agent_logger:
                             self.agent_logger.warning(
                                 "Strategy wants to complete but no final answer - continuing"
+                            )
+                            self.context_manager.add_nudge(
+                                "Give a complete final answer to the task using the final_answer tool"
                             )
 
                 # Check for final answer

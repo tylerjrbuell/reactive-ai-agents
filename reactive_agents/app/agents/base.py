@@ -159,17 +159,11 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
         pass
 
     # --- Core thinking methods ---
-    async def _think(
-        self, response_format: Optional[str] = None, **kwargs
-    ) -> AgentThinkResult | None:
+    async def _think(self, **kwargs) -> AgentThinkResult | None:
         """Directly calls the model provider for a simple completion."""
         start_time = time.time()
         try:
             self.agent_logger.info("Thinking (direct completion)...")
-
-            # Add response format to kwargs if specified
-            if response_format:
-                kwargs["response_format"] = response_format
 
             result = await self.model_provider.get_completion(**kwargs)
             # Metric Tracking
@@ -204,55 +198,6 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
         except Exception as e:
             self.agent_logger.error(f"Direct Completion Error: {e}")
             return None
-
-    def _should_use_tools(self, tool_calls: List[Dict[str, Any]]) -> bool:
-        """
-        Decide whether to allow tool use in the next think_chain call.
-
-        This method implements intelligent tool usage policies:
-        - Prevents tool use if final answer is set
-        - Prevents tool use if plan is complete
-        - Implements adaptive tool usage policies
-        """
-        # Final answer check: if final answer is set, do not allow tool use
-        if self.context.session.final_answer is not None:
-            self.agent_logger.debug("Final answer already set, not allowing tool use.")
-            return False
-
-        # Step-based plan completion check: if plan is complete, do not allow tool use
-        if self.context.session.is_plan_complete():
-            self.agent_logger.debug("Plan is complete, not allowing tool use.")
-            return False
-
-        # Existing tool_use_policy logic
-        policy = getattr(self.context, "tool_use_policy", "adaptive")
-        session = self.context.session
-
-        if policy == "always":
-            return True
-        if policy == "never":
-            return False
-        if policy == "required_only":
-            if session.min_required_tools:
-                tools_completed, _ = self.context.has_completed_required_tools()
-                return not tools_completed
-            return False
-
-        # Adaptive/heuristic
-        # 1. If required tools left, use tools
-        if session.min_required_tools:
-            tools_completed, _ = self.context.has_completed_required_tools()
-            if not tools_completed:
-                return True
-        # 2. If just used a tool, consider pausing for reflection
-        if tool_calls and tool_calls[-1].get("name") in session.successful_tools:
-            return False
-        # 3. If too many tool calls in a row, force reflection
-        max_calls = getattr(self.context, "tool_use_max_consecutive_calls", 3)
-        if len(tool_calls) > max_calls:
-            return False
-        # 4. Otherwise, allow tool use
-        return True
 
     async def _think_chain(
         self,
@@ -349,6 +294,50 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
         except Exception as e:
             self.agent_logger.error(f"Think chain error: {e}")
             return None
+
+    def _should_use_tools(self, tool_calls: List[Dict[str, Any]]) -> bool:
+        """
+        Decide whether to allow tool use in the next think_chain call.
+
+        This method implements intelligent tool usage policies:
+        - Prevents tool use if final answer is set
+        - Prevents tool use if plan is complete
+        - Implements adaptive tool usage policies
+        """
+        # Final answer check: if final answer is set, do not allow tool use
+        if self.context.session.final_answer is not None:
+            self.agent_logger.debug("Final answer already set, not allowing tool use.")
+            return False
+
+        # Existing tool_use_policy logic
+        policy = getattr(self.context, "tool_use_policy", "adaptive")
+        session = self.context.session
+
+        if policy == "always":
+            return True
+        if policy == "never":
+            return False
+        if policy == "required_only":
+            if session.min_required_tools:
+                tools_completed, _ = self.context.has_completed_required_tools()
+                return not tools_completed
+            return False
+
+        # Adaptive/heuristic
+        # 1. If required tools left, use tools
+        if session.min_required_tools:
+            tools_completed, _ = self.context.has_completed_required_tools()
+            if not tools_completed:
+                return True
+        # 2. If just used a tool, consider pausing for reflection
+        if tool_calls and tool_calls[-1].get("name") in session.successful_tools:
+            return False
+        # 3. If too many tool calls in a row, force reflection
+        max_calls = getattr(self.context, "tool_use_max_consecutive_calls", 3)
+        if len(tool_calls) > max_calls:
+            return False
+        # 4. Otherwise, allow tool use
+        return True
 
     async def _process_tool_calls(
         self, tool_calls: List[Dict[str, Any]]

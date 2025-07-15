@@ -21,7 +21,10 @@ from reactive_agents.core.reasoning.strategies.plan_execute_reflect import (
 from reactive_agents.core.reasoning.strategies.reflect_decide_act import (
     ReflectDecideActStrategy,
 )
-from reactive_agents.core.types.reasoning_types import ReasoningContext
+from reactive_agents.core.types.reasoning_types import (
+    ReasoningContext,
+    ReasoningStrategies,
+)
 
 if TYPE_CHECKING:
     from reactive_agents.core.context.agent_context import AgentContext
@@ -264,12 +267,10 @@ class StrategyManager:
         if self.active_strategy:
             await self.active_strategy.finalize(task, reasoning_context)
 
-        # Create new strategy
-        strategy_class = self.strategies[new_strategy_name]
-        self.active_strategy = strategy_class(self.engine)
+        self.set_strategy(new_strategy_name)
 
-        # Initialize new strategy
-        await self.active_strategy.initialize(task, reasoning_context)
+        # Initialize the new strategy
+        await self.initialize_active_strategy(task, reasoning_context)
 
         return self.active_strategy
 
@@ -295,6 +296,29 @@ class StrategyManager:
         self.active_strategy = strategy_class(self.engine)
         self.logger.debug(f"Set active strategy: {strategy_name}")
 
+    async def initialize_active_strategy(
+        self, task: str, reasoning_context: ReasoningContext
+    ) -> None:
+        """
+        Initialize the active strategy for a new task.
+
+        This should be called when starting execution with a strategy.
+
+        Args:
+            task: The task to initialize for
+            reasoning_context: The reasoning context
+        """
+        if not self.active_strategy:
+            raise ValueError("No active strategy set")
+
+        if hasattr(self.active_strategy, "initialize"):
+            await self.active_strategy.initialize(task, reasoning_context)
+            self.logger.debug(f"Initialized strategy: {self.active_strategy.name}")
+        else:
+            self.logger.debug(
+                f"Strategy {self.active_strategy.name} has no initialize method"
+            )
+
     def get_current_strategy_name(self) -> str:
         """
         Get the name of the currently active strategy.
@@ -305,6 +329,12 @@ class StrategyManager:
         if not self.active_strategy:
             return "none"
         return self.active_strategy.name
+
+    def get_current_strategy_enum(self) -> ReasoningStrategies:
+        """
+        Get the enum value of the currently active strategy.
+        """
+        return ReasoningStrategies(self.get_current_strategy_name())
 
     def select_optimal_strategy(self, classification: Any) -> str:
         """
@@ -335,6 +365,24 @@ class StrategyManager:
         # Default to reactive
         self.set_strategy("reactive")
         return "reactive"
+
+    async def select_and_initialize_strategy(
+        self, classification: Any, task: str, reasoning_context: ReasoningContext
+    ) -> str:
+        """
+        Select optimal strategy and initialize it for the task.
+
+        Args:
+            classification: Task classification result
+            task: The task to initialize for
+            reasoning_context: The reasoning context
+
+        Returns:
+            Name of the selected strategy
+        """
+        strategy_name = self.select_optimal_strategy(classification)
+        await self.initialize_active_strategy(task, reasoning_context)
+        return strategy_name
 
     async def execute_iteration(self, task: str, reasoning_context: Any) -> Any:
         """

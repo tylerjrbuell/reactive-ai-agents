@@ -1,18 +1,12 @@
 from __future__ import annotations
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import (
     Dict,
     Any,
     Optional,
     List,
     TYPE_CHECKING,
-    Callable,
-    Awaitable,
-    Union,
-    Tuple,
 )
-import json
-import asyncio
 
 from reactive_agents.core.types.agent_types import (
     AgentThinkChainResult,
@@ -30,6 +24,9 @@ from reactive_agents.core.types.reasoning_component_types import (
     CompletionResult,
     ErrorRecoveryResult,
     StrategyTransitionResult,
+    Plan,
+    PlanStep,
+    StepResult,
 )
 from reactive_agents.core.reasoning.engine import ReasoningEngine
 from reactive_agents.core.reasoning.goal_evaluator import TaskGoalEvaluator
@@ -39,6 +36,7 @@ from reactive_agents.core.reasoning.strategies.base import (
     BaseReasoningStrategy,
 )
 from reactive_agents.core.reasoning.prompts.base import BasePrompt, PromptKey
+from reactive_agents.core.memory.vector_memory import MemoryItem
 
 if TYPE_CHECKING:
     from reactive_agents.core.context.agent_context import AgentContext
@@ -53,15 +51,15 @@ class BaseComponent:
         component_type: ComponentType,
         name: str,
         description: str = "",
-    ):
+    ) -> None:
         """
         Initialize a strategy component.
 
         Args:
-            engine: Reasoning engine
-            component_type: Type of component
-            name: Component name
-            description: Component description
+            engine (ReasoningEngine): Reasoning engine
+            component_type (ComponentType): Type of component
+            name (str): Component name
+            description (str): Component description
         """
         self.engine = engine
         self.component_type = component_type
@@ -75,21 +73,25 @@ class BaseComponent:
         return f"{self.name} ({self.component_type.value})"
 
     def log_usage(self, message: str) -> None:
-        """Log component usage."""
+        """
+        Log component usage.
+
+        Args:
+            message (str): Message to log
+        """
         if self.agent_logger:
             self.agent_logger.debug(f"{self.name}: {message}")
 
-    def _get_prompt(self, prompt_name: PromptKey, **kwargs) -> str:
+    def _get_prompt(self, prompt_name: PromptKey, **kwargs: Any) -> str:
         """
         Get a prompt by name.
 
         Args:
-            prompt_name: Name of the prompt
-
+            prompt_name (PromptKey): Name of the prompt
             **kwargs: Context to pass to the prompt (for fallback compatibility)
 
         Returns:
-            Prompt instance
+            str: Prompt instance
         """
         prompt = self.engine.get_prompt(prompt_name, **kwargs)
         if not prompt:
@@ -108,15 +110,16 @@ class ThinkingComponent(BaseComponent):
     ):
         super().__init__(engine, ComponentType.THINKING, name, description)
 
-    async def think(self, prompt: str, **kwargs) -> Optional[AgentThinkResult]:
+    async def think(self, prompt: str, **kwargs: Any) -> Optional[AgentThinkResult]:
         """
         Generate thoughts using the engine's thinking capabilities.
 
         Args:
-            prompt: Prompt for thinking
+            prompt (str): Prompt for thinking
+            **kwargs: Additional context for the engine (see ReasoningEngine.think)
 
         Returns:
-            Structured thinking result
+            Optional[AgentThinkResult]: Structured thinking result, or None if failed
         """
         self.log_usage(f"Thinking with prompt: {prompt[:50]}...")
         return await self.engine.think(prompt, **kwargs)
@@ -150,22 +153,17 @@ class PlanningComponent(BaseComponent):
 
     async def generate_plan(
         self, task: str, reasoning_context: ReasoningContext
-    ) -> Dict[str, Any]:
+    ) -> Plan:
         """
         Generate a plan for a task by having a conversation with the model.
+        Returns a Plan Pydantic model with all steps as PlanStep and results as StepResult.
         """
         self.log_usage(f"Generating plan for task: {task[:50]}...")
 
-        # 1. Generate the user message that asks for a plan.
         plan_prompt_str = self._get_prompt("plan_generation", task=task)
-
-        # 2. Add the user message to the session to guide the planning.
-        # The context manager should handle this to maintain a clean history.
         context_manager = self.engine.get_context_manager()
-
-        # 3. Call think_chain, which uses the conversational history.
         thinking_result = await self.engine.think(
-            plan_prompt_str, response_format="json"
+            plan_prompt_str, format=Plan.model_json_schema()
         )
         if thinking_result:
             context_manager.add_message(
@@ -178,11 +176,15 @@ class PlanningComponent(BaseComponent):
         if not thinking_result or not thinking_result.result_json:
             if self.agent_logger:
                 self.agent_logger.warning("Failed to generate valid plan")
-            return {"plan_steps": [], "error": "Failed to generate valid plan"}
-
-        # The assistant's response (the plan) is automatically added to the history
-        # by the think_chain call. We just return the structured JSON.
-        return thinking_result.result_json
+            return Plan(
+                plan_steps=[], metadata={"error": "Failed to generate valid plan"}
+            )
+        try:
+            return Plan(**thinking_result.result_json)
+        except Exception as e:
+            if self.agent_logger:
+                self.agent_logger.warning(f"Plan parse error: {e}")
+            return Plan(plan_steps=[], metadata={"error": str(e)})
 
 
 class ToolExecutionComponent(BaseComponent):
@@ -201,10 +203,8 @@ class ToolExecutionComponent(BaseComponent):
     ) -> List[Dict[str, Any]]:
         """
         Execute tool calls using the engine.
-
         Args:
             tool_calls: List of tool calls to execute
-
         Returns:
             Results of tool execution
         """
@@ -213,23 +213,18 @@ class ToolExecutionComponent(BaseComponent):
 
     async def select_and_execute_tool(
         self, task: str, step_description: str
-    ) -> Dict[str, Any]:
+    ) -> ToolExecutionResult:
         """
         Select and execute the most appropriate tool for a task conversationally.
+        Returns a ToolExecutionResult Pydantic model.
         """
         self.log_usage(f"Selecting tool for: {step_description[:50]}...")
 
-        # 1. Generate the user message that asks the model to perform the step.
         tool_prompt_str = self._get_prompt(
             "tool_selection", task=task, step_description=step_description
         )
-
-        # 2. Add the message to context.
         context_manager = self.engine.get_context_manager()
         context_manager.add_message(role="user", content=step_description)
-
-        # 3. Call think_chain, which will now respond with a tool call.
-        # The agent's `_think_chain` should handle the tool execution automatically.
         thinking_result = await self.engine.think_chain(use_tools=True)
 
         if not thinking_result or not thinking_result.tool_calls:
@@ -237,14 +232,29 @@ class ToolExecutionComponent(BaseComponent):
                 self.agent_logger.warning(
                     "Failed to select a valid tool conversationally"
                 )
-            return {"error": "Failed to select a valid tool"}
-
-        # The engine and agent handle the execution and adding the tool_result message.
-        # We can return information about the call.
-        return {
-            "tool_calls": thinking_result.tool_calls,
-            "reasoning": thinking_result.content,
-        }
+            return ToolExecutionResult(
+                tool_calls=[],
+                results=[],
+                reasoning="",
+                error="Failed to select a valid tool",
+            )
+        try:
+            tool_calls_dicts = [
+                tc.dict() if hasattr(tc, "dict") else dict(tc)
+                for tc in thinking_result.tool_calls
+            ]
+            return ToolExecutionResult(
+                tool_calls=tool_calls_dicts,
+                results=[],  # Actual tool execution results can be filled in if available
+                reasoning=thinking_result.content,
+                error=None,
+            )
+        except Exception as e:
+            if self.agent_logger:
+                self.agent_logger.warning(f"ToolExecutionResult parse error: {e}")
+            return ToolExecutionResult(
+                tool_calls=[], results=[], reasoning="", error=str(e)
+            )
 
 
 class ReflectionComponent(BaseComponent):
@@ -263,33 +273,47 @@ class ReflectionComponent(BaseComponent):
         task: str,
         last_result: Dict[str, Any],
         reasoning_context: ReasoningContext,
-    ) -> Dict[str, Any]:
+    ) -> ReflectionResult:
         """
         Reflect on current progress conversationally.
+        Returns a ReflectionResult Pydantic model.
         """
         self.log_usage("Reflecting on progress")
 
-        # 1. Generate the user message that asks the model to reflect.
         reflection_prompt_str = self._get_prompt(
             "reflection", task=task, last_result=last_result
         )
 
-        # 3. Call think_chain to get the reflection.
         reflection_result = await self.engine.think(
-            reflection_prompt_str, response_format="json"
+            reflection_prompt_str, format="json"
         )
 
         if not reflection_result or not reflection_result.result_json:
             if self.agent_logger:
                 self.agent_logger.warning("Failed to generate reflection")
-            return {
-                "goal_achieved": False,
-                "completion_score": 0.0,
-                "next_action": "continue",
-                "error": "Failed to generate reflection",
-            }
-
-        return reflection_result.result_json
+            return ReflectionResult(
+                progress_assessment="Failed to generate reflection",
+                goal_achieved=False,
+                completion_score=0.0,
+                next_action="continue",
+                confidence=0.2,
+                blockers=["Reflection generation failed"],
+                error="Failed to generate reflection",
+            )
+        try:
+            return ReflectionResult(**reflection_result.result_json)
+        except Exception as e:
+            if self.agent_logger:
+                self.agent_logger.warning(f"ReflectionResult parse error: {e}")
+            return ReflectionResult(
+                progress_assessment="Reflection parse error",
+                goal_achieved=False,
+                completion_score=0.0,
+                next_action="continue",
+                confidence=0.2,
+                blockers=["Reflection parse error"],
+                error=str(e),
+            )
 
     async def reflect_on_plan_progress(
         self,
@@ -297,24 +321,15 @@ class ReflectionComponent(BaseComponent):
         current_step_index: int,
         plan_steps: List[Dict[str, Any]],
         last_result: Dict[str, Any],
-    ) -> Dict[str, Any]:
+    ) -> ReflectionResult:
         """
         Reflect on plan progress.
-
-        Args:
-            task: The current task
-            current_step_index: Index of the current step
-            plan_steps: List of plan steps
-            last_result: Result from last step
-
-        Returns:
-            Plan progress reflection
+        Returns a ReflectionResult Pydantic model.
         """
         self.log_usage(
             f"Reflecting on plan progress (step {current_step_index+1}/{len(plan_steps)})"
         )
 
-        # Use the engine's prompt system to generate a plan reflection prompt
         plan_reflection_prompt_str = self._get_prompt(
             "plan_progress_reflection",
             task=task,
@@ -324,20 +339,35 @@ class ReflectionComponent(BaseComponent):
         )
 
         reflection_result = await self.engine.think(
-            plan_reflection_prompt_str, response_format="json"
+            plan_reflection_prompt_str, format="json"
         )
 
-        if not reflection_result:
+        if not reflection_result or not reflection_result.result_json:
             if self.agent_logger:
                 self.agent_logger.warning("Failed to generate plan reflection")
-            return {
-                "current_step_status": "unknown",
-                "overall_completion_score": 0.0,
-                "next_action": "continue",
-                "error": "Failed to generate plan reflection",
-            }
-
-        return reflection_result.result_json
+            return ReflectionResult(
+                progress_assessment="Failed to generate plan reflection",
+                goal_achieved=False,
+                completion_score=0.0,
+                next_action="continue",
+                confidence=0.2,
+                blockers=["Plan reflection generation failed"],
+                error="Failed to generate plan reflection",
+            )
+        try:
+            return ReflectionResult(**reflection_result.result_json)
+        except Exception as e:
+            if self.agent_logger:
+                self.agent_logger.warning(f"Plan ReflectionResult parse error: {e}")
+            return ReflectionResult(
+                progress_assessment="Plan reflection parse error",
+                goal_achieved=False,
+                completion_score=0.0,
+                next_action="continue",
+                confidence=0.2,
+                blockers=["Plan reflection parse error"],
+                error=str(e),
+            )
 
 
 class TaskEvaluationComponent(BaseComponent):
@@ -358,19 +388,10 @@ class TaskEvaluationComponent(BaseComponent):
         latest_output: str = "",
         execution_log: str = "",
         meta: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+    ) -> CompletionResult:
         """
         Evaluate if a task is complete.
-
-        Args:
-            task: The task to evaluate
-            progress_summary: Summary of progress
-            latest_output: Latest output from the agent
-            execution_log: Log of execution
-            meta: Additional metadata
-
-        Returns:
-            Evaluation result
+        Returns a CompletionResult Pydantic model.
         """
         self.log_usage(f"Evaluating task completion for: {task[:50]}...")
 
@@ -383,7 +404,6 @@ class TaskEvaluationComponent(BaseComponent):
         )
         print(f"eval_context: {eval_context}")
 
-        # Use the TaskGoalEvaluator directly
         evaluator = TaskGoalEvaluator(
             model_provider=self.engine.context.model_provider,
             agent_context=self.context,
@@ -396,27 +416,24 @@ class TaskEvaluationComponent(BaseComponent):
             if self.agent_logger:
                 self.agent_logger.debug(f"Raw evaluation result: {evaluation}")
 
-            result = {
-                "is_complete": evaluation.completion,
-                "completion_score": evaluation.completion_score,
-                "reasoning": evaluation.reasoning,
-                "missing_requirements": evaluation.missing_requirements,
-            }
-
-            if self.agent_logger:
-                self.agent_logger.debug(f"Processed evaluation result: {result}")
-
-            return result
+            return CompletionResult(
+                is_complete=evaluation.completion,
+                completion_score=evaluation.completion_score,
+                reasoning=evaluation.reasoning,
+                missing_requirements=evaluation.missing_requirements,
+                confidence=1.0 if evaluation.completion else 0.5,
+            )
 
         except Exception as e:
             if self.agent_logger:
                 self.agent_logger.error(f"Task evaluation failed: {e}")
-            return {
-                "is_complete": False,
-                "completion_score": 0.0,
-                "reasoning": f"Evaluation failed: {str(e)}",
-                "missing_requirements": ["Task evaluation encountered an error"],
-            }
+            return CompletionResult(
+                is_complete=False,
+                completion_score=0.0,
+                reasoning=f"Evaluation failed: {str(e)}",
+                missing_requirements=["Task evaluation encountered an error"],
+                confidence=0.0,
+            )
 
 
 class CompletionComponent(BaseComponent):
@@ -435,14 +452,14 @@ class CompletionComponent(BaseComponent):
         task: str,
         execution_summary: str = "",
         reflection: Optional[Dict[str, Any]] = None,
-        **kwargs,
-    ) -> Dict[str, Any]:
+        **kwargs: Any,
+    ) -> CompletionResult:
         """
         Generate a final answer conversationally.
+        Returns a CompletionResult Pydantic model.
         """
         self.log_usage("Attempting to generate final answer")
 
-        # 1. Generate the user message that asks for a final answer.
         final_answer_prompt_str = self._get_prompt(
             "final_answer",
             task=task,
@@ -451,27 +468,48 @@ class CompletionComponent(BaseComponent):
             **kwargs,
         )
 
-        # 2. Add the message to context.
         context_manager = self.engine.get_context_manager()
         context_manager.add_message(role="user", content=final_answer_prompt_str)
-
-        # 3. Call think_chain to get the final answer.
         final_answer_result = await self.engine.think_chain(use_tools=False)
 
         if not final_answer_result or not final_answer_result.result_json:
             if self.agent_logger:
                 self.agent_logger.warning("Failed to generate valid final answer")
-            return {
-                "final_answer": f"I attempted to complete the task: {task}, but encountered some issues.",
-                "confidence": 0.2,
-                "error": "Failed to generate valid final answer",
-            }
-
-        if self.agent_logger:
-            self.agent_logger.debug(
-                f"Generated final answer: {final_answer_result.result_json}"
+            return CompletionResult(
+                is_complete=False,
+                should_complete=False,
+                completion_score=0.0,
+                final_answer=f"I attempted to complete the task: {task}, but encountered some issues.",
+                reasoning="Failed to generate valid final answer",
+                missing_requirements=["Final answer generation failed"],
+                confidence=0.2,
             )
-        return final_answer_result.result_json
+        try:
+            # Accept both direct final_answer and full CompletionResult dicts
+            result_json = final_answer_result.result_json
+            if "final_answer" in result_json and len(result_json) == 1:
+                return CompletionResult(
+                    final_answer=result_json["final_answer"],
+                    is_complete=True,
+                    should_complete=True,
+                    completion_score=1.0,
+                    reasoning="",
+                    missing_requirements=[],
+                    confidence=1.0,
+                )
+            return CompletionResult(**result_json)
+        except Exception as e:
+            if self.agent_logger:
+                self.agent_logger.warning(f"CompletionResult parse error: {e}")
+            return CompletionResult(
+                is_complete=False,
+                should_complete=False,
+                completion_score=0.0,
+                final_answer=None,
+                reasoning=str(e),
+                missing_requirements=["Final answer parse error"],
+                confidence=0.0,
+            )
 
 
 class ErrorHandlingComponent(BaseComponent):
@@ -491,29 +529,13 @@ class ErrorHandlingComponent(BaseComponent):
         error_context: str,
         error_count: int,
         last_error: str,
-    ) -> Dict[str, Any]:
+    ) -> ErrorRecoveryResult:
         """
         Handle an error and generate recovery steps.
-
-        Args:
-            task: The current task
-            error_context: Context in which the error occurred
-            error_count: Count of errors so far
-            last_error: The last error message
-
-        Returns:
-            Error handling result
+        Returns an ErrorRecoveryResult Pydantic model.
         """
         self.log_usage(f"Handling error: {last_error[:50]}...")
 
-        # Use the engine's prompt system to generate an error recovery prompt
-        prompt_obj = self._get_prompt(
-            "error_recovery",
-            task=task,
-            error_context=error_context,
-            error_count=error_count,
-            last_error=last_error,
-        )
         error_prompt_str = self._get_prompt(
             "error_recovery",
             task=task,
@@ -521,21 +543,30 @@ class ErrorHandlingComponent(BaseComponent):
             error_count=error_count,
             last_error=last_error,
         )
-        recovery_result = await self.engine.think(
-            error_prompt_str, response_format="json"
-        )
+        recovery_result = await self.engine.think(error_prompt_str, format="json")
 
-        if not recovery_result or not recovery_result.result_json.get(
-            "recovery_action"
+        if (
+            not recovery_result
+            or not recovery_result.result_json
+            or not recovery_result.result_json.get("recovery_action")
         ):
             if self.agent_logger:
                 self.agent_logger.warning("Failed to generate valid error recovery")
-            return {
-                "recovery_action": "retry",
-                "error": "Failed to generate valid error recovery",
-            }
-
-        return recovery_result.result_json
+            return ErrorRecoveryResult(
+                recovery_action="retry",
+                rationale="Failed to generate valid error recovery",
+                error_analysis="Failed to generate valid error recovery",
+            )
+        try:
+            return ErrorRecoveryResult(**recovery_result.result_json)
+        except Exception as e:
+            if self.agent_logger:
+                self.agent_logger.warning(f"ErrorRecoveryResult parse error: {e}")
+            return ErrorRecoveryResult(
+                recovery_action="retry",
+                rationale="ErrorRecoveryResult parse error",
+                error_analysis=str(e),
+            )
 
 
 class MemoryIntegrationComponent(BaseComponent):
@@ -546,21 +577,21 @@ class MemoryIntegrationComponent(BaseComponent):
         engine: ReasoningEngine,
         name: str = "MemoryIntegration",
         description: str = "Integrates with agent memory",
-    ):
+    ) -> None:
         super().__init__(engine, ComponentType.MEMORY_INTEGRATION, name, description)
 
     async def get_relevant_memories(
         self, task: str, max_items: int = 5
-    ) -> List[Dict[str, Any]]:
+    ) -> List[MemoryItem]:
         """
         Get memories relevant to the current task.
 
         Args:
-            task: The current task
-            max_items: Maximum number of memories to retrieve
+            task (str): The current task
+            max_items (int): Maximum number of memories to retrieve
 
         Returns:
-            List of relevant memories
+            List[MemoryItem]: List of relevant memories
         """
         self.log_usage(f"Retrieving relevant memories for: {task[:50]}...")
 
@@ -585,34 +616,22 @@ class MemoryIntegrationComponent(BaseComponent):
                 relevant_memories = await memory_manager.get_context_memories(  # type: ignore
                     task, max_items=max_items
                 )
-                return relevant_memories
+                # Convert dicts to MemoryItem if needed
+                memory_items: List[MemoryItem] = []
+                for mem in relevant_memories:
+                    if isinstance(mem, MemoryItem):
+                        memory_items.append(mem)
+                    else:
+                        try:
+                            memory_items.append(MemoryItem(**mem))
+                        except Exception:
+                            continue
+                return memory_items
         except Exception as e:
             if self.agent_logger:
                 self.agent_logger.warning(f"Failed to retrieve memories: {e}")
 
         return []
-
-    def preserve_context(self, key: str, value: Any) -> None:
-        """
-        Preserve important context.
-
-        Args:
-            key: Context key
-            value: Context value
-        """
-        self.engine.preserve_context(key, value)
-
-    def get_preserved_context(self, key: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Get preserved context.
-
-        Args:
-            key: Optional specific key to retrieve
-
-        Returns:
-            Preserved context
-        """
-        return self.engine.get_preserved_context(key)
 
 
 class StrategyTransitionComponent(BaseComponent):
@@ -632,28 +651,13 @@ class StrategyTransitionComponent(BaseComponent):
         available_strategies: List[str],
         reasoning_context: ReasoningContext,
         performance_metrics: Dict[str, Any],
-    ) -> Dict[str, Any]:
+    ) -> StrategyTransitionResult:
         """
         Determine if the strategy should be switched.
-
-        Args:
-            current_strategy: Current strategy name
-            available_strategies: Available strategies
-            reasoning_context: Current reasoning context
-            performance_metrics: Performance metrics
-
-        Returns:
-            Strategy transition decision
+        Returns a StrategyTransitionResult Pydantic model.
         """
         self.log_usage(f"Evaluating strategy transition from {current_strategy}")
 
-        # Use the engine's prompt system to generate a strategy transition prompt
-        prompt_obj = self._get_prompt(
-            "strategy_transition",
-            current_strategy=current_strategy,
-            available_strategies=available_strategies,
-            performance_metrics=performance_metrics,
-        )
         transition_prompt_str = self._get_prompt(
             "strategy_transition",
             current_strategy=current_strategy,
@@ -661,19 +665,33 @@ class StrategyTransitionComponent(BaseComponent):
             performance_metrics=performance_metrics,
         )
         transition_result = await self.engine.think(
-            transition_prompt_str, response_format="json"
+            transition_prompt_str, format="json"
         )
 
-        if not transition_result or not transition_result.result_json.get(
-            "should_switch"
+        if (
+            not transition_result
+            or not transition_result.result_json
+            or "should_switch" not in transition_result.result_json
         ):
             if self.agent_logger:
                 self.agent_logger.warning(
                     "Failed to generate valid strategy transition decision"
                 )
-            return {"should_switch": False, "recommended_strategy": None}
-
-        return transition_result.result_json
+            return StrategyTransitionResult(
+                should_switch=False,
+                recommended_strategy=None,
+                reasoning="Failed to generate valid strategy transition decision",
+            )
+        try:
+            return StrategyTransitionResult(**transition_result.result_json)
+        except Exception as e:
+            if self.agent_logger:
+                self.agent_logger.warning(f"StrategyTransitionResult parse error: {e}")
+            return StrategyTransitionResult(
+                should_switch=False,
+                recommended_strategy=None,
+                reasoning=str(e),
+            )
 
 
 class ComponentRegistry:
@@ -805,15 +823,24 @@ class ComponentBasedStrategy(BaseReasoningStrategy):
         result = await self._thinking.think(prompt)
         return result.result_json if result else {}
 
-    async def plan(
-        self, task: str, reasoning_context: ReasoningContext
-    ) -> Dict[str, Any]:
-        """Generate a plan."""
+    async def plan(self, task: str, reasoning_context: ReasoningContext) -> Plan:
+        """
+        Generate a plan for a task.
+
+        Args:
+            task (str): The current task
+            reasoning_context (ReasoningContext): Reasoning context for the plan
+
+        Returns:
+            Plan: The generated plan (all steps are PlanStep, results are StepResult)
+        """
         if not self._planning or not isinstance(self._planning, PlanningComponent):
             raise ValueError("Planning component not found")
         return await self._planning.generate_plan(task, reasoning_context)
 
-    async def execute_tool(self, task: str, step_description: str) -> Dict[str, Any]:
+    async def execute_tool(
+        self, task: str, step_description: str
+    ) -> ToolExecutionResult:
         """Select and execute a tool."""
         if not self._tools or not isinstance(self._tools, ToolExecutionComponent):
             raise ValueError("ToolExecution component not found")
@@ -822,10 +849,20 @@ class ComponentBasedStrategy(BaseReasoningStrategy):
     async def reflect(
         self,
         task: str,
-        last_result: Dict[str, Any],
+        last_result: Dict[str, Any],  # TODO: Use a more specific type if possible
         reasoning_context: ReasoningContext,
-    ) -> Dict[str, Any]:
-        """Reflect on progress."""
+    ) -> ReflectionResult:
+        """
+        Reflect on progress.
+
+        Args:
+            task (str): The current task
+            last_result (Dict[str, Any]): Result from the last step (TODO: use a model)
+            reasoning_context (ReasoningContext): Reasoning context
+
+        Returns:
+            ReflectionResult: The reflection result
+        """
         if not self._reflection or not isinstance(
             self._reflection, ReflectionComponent
         ):
@@ -835,8 +872,8 @@ class ComponentBasedStrategy(BaseReasoningStrategy):
         )
 
     async def evaluate(
-        self, task: str, progress_summary: str = "", **kwargs
-    ) -> Dict[str, Any]:
+        self, task: str, progress_summary: str = "", **kwargs: Any
+    ) -> CompletionResult:
         """Evaluate task completion."""
         if not self._evaluation or not isinstance(
             self._evaluation, TaskEvaluationComponent
@@ -857,7 +894,7 @@ class ComponentBasedStrategy(BaseReasoningStrategy):
 
     async def handle_error(
         self, task: str, error_context: str, error_count: int, last_error: str
-    ) -> Dict[str, Any]:
+    ) -> ErrorRecoveryResult:
         """Handle an error."""
         if not self._error_handling or not isinstance(
             self._error_handling, ErrorHandlingComponent
@@ -867,15 +904,24 @@ class ComponentBasedStrategy(BaseReasoningStrategy):
             task, error_context, error_count, last_error
         )
 
-    async def get_memories(self, task: str, max_items: int = 5) -> List[Dict[str, Any]]:
-        """Get relevant memories."""
+    async def get_memories(self, task: str, max_items: int = 5) -> List[MemoryItem]:
+        """
+        Get relevant memories.
+
+        Args:
+            task (str): The current task
+            max_items (int): Maximum number of memories to retrieve
+
+        Returns:
+            List[MemoryItem]: List of relevant memories
+        """
         if not self._memory or not isinstance(self._memory, MemoryIntegrationComponent):
             raise ValueError("MemoryIntegration component not found")
         return await self._memory.get_relevant_memories(task, max_items)
 
     async def complete_task(
-        self, task: str, execution_summary: str = "", **kwargs
-    ) -> dict:
+        self, task: str, execution_summary: str = "", **kwargs: Any
+    ) -> CompletionResult:
         """
         Use the CompletionComponent to generate a final answer and completion result.
         All strategies should call this method to ensure consistent completion logic.
@@ -897,14 +943,18 @@ class ComponentBasedStrategy(BaseReasoningStrategy):
             self.agent_logger.debug(f"Completion result: {completion_result}")
 
         # Ensure we have a valid final answer
-        if not completion_result.get("final_answer"):
+        if not completion_result.final_answer:
             if self.agent_logger:
                 self.agent_logger.warning("No final answer in completion result")
-            return {
-                "status": "incomplete",
-                "reason": "Failed to generate final answer",
-                "completion_result": completion_result,
-            }
+            return CompletionResult(
+                is_complete=False,
+                should_complete=False,
+                completion_score=0.0,
+                final_answer=None,
+                reasoning="Failed to generate final answer",
+                missing_requirements=["No final answer in completion result"],
+                confidence=0.0,
+            )
 
         return completion_result
 
