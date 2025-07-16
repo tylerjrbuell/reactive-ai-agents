@@ -3,6 +3,8 @@ from typing import List, Dict, Any, Optional, Set
 from pydantic import BaseModel, Field
 import uuid
 import time
+
+from reactive_agents.core.types.prompt_types import ReflectionOutput
 from .status_types import TaskStatus, StepStatus
 from .agent_types import TaskSuccessCriteria
 from .reasoning_component_types import Plan, PlanStep, StepResult
@@ -82,8 +84,8 @@ class PlanExecuteReflectState(BaseStrategyState):
 
     # Reflection state
     reflection_count: int = 0
-    last_reflection_result: Dict[str, Any] = Field(default_factory=dict)
-    reflection_history: List[Dict[str, Any]] = Field(default_factory=list)
+    last_reflection_result: Optional[ReflectionOutput] = None
+    reflection_history: List[ReflectionOutput] = Field(default_factory=list)
 
     # Strategy metrics
     plan_success_rate: float = 0.0
@@ -131,7 +133,7 @@ class PlanExecuteReflectState(BaseStrategyState):
                 if isinstance(call, dict) and "result" in call:
                     self.tool_responses.append(str(call["result"]))
 
-    def record_reflection_result(self, reflection_result: Dict[str, Any]) -> None:
+    def record_reflection_result(self, reflection_result: ReflectionOutput) -> None:
         """Record a reflection result and update metrics."""
         self.reflection_count += 1
         self.last_reflection_result = reflection_result

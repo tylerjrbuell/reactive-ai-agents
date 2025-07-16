@@ -8,6 +8,10 @@ from reactive_agents.core.types.event_types import AgentStateEvent
 from reactive_agents.core.types.reasoning_types import (
     ReasoningContext,
     ReasoningStrategies,
+    StrategyAction,
+    FinishTaskPayload,
+    EvaluationPayload,
+    ErrorPayload,
 )
 
 if TYPE_CHECKING:
@@ -265,68 +269,59 @@ class ExecutionEngine:
             )
 
             try:
-
                 # Execute one iteration using current strategy
                 strategy_result = await self.strategy_manager.execute_iteration(
                     task, reasoning_context
                 )
 
-                # Convert to dict for compatibility
-                iteration_result = strategy_result.to_dict()
-                iteration_results.append(iteration_result)
+                # Append the structured result payload to the log
+                iteration_results.append(strategy_result.payload.model_dump())
 
-                # Handle task completion
-                if iteration_result.get("action_taken") == "task_completed":
-                    final_answer = iteration_result.get("final_answer")
-                    completion_status = iteration_result.get("status", "unknown")
-                    evaluation = iteration_result.get("evaluation", {})
-
-                    if self.agent_logger:
-                        self.agent_logger.debug(
-                            f"Task completion status: {completion_status}"
-                        )
-                        self.agent_logger.debug(
-                            f"Final answer present: {bool(final_answer)}"
-                        )
-                        self.agent_logger.debug(f"Evaluation result: {evaluation}")
-
-                    # Check if task is actually complete based on evaluation
-                    is_complete = evaluation.get("is_complete", False)
-                    if is_complete and final_answer:
-                        self.context.session.final_answer = final_answer
+                # --- REFACTORED LOGIC ---
+                # This pattern is type-safe and easy for linters to analyze.
+                match strategy_result.payload:
+                    case FinishTaskPayload() as payload:
+                        self.context.session.final_answer = payload.final_answer
                         self.context.session.task_status = TaskStatus.COMPLETE
                         if self.agent_logger:
+                            self.agent_logger.info("✅ Task completed with final answer.")
+                        break  # Exit the loop
+
+                    case EvaluationPayload() as payload:
+                        if self.agent_logger:
                             self.agent_logger.info(
-                                "✅ Task completed with final answer"
+                                f"🧠 Task evaluation: is_complete={payload.is_complete}, reason: {payload.reasoning}"
                             )
-                        break
-                    elif not is_complete:
-                        # Task not complete according to evaluation
-                        if self.agent_logger:
-                            self.agent_logger.warning(
-                                f"Task evaluation indicates incomplete: {evaluation.get('reasoning', 'No reason provided')}"
+                        if payload.is_complete:
+                            # The strategy thinks the task is done, but didn't provide
+                            # the final answer yet. Nudge it to do so.
+                            self.context_manager.add_nudge(
+                                "Task evaluation indicates completion. Please provide the final answer now."
                             )
-                        # Update iteration result with evaluation
-                        iteration_result["evaluation"] = evaluation
-                        # Don't break - let strategy continue
+                        # Continue the loop
                         continue
-                    else:
-                        # Complete but no final answer
+
+                    case ErrorPayload() as payload:
                         if self.agent_logger:
-                            self.agent_logger.warning(
-                                "Task evaluation indicates complete but missing final answer"
+                            self.agent_logger.error(
+                                f"Strategy reported an error: {payload.error_message}"
                             )
-                        # Update iteration result with evaluation
-                        iteration_result["evaluation"] = evaluation
-                        # Don't break - let strategy try to generate final answer
+                        # We will let the main exception handler catch this by re-raising
+                        # or we can handle it gracefully here. For now, let's log and continue.
+                        self.context.session.task_status = TaskStatus.ERROR
                         continue
+
+                    case _:
+                        # Default case for CONTINUE_THINKING, CALL_TOOLS, or other actions
+                        # that just let the loop proceed. The strategy itself handles the
+                        # tool execution and state updates.
+                        pass
 
                 # Update context
                 reasoning_context.iteration_count = self.context.session.iterations
 
-                # Check if should continue
-                if not iteration_result.get("should_continue", True):
-                    # Only break if we have a final answer
+                # Check if the strategy signals to stop
+                if not strategy_result.should_continue:
                     if self.context.session.final_answer:
                         if self.agent_logger:
                             self.agent_logger.info(
@@ -336,13 +331,13 @@ class ExecutionEngine:
                     else:
                         if self.agent_logger:
                             self.agent_logger.warning(
-                                "Strategy wants to complete but no final answer - continuing"
+                                "Strategy requested stop but no final answer was provided."
                             )
-                            self.context_manager.add_nudge(
-                                "Give a complete final answer to the task using the final_answer tool"
-                            )
+                        self.context_manager.add_nudge(
+                            "Give a complete final answer to the task using the final_answer tool"
+                        )
 
-                # Check for final answer
+                # Check for final answer (redundant check, but safe)
                 if (
                     self.context.session.final_answer
                     and self.context.session.task_status == TaskStatus.COMPLETE
@@ -356,7 +351,7 @@ class ExecutionEngine:
                     AgentStateEvent.ITERATION_COMPLETED,
                     {
                         "iteration": self.context.session.iterations,
-                        "result": iteration_result,
+                        "result": strategy_result.payload.model_dump(),
                     },
                 )
 

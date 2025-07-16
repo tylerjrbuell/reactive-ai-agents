@@ -160,10 +160,10 @@ class PlanningComponent(BaseComponent):
         """
         self.log_usage(f"Generating plan for task: {task[:50]}...")
 
-        plan_prompt_str = self._get_prompt("plan_generation", task=task)
         context_manager = self.engine.get_context_manager()
-        thinking_result = await self.engine.think(
-            plan_prompt_str, format=Plan.model_json_schema()
+        plan_prompt = self.engine.get_prompt("plan_generation", task=task)
+        thinking_result = await plan_prompt.get_completion(
+            format=Plan.model_json_schema()
         )
         if thinking_result:
             context_manager.add_message(

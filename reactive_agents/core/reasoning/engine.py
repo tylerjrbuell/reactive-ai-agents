@@ -16,11 +16,11 @@ from reactive_agents.core.types.agent_types import (
 
 # Import the class-based prompt system
 from .prompts.base import (
+    BasePrompt,
     SystemPrompt,
     TaskPlanningPrompt,
     ReflectionPrompt,
     PlanGenerationPrompt,
-    StepExecutionPrompt,
     TaskCompletionValidationPrompt,
     PlanProgressReflectionPrompt,
     ErrorRecoveryPrompt,
@@ -59,23 +59,22 @@ class ReasoningEngine:
         self._completed_actions: List[str] = []
 
         # Initialize prompt classes
-        self._prompts = {
-            "system": SystemPrompt(context),
-            "planning": TaskPlanningPrompt(context),
-            "reflection": ReflectionPrompt(context),
-            "plan_generation": PlanGenerationPrompt(context),
-            "step_execution": StepExecutionPrompt(context),
-            "completion_validation": TaskCompletionValidationPrompt(context),
-            "plan_progress_reflection": PlanProgressReflectionPrompt(context),
-            "error_recovery": ErrorRecoveryPrompt(context),
-            "final_answer": FinalAnswerPrompt(context),
-            "tool_selection": ToolSelectionPrompt(context),
-            "strategy_transition": StrategyTransitionPrompt(context),
-            "plan_extension": PlanExtensionPrompt(context),
-            "task_goal_evaluation": TaskGoalEvaluationPrompt(context),
-            "tool_call_system": ToolCallSystemPrompt(context),
-            "memory_summarization": MemorySummarizationPrompt(context),
-            "ollama_manual_tool": OllamaManualToolPrompt(context),
+        self._prompts: Dict[str, BasePrompt] = {
+            "system": SystemPrompt(context, self),
+            "planning": TaskPlanningPrompt(context, self),
+            "reflection": ReflectionPrompt(context, self),
+            "plan_generation": PlanGenerationPrompt(context, self),
+            "completion_validation": TaskCompletionValidationPrompt(context, self),
+            "plan_progress_reflection": PlanProgressReflectionPrompt(context, self),
+            "error_recovery": ErrorRecoveryPrompt(context, self),
+            "final_answer": FinalAnswerPrompt(context, self),
+            "tool_selection": ToolSelectionPrompt(context, self),
+            "strategy_transition": StrategyTransitionPrompt(context, self),
+            "plan_extension": PlanExtensionPrompt(context, self),
+            "task_goal_evaluation": TaskGoalEvaluationPrompt(context, self),
+            "tool_call_system": ToolCallSystemPrompt(context, self),
+            "memory_summarization": MemorySummarizationPrompt(context, self),
+            "ollama_manual_tool": OllamaManualToolPrompt(context, self),
         }
 
     # === Prompt Management ===
@@ -105,59 +104,13 @@ class ReasoningEngine:
                 self.agent_logger.error(f"Think operation failed: {e}")
             return None
 
-    def get_prompt(self, prompt_type: str, **kwargs) -> str:
+    def get_prompt(self, prompt_type: str, **kwargs) -> BasePrompt:
         """Get a sophisticated prompt using the class-based system."""
 
         try:
-            return self._prompts[prompt_type].generate(**kwargs)
+            return self._prompts[prompt_type]
         except Exception as e:
-            if self.agent_logger:
-                self.agent_logger.error(f"Failed to generate {prompt_type} prompt: {e}")
-            return self._get_fallback_prompt(prompt_type, **kwargs)
-
-    def _get_fallback_prompt(self, prompt_type: str, **kwargs) -> str:
-        """Fallback to basic prompts if class-based generation fails."""
-        prompts = {
-            "reflection": """
-Please reflect on the following task and current progress:
-
-Task: {task}
-Current Progress: {progress}
-Last Action Result: {last_result}
-
-Provide a brief reflection on:
-1. What has been accomplished so far
-2. What still needs to be done
-3. Any adjustments needed to the approach
-
-Reflection:""",
-            "planning": """
-Please create a step-by-step plan for the following task:
-
-Task: {task}
-Context: {context}
-
-Provide a clear, numbered plan with specific actions:""",
-            "execution": """
-Please execute the next step in solving this task:
-
-Task: {task}
-Current Step: {step}
-Context: {context}
-
-Execute the step and provide the result:""",
-            "completion": """
-Please evaluate if the following task has been completed successfully:
-
-Task: {task}
-Actions Taken: {actions}
-Results: {results}
-
-Is the task complete? Provide a yes/no answer with brief reasoning:""",
-        }
-
-        template = prompts.get(prompt_type, "Please help with: {task}")
-        return template.format(**kwargs)
+            raise e
 
     # === Canonical Tool Execution ===
     async def execute_tools(
@@ -219,7 +172,7 @@ Is the task complete? Provide a yes/no answer with brief reasoning:""",
                 results=self.context.session.get_strategy_state(),
             )
 
-            result = await self.think(completion_prompt)
+            result = await completion_prompt.get_completion()
 
             # Parse the result for completion information
             if result and result.content:
@@ -306,7 +259,7 @@ Is the task complete? Provide a yes/no answer with brief reasoning:""",
                 **filtered_kwargs,
             )
 
-            result = await self.think(completion_prompt)
+            result = await completion_prompt.get_completion()
 
             if result and result.content:
                 content = result.content

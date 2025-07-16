@@ -560,7 +560,7 @@ async def test():
                     )
                 )
                 .with_log_level(LogLevel.DEBUG)
-                .with_reasoning_strategy(ReasoningStrategies.REACTIVE)
+                .with_reasoning_strategy(ReasoningStrategies.PLAN_EXECUTE_REFLECT)
                 .with_max_iterations(10)
                 .with_tool_caching(False)
                 # .with_reflection(True)
@@ -572,8 +572,31 @@ async def test():
             )
         )
         task = """
-        Authenticate to gmail using the browser, Then pull 25 emails from my inbox, if the email subject and content indicates marketing or spam,
-        move it to the trash, Finally, send an email to tylerjrbuell@gmail.com with a summary of the emails that were moved to the trash.
+        Search for emails with query "category:updates" and move them to the archive,
+        Finally, send an email to tylerjrbuell@gmail.com with a summary of the emails that were moved to the archive.
+        
+        # Example email summary template:
+        # <category> is the category of emails to move to the <trash> or <archive>
+        # <email_id> is the id of the email
+        # <subject> is the subject of the email
+        # <from> is the from of the email
+        # <snippet> is the snippet of the email
+        
+        Summary of processed <category> emails:
+
+        1. Email ID: <email_id>
+        Subject: <subject>
+        From: <from>
+        Snippet: <snippet>
+        
+        2. Email ID: <email_id>
+        Subject: <subject>
+        From: <from>
+        Snippet: <snippet>
+
+        All identified <category> emails have been moved to the <trash> or <archive>
+        
+
         """
 
         result = await agent.run(task)
@@ -746,12 +769,12 @@ async def test_plan_execute_reflect():
 
 if __name__ == "__main__":
     # Run the main examples (includes reactive strategy test)
-    asyncio.run(main())
+    # asyncio.run(main())
 
     # Run additional examples
     # asyncio.run(classic_main())
     # asyncio.run(context_managed_main())
-    # asyncio.run(test())
+    asyncio.run(test())
 
     # Test reflect_decide_act strategy
     # asyncio.run(test_reflect_decide_act())

@@ -2,7 +2,13 @@ from __future__ import annotations
 from typing import List
 import time
 
-from reactive_agents.core.types.reasoning_types import ReasoningContext
+from reactive_agents.core.types.reasoning_types import (
+    ContinueThinkingPayload,
+    EvaluationPayload,
+    FinishTaskPayload,
+    ReasoningContext,
+    StrategyAction,
+)
 from reactive_agents.core.reasoning.strategies.base import (
     StrategyResult,
     StrategyCapabilities,
@@ -89,14 +95,25 @@ class PlanExecuteReflectStrategy(ComponentBasedStrategy):
             if self.agent_logger:
                 self.agent_logger.info("✅ All plan steps completed")
             return StrategyResult(
-                action_taken="all_steps_completed",
+                action=StrategyAction.FINISH_TASK,
+                payload=FinishTaskPayload(
+                    action=StrategyAction.FINISH_TASK,
+                    final_answer=self.context.session.final_answer
+                    or "Task Plan completed successfully",
+                    evaluation=EvaluationPayload(
+                        action=StrategyAction.EVALUATE_COMPLETION,
+                        is_complete=True,
+                        reasoning="\n".join(
+                            state.last_reflection_result.learning_insights
+                            if state.last_reflection_result
+                            else []
+                        ),
+                        confidence=state.last_reflection_result.completion_score
+                        if state.last_reflection_result
+                        else 1.0,
+                    ),
+                ),
                 should_continue=False,
-                status="success",
-                evaluation={
-                    "goal_achieved": True,
-                    "reasoning": "All plan steps completed",
-                },
-                result={"final_answer": "Task completed according to plan"},
             )
 
         # Execute current step
@@ -139,7 +156,7 @@ class PlanExecuteReflectStrategy(ComponentBasedStrategy):
 
         # Determine next action
         goal_achieved = (
-            reflection_result.get("goal_achieved", False)
+            reflection_result.goal_achieved
             if reflection_result
             else False
         )
@@ -148,11 +165,25 @@ class PlanExecuteReflectStrategy(ComponentBasedStrategy):
             if self.agent_logger:
                 self.agent_logger.info("✅ Goal achieved according to reflection")
             return StrategyResult(
-                action_taken=f"completed_step_{state.current_step + 1}",
+                action=StrategyAction.FINISH_TASK,
+                payload=FinishTaskPayload(
+                    action=StrategyAction.FINISH_TASK,
+                    final_answer=self.context.session.final_answer
+                    or "Goal achieved according to reflection",
+                    evaluation=EvaluationPayload(
+                        action=StrategyAction.EVALUATE_COMPLETION,
+                        is_complete=True,
+                        reasoning="\n".join(
+                            reflection_result.learning_insights
+                            if reflection_result
+                            else []
+                        ),
+                        confidence=reflection_result.completion_score
+                        if reflection_result
+                        else 1.0,
+                    ),
+                ),
                 should_continue=False,
-                status="success",
-                evaluation=reflection_result,
-                result=step_result,
             )
         else:
             # Move to next step
@@ -163,9 +194,10 @@ class PlanExecuteReflectStrategy(ComponentBasedStrategy):
                 self.agent_logger.info(f"📈 Moving to step {state.current_step + 1}")
 
         return StrategyResult(
-            action_taken=f"completed_step_{state.current_step}",
+            action=StrategyAction.CONTINUE_THINKING,
+            payload=ContinueThinkingPayload(
+                action=StrategyAction.CONTINUE_THINKING,
+                reasoning="Continuing to next step",
+            ),
             should_continue=True,
-            status="success",
-            evaluation=reflection_result,
-            result=step_result,
         )

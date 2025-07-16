@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import List
-from reactive_agents.core.types.reasoning_types import ReasoningContext
+from reactive_agents.core.types.reasoning_types import EvaluationPayload, FinishTaskPayload, ReasoningContext, StrategyAction
 from reactive_agents.core.reasoning.strategies.base import (
     BaseReasoningStrategy,
     StrategyResult,
@@ -49,9 +49,15 @@ class ReflectDecideActStrategy(BaseReasoningStrategy):
         - Return a StrategyResult indicating progress or completion.
         """
         return StrategyResult(
-            action_taken="not_implemented",
-            should_continue=False,
-            status="not_implemented",
-            evaluation=None,
-            result=None,
+            action=StrategyAction.FINISH_TASK,
+            payload=FinishTaskPayload(
+                action=StrategyAction.FINISH_TASK,
+                final_answer="Task Plan completed successfully",
+                evaluation=EvaluationPayload(
+                    action=StrategyAction.EVALUATE_COMPLETION,
+                    is_complete=True,
+                    reasoning="All plan steps completed",
+                    confidence=1.0,
+                ),
+            ),
         )

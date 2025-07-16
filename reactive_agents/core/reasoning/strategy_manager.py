@@ -384,7 +384,9 @@ class StrategyManager:
         await self.initialize_active_strategy(task, reasoning_context)
         return strategy_name
 
-    async def execute_iteration(self, task: str, reasoning_context: Any) -> Any:
+    async def execute_iteration(
+        self, task: str, reasoning_context: ReasoningContext
+    ) -> StrategyResult:
         """
         Execute one iteration using the active strategy.
 

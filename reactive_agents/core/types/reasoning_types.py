@@ -169,3 +169,72 @@ class TaskGoalEvaluationResult(BaseModel):
     completion_score: float
     reasoning: str
     missing_requirements: List[str] = []
+
+
+class StrategyAction(str, Enum):
+    """Defines the explicit actions a strategy can take in an iteration."""
+
+    CONTINUE_THINKING = "continue_thinking"
+    CALL_TOOLS = "call_tools"
+    EVALUATE_COMPLETION = "evaluate_completion"
+    FINISH_TASK = "finish_task"
+    ERROR = "error"
+
+
+# --- Payload Models ---
+
+
+class ContinueThinkingPayload(BaseModel):
+    """Payload for when the strategy needs to continue its thought process."""
+
+    action: Literal[StrategyAction.CONTINUE_THINKING]
+    reasoning: str = Field(description="The reasoning for the next step.")
+
+
+class ToolCallPayload(BaseModel):
+    """Payload for when the strategy decides to call one or more tools."""
+
+    action: Literal[StrategyAction.CALL_TOOLS]
+    tool_calls: List[Dict[str, Any]] = Field(
+        description="The tool calls to be executed."
+    )
+    reasoning: str = Field(description="The agent's reasoning for calling these tools.")
+
+
+class EvaluationPayload(BaseModel):
+    """Represents the structured result of a task completion evaluation."""
+
+    action: Literal[StrategyAction.EVALUATE_COMPLETION]
+    is_complete: bool = Field(description="True if the task is considered complete.")
+    reasoning: str = Field(description="The reasoning behind the completion assessment.")
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class FinishTaskPayload(BaseModel):
+    """Payload for when the strategy provides the final answer to the task."""
+
+    action: Literal[StrategyAction.FINISH_TASK]
+    final_answer: str = Field(description="The final answer for the user.")
+    evaluation: EvaluationPayload = Field(
+        description="The final evaluation that led to this answer."
+    )
+
+
+class ErrorPayload(BaseModel):
+    """Payload for reporting an error within a strategy."""
+
+    action: Literal[StrategyAction.ERROR]
+    error_message: str
+    details: Dict[str, Any] = Field(default_factory=dict)
+
+
+# --- Discriminated Union for all Payloads ---
+from typing import Union
+
+ActionPayload = Union[
+    ContinueThinkingPayload,
+    ToolCallPayload,
+    EvaluationPayload,
+    FinishTaskPayload,
+    ErrorPayload,
+]
