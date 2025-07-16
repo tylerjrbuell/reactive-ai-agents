@@ -227,6 +227,10 @@ class ErrorPayload(BaseModel):
     error_message: str
     details: Dict[str, Any] = Field(default_factory=dict)
 
+    def is_critical(self) -> bool:
+        """Returns True if the error is critical."""
+        return self.details.get("is_critical", False)
+
 
 # --- Discriminated Union for all Payloads ---
 from typing import Union

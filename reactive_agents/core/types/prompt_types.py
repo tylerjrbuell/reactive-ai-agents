@@ -35,6 +35,15 @@ class ReflectionOutput(BaseModel):
         default_factory=list, description="Insights from execution"
     )
 
+    def to_prompt_format(self) -> str:
+        """Formats the reflection into a concise string for the next LLM call."""
+        blockers = f"Blockers: {', '.join(self.blockers)}" if self.blockers else "No blockers."
+        return (
+            f"Self-reflection: {self.progress_assessment}. "
+            f"Confidence: {self.confidence:.2f}. {blockers} "
+            f"Next action: {self.next_action}."
+        )
+
 
 class ToolCall(BaseModel):
     name: str
@@ -48,6 +57,16 @@ class FunctionCall(BaseModel):
 class ToolSelectionOutput(BaseModel):
     tool_calls: List[FunctionCall]
     reasoning: str = Field(description="Why this tool and these parameters")
+
+    def to_prompt_format(self) -> str:
+        """Formats the tool selection into the syntax expected by the LLM."""
+        calls = []
+        for tool_call in self.tool_calls:
+            args = ", ".join(
+                f"{k}={v}" for k, v in tool_call.function.arguments.items()
+            )
+            calls.append(f"{tool_call.function.name}({args})")
+        return f"Tool selection: {', '.join(calls)}. Reasoning: {self.reasoning}"
 
 
 class FinalAnswerOutput(BaseModel):

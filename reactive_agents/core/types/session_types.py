@@ -4,6 +4,8 @@ from pydantic import BaseModel, Field
 import uuid
 import time
 
+from pydantic_core import PydanticUndefined
+
 from reactive_agents.core.types.prompt_types import ReflectionOutput
 from .status_types import TaskStatus, StepStatus
 from .agent_types import TaskSuccessCriteria
@@ -13,7 +15,9 @@ from .reasoning_component_types import Plan, PlanStep, StepResult
 class BaseStrategyState(BaseModel):
     """Base class for all strategy-specific state models."""
 
-    pass
+    def reset(self) -> None:
+        """Reset the state of the strategy."""
+        pass
 
 
 class ReactiveState(BaseStrategyState):
@@ -29,6 +33,16 @@ class ReactiveState(BaseStrategyState):
     # Metrics
     tool_success_rate: float = 0.0
     response_quality_score: float = 0.0
+
+    def reset(self) -> None:
+        """Reset the state of the strategy."""
+        self.execution_history.clear()
+        self.error_count = 0
+        self.max_errors = 3
+        self.last_response = ""
+        self.tool_responses.clear()
+        self.tool_success_rate = 0.0
+        self.response_quality_score = 0.0
 
     def get_execution_summary(self) -> Dict[str, Any]:
         """Get a structured summary of execution progress."""
@@ -79,6 +93,7 @@ class PlanExecuteReflectState(BaseStrategyState):
     error_count: int = 0
     completed_actions: List[str] = Field(default_factory=list)
     max_errors: int = 3
+    max_retries_per_step: int = 3
     last_step_output: str = ""
     tool_responses: List[str] = Field(default_factory=list)
 
@@ -91,6 +106,16 @@ class PlanExecuteReflectState(BaseStrategyState):
     plan_success_rate: float = 0.0
     step_success_rate: float = 0.0
     recovery_success_rate: float = 0.0
+
+    def reset(self) -> None:
+        """Reset the state of the strategy."""
+        self.current_plan = Plan()
+        self.current_step = 0
+        self.execution_history.clear()
+        self.error_count = 0
+        self.completed_actions.clear()
+        self.reflection_count = 0
+        self.reflection_history.clear()
 
     def get_execution_summary(self) -> Dict[str, Any]:
         """Get a structured summary of execution progress."""
@@ -164,6 +189,17 @@ class ReflectDecideActState(BaseStrategyState):
         default=None, description="Last goal evaluation result"
     )
 
+    def reset(self) -> None:
+        """Reset all fields to their declared defaults."""
+        self.cycle_count = 0
+        self.reflection_history.clear()
+        self.decision_history.clear()
+        self.action_history.clear()
+        self.current_action = {}
+        self.error_count = 0
+        self.max_errors = 3
+        self.last_goal_evaluation = None
+
     def record_reflection_result(self, result: Dict[str, Any]) -> None:
         self.reflection_history.append(result)
 
@@ -208,7 +244,7 @@ class AgentSession(BaseModel):
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     initial_task: str
     current_task: str
-    start_time: float
+    start_time: float = Field(default_factory=time.time)
     end_time: Optional[float] = None
     task_status: TaskStatus = TaskStatus.INITIALIZED
     error: Optional[str] = None
@@ -267,6 +303,77 @@ class AgentSession(BaseModel):
     # Strategy-specific state - updated to support multiple strategies
     strategy_state: Dict[str, BaseStrategyState] = Field(default_factory=dict)
     active_strategy: Optional[str] = None
+
+    @property
+    def duration(self) -> float:
+        """Calculates the total duration of the session in seconds."""
+        if self.end_time is None:
+            return time.time() - self.start_time
+        return self.end_time - self.start_time
+
+    @property
+    def overall_score(self) -> float:
+        """Calculates the final weighted score for the session."""
+        score = (
+            self.completion_score * self.completion_score_weight
+            + self.tool_usage_score * self.tool_usage_weight
+            + self.progress_score * self.progress_weight
+            + self.answer_quality_score * self.answer_quality_weight
+            + self.llm_evaluation_score * self.llm_evaluation_weight
+        )
+        total_weight = (
+            self.completion_score_weight
+            + self.tool_usage_weight
+            + self.progress_weight
+            + self.answer_quality_weight
+            + self.llm_evaluation_weight
+        )
+        return score / total_weight if total_weight > 0 else 0.0
+
+    @property
+    def has_failed(self) -> bool:
+        """Checks if the task has failed."""
+        return self.task_status == TaskStatus.ERROR or any(
+            e.get("is_critical") for e in self.errors
+        )
+
+    def add_message(self, role: str, content: str) -> "AgentSession":
+        """Adds a message to the session and returns self for chaining."""
+        self.messages.append({"role": role, "content": content})
+        return self
+
+    def add_error(
+        self, source: str, details: Dict[str, Any], is_critical: bool = False
+    ) -> "AgentSession":
+        """Adds a structured error to the session and returns self for chaining."""
+        error_entry = {
+            "source": source,
+            "details": details,
+            "is_critical": is_critical,
+            "timestamp": time.time(),
+        }
+        self.errors.append(error_entry)
+        if is_critical:
+            self.task_status = TaskStatus.ERROR
+        return self
+
+    def get_prompt_context(self, last_n_messages: int = 10) -> List[Dict[str, Any]]:
+        """Retrieves the most recent messages for use in an LLM prompt."""
+        return self.messages[-last_n_messages:]
+
+    def to_summary_dict(self) -> Dict[str, Any]:
+        """Generates a dictionary summary of the session."""
+        return {
+            "session_id": self.session_id,
+            "task": self.initial_task,
+            "status": self.task_status.value,
+            "duration_seconds": self.duration,
+            "overall_score": self.overall_score,
+            "total_errors": len(self.errors),
+            "critical_errors": len([e for e in self.errors if e.get("is_critical")]),
+            "iterations": self.iterations,
+            "final_answer": self.final_answer,
+        }
 
     def initialize_strategy_state(self, strategy_name: str) -> None:
         """

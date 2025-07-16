@@ -5,6 +5,7 @@ import traceback
 from typing import Dict, Any, Optional, TYPE_CHECKING
 from reactive_agents.core.types.status_types import TaskStatus
 from reactive_agents.core.types.event_types import AgentStateEvent
+from reactive_agents.core.types.execution_types import ExecutionResult
 from reactive_agents.core.types.reasoning_types import (
     ReasoningContext,
     ReasoningStrategies,
@@ -68,7 +69,7 @@ class ExecutionEngine:
         self,
         initial_task: str,
         cancellation_event: Optional[asyncio.Event] = None,
-    ) -> Dict[str, Any]:
+    ) -> ExecutionResult:
         """
         Execute a task from start to finish.
 
@@ -77,7 +78,7 @@ class ExecutionEngine:
             cancellation_event: Optional cancellation event
 
         Returns:
-            Comprehensive execution results
+            A structured, self-contained ExecutionResult object.
         """
         if self.agent_logger:
             self.agent_logger.info(f"🚀 Starting task: {initial_task[:100]}...")
@@ -119,19 +120,7 @@ class ExecutionEngine:
             self.context.session = AgentSession(
                 initial_task=initial_task,
                 current_task=initial_task,
-                start_time=time.time(),
                 task_status=TaskStatus.INITIALIZED,
-                reasoning_log=[],
-                task_progress=[],
-                task_nudges=[],
-                successful_tools=set(),
-                metrics={},
-                completion_score=0.0,
-                tool_usage_score=0.0,
-                progress_score=0.0,
-                answer_quality_score=0.0,
-                llm_evaluation_score=0.0,
-                instruction_adherence_score=0.0,
             )
 
         # Reset for new task
@@ -140,6 +129,7 @@ class ExecutionEngine:
         self.context.session.current_task = initial_task
         self.context.session.initial_task = initial_task
         self.context.session.task_status = TaskStatus.RUNNING
+        self.context.session.start_time = time.time()
 
         # Reset strategy system
         self.strategy_manager.reset()
@@ -152,7 +142,7 @@ class ExecutionEngine:
             AgentStateEvent.SESSION_STARTED,
             {
                 "initial_task": initial_task,
-                "session_id": getattr(self.context.session, "session_id", "unknown"),
+                "session_id": self.context.session.session_id,
             },
         )
 
@@ -284,7 +274,9 @@ class ExecutionEngine:
                         self.context.session.final_answer = payload.final_answer
                         self.context.session.task_status = TaskStatus.COMPLETE
                         if self.agent_logger:
-                            self.agent_logger.info("✅ Task completed with final answer.")
+                            self.agent_logger.info(
+                                "✅ Task completed with final answer."
+                            )
                         break  # Exit the loop
 
                     case EvaluationPayload() as payload:
@@ -306,9 +298,11 @@ class ExecutionEngine:
                             self.agent_logger.error(
                                 f"Strategy reported an error: {payload.error_message}"
                             )
-                        # We will let the main exception handler catch this by re-raising
-                        # or we can handle it gracefully here. For now, let's log and continue.
-                        self.context.session.task_status = TaskStatus.ERROR
+                        self.context.session.add_error(
+                            source="Strategy",
+                            details={"message": payload.error_message},
+                            is_critical=payload.is_critical(),
+                        )
                         continue
 
                     case _:
@@ -338,10 +332,8 @@ class ExecutionEngine:
                         )
 
                 # Check for final answer (redundant check, but safe)
-                if (
-                    self.context.session.final_answer
-                    and self.context.session.task_status == TaskStatus.COMPLETE
-                ):
+                if self.context.session.final_answer:
+                    self.context.session.task_status = TaskStatus.COMPLETE
                     if self.agent_logger:
                         self.agent_logger.info("✅ Final answer provided")
                     break
@@ -363,11 +355,10 @@ class ExecutionEngine:
                     self.agent_logger.error(
                         f"Iteration {self.context.session.iterations} failed: {e}"
                     )
-
-                # Set error status on exception
-                self.context.session.task_status = TaskStatus.ERROR
-                iteration_results.append(
-                    {"error": str(e), "iteration": self.context.session.iterations}
+                self.context.session.add_error(
+                    source="ExecutionEngineLoop",
+                    details={"error": str(e), "traceback": traceback.format_exc()},
+                    is_critical=True,
                 )
                 continue
 
@@ -380,10 +371,13 @@ class ExecutionEngine:
 
     def _should_continue(self) -> bool:
         """Check if execution should continue."""
+        # Check for session failure or completion
+        if self.context.session.has_failed or self.context.session.final_answer:
+            return False
+
         # Check terminal statuses
         if self.context.session.task_status in [
             TaskStatus.COMPLETE,
-            TaskStatus.ERROR,
             TaskStatus.CANCELLED,
             TaskStatus.RESCOPED_COMPLETE,
             TaskStatus.MAX_ITERATIONS,
@@ -395,11 +389,6 @@ class ExecutionEngine:
         max_iterations = self.context.max_iterations or 20
         if self.context.session.iterations >= max_iterations:
             self.context.session.task_status = TaskStatus.MAX_ITERATIONS
-            return False
-
-        # Check final answer
-        if self.context.session.final_answer:
-            self.context.session.task_status = TaskStatus.COMPLETE
             return False
 
         return True
@@ -420,101 +409,54 @@ class ExecutionEngine:
 
         return False
 
-    def _prepare_result(self, execution_result: Dict[str, Any]) -> Dict[str, Any]:
+    def _prepare_result(self, execution_details: Dict[str, Any]) -> ExecutionResult:
         """Prepare final execution result."""
-        # Calculate completion score
-        completion_score = 1.0 if self.context.session.final_answer else 0.5
+        session = self.context.session
+        session.end_time = time.time()
 
-        # Update session status
-        if self.context.session.final_answer:
-            self.context.session.task_status = TaskStatus.COMPLETE
-        elif self.context.session.task_status == TaskStatus.RUNNING:
-            self.context.session.task_status = TaskStatus.ERROR
+        # Ensure final status is set correctly
+        if session.final_answer and not session.has_failed:
+            session.task_status = TaskStatus.COMPLETE
+        elif session.task_status == TaskStatus.RUNNING:
+            session.task_status = TaskStatus.ERROR
 
-        # Get task metrics from context
+        # Get final metrics
         task_metrics = {}
         if self.context.metrics_manager:
-            # Finalize metrics before getting them
             self.context.metrics_manager.finalize_run_metrics()
             task_metrics = self.context.metrics_manager.get_metrics()
 
-        # Get session data for additional context
-        session_data = {}
-        if self.context.session:
-            session_data = {
-                "session_id": getattr(self.context.session, "session_id", "unknown"),
-                "iterations": self.context.session.iterations,
-                "successful_tools": (
-                    list(self.context.session.successful_tools)
-                    if self.context.session.successful_tools
-                    else []
-                ),
-                "task_status": (
-                    str(self.context.session.task_status)
-                    if self.context.session.task_status
-                    else "unknown"
-                ),
-                "final_answer": self.context.session.final_answer,
-                "completion_score": self.context.session.completion_score,
-            }
-
-        result = {
-            "status": self.context.session.task_status.value,
-            "final_answer": self.context.session.final_answer,
-            "completion_score": completion_score,
-            "iterations": self.context.session.iterations,
-            "strategy": execution_result.get("strategy", "unknown"),
-            "execution_details": execution_result,
-            "session_id": getattr(self.context.session, "session_id", "unknown"),
-            "task_metrics": task_metrics,
-            "session_data": session_data,
-        }
+        result = ExecutionResult(
+            session=session,
+            status=session.task_status,
+            final_answer=session.final_answer,
+            strategy_used=execution_details.get("strategy", "unknown"),
+            execution_details=execution_details,
+            task_metrics=task_metrics,
+        )
 
         # Emit session end
         self.context.emit_event(
             AgentStateEvent.SESSION_ENDED,
             {
-                "final_result": result,
-                "session_id": result["session_id"],
+                "final_result": result.model_dump(),
+                "session_id": result.session.session_id,
             },
         )
 
         if self.agent_logger:
-            self.agent_logger.info(
-                f"🎯 Completed: {result['status']} "
-                f"(iterations: {result['iterations']}, strategy: {result['strategy']})"
-            )
+            self.agent_logger.info(f"🎯 {result.to_pretty_string()}")
 
         return result
 
-    def _handle_error(self, error: Exception) -> Dict[str, Any]:
+    def _handle_error(self, error: Exception) -> ExecutionResult:
         """Handle execution errors."""
-        self.context.session.task_status = TaskStatus.ERROR
-
-        error_result = {
-            "status": TaskStatus.ERROR.value,
-            "error": str(error),
-            "final_answer": None,
-            "completion_score": 0.0,
-            "iterations": self.context.session.iterations,
-            "strategy": "unknown",
-            "execution_details": {
-                "error": str(error),
-                "traceback": traceback.format_exc(),
-            },
-            "session_id": getattr(self.context.session, "session_id", "unknown"),
-        }
-
-        # Emit error event
-        self.context.emit_event(
-            AgentStateEvent.ERROR_OCCURRED,
-            {
-                "error": str(error),
-                "session_id": error_result["session_id"],
-            },
+        self.context.session.add_error(
+            source="ExecutionEngine",
+            details={"error": str(error), "traceback": traceback.format_exc()},
+            is_critical=True,
         )
-
-        return error_result
+        return self._prepare_result({})
 
     # Control methods
     async def pause(self):

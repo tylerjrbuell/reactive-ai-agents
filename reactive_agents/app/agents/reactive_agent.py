@@ -9,6 +9,8 @@ from reactive_agents.core.engine.execution_engine import ExecutionEngine
 from reactive_agents.core.events.event_manager import EventManager
 from reactive_agents.config.validators.config_validator import ConfigValidator
 from reactive_agents.core.tools.tool_processor import ToolProcessor
+from reactive_agents.core.types.execution_types import ExecutionResult
+from reactive_agents.core.types.status_types import TaskStatus
 
 
 class ReactiveAgent(Agent):
@@ -50,12 +52,14 @@ class ReactiveAgent(Agent):
         self,
         initial_task: str,
         cancellation_event: Optional[asyncio.Event] = None,
-    ) -> Dict[str, Any]:
+    ) -> ExecutionResult:
         """
         Run the agent with the given task.
 
         This is the main entry point for agent execution.
         """
+        result: Optional[ExecutionResult] = None
+
         if self.agent_logger:
             self.agent_logger.info(
                 f"🚀 Starting reactive agent with task: {initial_task[:100]}..."
@@ -71,9 +75,7 @@ class ReactiveAgent(Agent):
                 raise RuntimeError("Execution engine not initialized")
 
             if self.agent_logger:
-                self.agent_logger.info(
-                    f"✅ Task completed: {result.get('status', 'unknown')}"
-                )
+                self.agent_logger.info(f"✅ Task completed: {result.status.value}")
 
             return result
 
@@ -81,21 +83,21 @@ class ReactiveAgent(Agent):
             if self.agent_logger:
                 self.agent_logger.error(f"❌ Agent execution failed: {e}")
 
-            return {
-                "status": "error",
-                "error": str(e),
-                "final_answer": None,
-                "completion_score": 0.0,
-                "iterations": 0,
-                "strategy": "unknown",
-            }
+            return ExecutionResult(
+                status=TaskStatus.ERROR,
+                final_answer=None,
+                session=self.context.session,
+                strategy_used=self.context.reasoning_strategy,
+                execution_details=result.model_dump() if result else {},
+                task_metrics={},
+            )
 
     async def run_with_strategy(
         self,
         initial_task: str,
         strategy: str,
         cancellation_event: Optional[asyncio.Event] = None,
-    ) -> Dict[str, Any]:
+    ) -> ExecutionResult:
         """
         Run the agent with a specific strategy.
 
@@ -128,7 +130,7 @@ class ReactiveAgent(Agent):
             setattr(self.context, "reasoning_strategy", original_strategy)
 
     # === Agent Interface Implementation ===
-    async def _execute_task(self, task: str) -> Dict[str, Any]:
+    async def _execute_task(self, task: str) -> ExecutionResult:
         """Execute a task (required by base Agent class)."""
         return await self.run(task)
 

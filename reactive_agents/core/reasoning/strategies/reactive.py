@@ -30,33 +30,65 @@ class ReactiveStrategy(BaseReasoningStrategy):
     def description(self) -> str:
         # Return a short description of the strategy
         return "Reactive strategy (skeleton)"  # placeholder
+    
+    def _get_state(self) -> ReactiveState:
+        """Get the strategy state from session, initializing if needed."""
+        state = self.get_state()
+        if not isinstance(state, ReactiveState):
+            raise TypeError(f"Expected ReactiveState, got {type(state)}")
+        return state
 
     async def initialize(self, task: str, reasoning_context: ReasoningContext) -> None:
         """
         Initialize the strategy for a new task.
-        - Set up any required context or state for the strategy.
+        - Use `self.context.session` to access and modify session state.
+        - Example: self.context.session.add_message("assistant", "Initializing Reactive Strategy.")
         """
-        pass  # TODO: Implement
+        state = self._get_state()
+        state.reset()
+        if self.agent_logger:
+            self.agent_logger.info("Initialized Reactive Strategy.")
 
     async def execute_iteration(
         self, task: str, reasoning_context: ReasoningContext
     ) -> StrategyResult:
         """
         Execute one iteration of the reactive strategy.
-        - Execute the main action for the task (e.g., tool call or answer).
-        - Optionally reflect and check for completion.
+        - Use `self.context.session` for state, e.g., `self.context.session.has_failed`.
+        - Use `self._think_chain()` to call the LLM.
         - Return a StrategyResult indicating progress or completion.
         """
+        session = self.context.session
+        state = self._get_state()
+
+        # Example: Add an error and finish if something goes wrong
+        if state.error_count > state.max_errors:
+            session.add_error("ReactiveStrategy", {"message": "Max errors reached"}, is_critical=True)
+            return StrategyResult(
+                action=StrategyAction.FINISH_TASK,
+                payload=FinishTaskPayload(
+                    action=StrategyAction.FINISH_TASK,
+                    final_answer="Task failed due to excessive errors.",
+                    evaluation=EvaluationPayload(
+                        action=StrategyAction.EVALUATE_COMPLETION,
+                        is_complete=False,
+                        reasoning="Max errors reached",
+                        confidence=0.0,
+                    ),
+                ),
+                should_continue=False,
+            )
+
         return StrategyResult(
             action=StrategyAction.FINISH_TASK,
             payload=FinishTaskPayload(
                 action=StrategyAction.FINISH_TASK,
-                final_answer="Task Plan completed successfully",
+                final_answer="Task failed due to excessive errors.",
                 evaluation=EvaluationPayload(
                     action=StrategyAction.EVALUATE_COMPLETION,
-                    is_complete=True,
-                    reasoning="All plan steps completed",
-                    confidence=1.0,
+                    is_complete=False,
+                    reasoning="Max errors reached",
+                    confidence=0.0,
                 ),
             ),
         )

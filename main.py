@@ -546,6 +546,10 @@ async def test():
             await (
                 Builder()
                 .with_name("Test Agent")
+                .with_role("Gmail Assistant")
+                .with_instructions(
+                    "You are a gmail assistant, ensure you are logged into the gmail account and have access before you start."
+                )
                 .with_model("ollama:cogito:14b")
                 # .with_mcp_tools(["brave-search"])
                 # .with_custom_tools([custom_weather_tool])
@@ -572,7 +576,7 @@ async def test():
             )
         )
         task = """
-        Search for emails with query "category:updates" and move them to the archive,
+        Search for emails with query "category:spam" and move them to the archive,
         Finally, send an email to tylerjrbuell@gmail.com with a summary of the emails that were moved to the archive.
         
         # Example email summary template:
@@ -599,18 +603,7 @@ async def test():
 
         """
 
-        result = await agent.run(task)
-        print("Test Result:")
-
-        # Use a custom JSON encoder to handle non-serializable objects
-        def json_serializer(obj):
-            if hasattr(obj, "value"):
-                return obj.value
-            if hasattr(obj, "model_dump"):
-                return obj.model_dump()
-            return str(obj)
-
-        print(json.dumps(result, indent=2, default=json_serializer))
+        await agent.run(task)
         await agent.close()
 
     except Exception as e:
@@ -650,8 +643,7 @@ async def test_reflect_decide_act():
         result = await agent.run(task)
 
         print("RDA Strategy Test Result:")
-        print(result.get("final_answer", "No final answer"))
-        # print(json.dumps(result, indent=2, default=str))
+        print(result.final_answer)
 
         await agent.close()
 
@@ -694,17 +686,16 @@ async def test_reactive_strategy():
         print(json.dumps(result, indent=4))
 
         # Check if the task was completed successfully
-        success = (
-            result.get("status") == "complete"
-            and result.get("final_answer") is not None
-        )
+        success = result.was_successful()
         print(f"\n✅ Reactive Strategy Test: {'PASSED' if success else 'FAILED'}")
 
         if success:
-            print(f"✅ Final Answer: {result.get('final_answer', 'No final answer')}")
+            print(f"✅ Final Answer: {result.final_answer}")
         else:
-            print(f"❌ Status: {result.get('status', 'unknown')}")
-            print(f"❌ Completion Score: {result.get('completion_score', 0)}")
+            print(f"❌ Status: {result.status}")
+            print(
+                f"❌ Completion Score: {result.task_metrics.get('completion_score', 0)}"
+            )
 
         await agent.close()
         return result
@@ -724,41 +715,27 @@ async def test_plan_execute_reflect():
     print("\n=== Testing Plan-Execute-Reflect Strategy ===")
 
     try:
-        agent = (
-            await (
-                Builder()
-                .with_name("Plan-Execute-Reflect Test Agent")
-                .with_model("ollama:gemma3n")
-                .with_role("Test Assistant")
-                .with_instructions("You are an agent that can plan and execute tasks.")
-                .with_reasoning_strategy(ReasoningStrategies.PLAN_EXECUTE_REFLECT)
-                # .with_mcp_tools(["brave-search", "filesystem"])
-                .with_custom_tools([custom_weather_tool])
-                .with_max_iterations(5)
-                .with_log_level(LogLevel.DEBUG)
-                .with_model_provider_options(
-                    {"num_gpu": 256, "num_ctx": 4000, "temperature": 0}
-                )
-                .build()
+        agent = await (
+            Builder()
+            .with_name("Plan-Execute-Reflect Test Agent")
+            .with_model("ollama:cogito:14b")
+            .with_role("Test Assistant")
+            .with_instructions("You are an agent that can plan and execute tasks.")
+            .with_reasoning_strategy(ReasoningStrategies.PLAN_EXECUTE_REFLECT)
+            .with_mcp_tools(["brave-search", "filesystem"])
+            .with_custom_tools([custom_weather_tool])
+            .with_max_iterations(10)
+            .with_log_level(LogLevel.DEBUG)
+            .with_model_provider_options(
+                {"num_gpu": 256, "num_ctx": 4000, "temperature": 0}
             )
+            .build()
         )
 
         # Test with a task that should use plan_execute_reflect
-        task = "Get the weather in Tokyo"
+        task = "Get the price of bitcoin, ethereum, solana, xrp and create a markdown file called ./prices.md with the prices in a nice markdown table"
         print(f"Running task: {task}")
-        result = await agent.run(task)
-
-        print("Plan-Execute-Reflect Strategy Test Result:")
-
-        def json_serializer(obj):
-            if hasattr(obj, "model_dump"):
-                return obj.model_dump()
-            elif hasattr(obj, "dict"):
-                return obj.dict()
-            return str(obj)
-
-        # Print the main result structure
-        print(json.dumps(result, indent=4, default=json_serializer))
+        await agent.run(task)
 
         await agent.close()
 

@@ -26,12 +26,6 @@ from reactive_agents.core.types.session_types import (
 class PlanExecuteReflectStrategy(ComponentBasedStrategy):
     """
     Plan-Execute-Reflect strategy using session-based state management.
-
-    Benefits of session.strategy_state:
-    - Persistent across iterations and strategy switches
-    - Type-safe with Pydantic models
-    - Built-in state management methods
-    - Survives context resets
     """
 
     @property
@@ -60,18 +54,8 @@ class PlanExecuteReflectStrategy(ComponentBasedStrategy):
     async def initialize(self, task: str, reasoning_context: ReasoningContext) -> None:
         """Initialize the strategy for a new task."""
         state = self._get_state()
-
-        # Reset state for new task
-        state.current_step = 0
-        state.execution_history.clear()
-        state.error_count = 0
-        state.completed_actions.clear()
-        state.reflection_count = 0
-        state.reflection_history.clear()
-
-        # Generate initial plan
+        state.reset()
         state.current_plan = await self.plan(task, reasoning_context)
-
         if self.agent_logger:
             self.agent_logger.info(
                 f"📋 Generated plan with {len(state.current_plan.plan_steps)} steps"
@@ -82,122 +66,86 @@ class PlanExecuteReflectStrategy(ComponentBasedStrategy):
     ) -> StrategyResult:
         """Execute one iteration of the plan-execute-reflect strategy."""
         state = self._get_state()
+        session = self.context.session
 
-        # Check if we have a plan
         if not state.current_plan.plan_steps:
             if self.agent_logger:
                 self.agent_logger.warning("No plan available, generating one...")
             state.current_plan = await self.plan(task, reasoning_context)
-            state.current_step = 0
 
-        # Check if we've completed all steps
-        if state.current_step >= len(state.current_plan.plan_steps):
+        if state.current_plan.is_finished():
+            successful = state.current_plan.is_successful()
+            final_answer = "Task completed successfully." if successful else "Task failed."
             if self.agent_logger:
-                self.agent_logger.info("✅ All plan steps completed")
+                self.agent_logger.info(f"🏁 {state.current_plan.get_summary()}")
+
             return StrategyResult(
                 action=StrategyAction.FINISH_TASK,
                 payload=FinishTaskPayload(
                     action=StrategyAction.FINISH_TASK,
-                    final_answer=self.context.session.final_answer
-                    or "Task Plan completed successfully",
+                    final_answer=session.final_answer or final_answer,
                     evaluation=EvaluationPayload(
                         action=StrategyAction.EVALUATE_COMPLETION,
-                        is_complete=True,
-                        reasoning="\n".join(
-                            state.last_reflection_result.learning_insights
-                            if state.last_reflection_result
-                            else []
-                        ),
-                        confidence=state.last_reflection_result.completion_score
-                        if state.last_reflection_result
-                        else 1.0,
+                        is_complete=successful,
+                        reasoning=state.current_plan.get_summary(),
+                        confidence=1.0 if successful else 0.0,
                     ),
                 ),
                 should_continue=False,
             )
 
-        # Execute current step
-        current_step = state.current_plan.plan_steps[state.current_step]
+        current_step = state.current_plan.get_next_step()
+        if not current_step:
+            if self.agent_logger:
+                self.agent_logger.warning("No current step available, skipping...")
+            return StrategyResult(
+                action=StrategyAction.CONTINUE_THINKING,
+                payload=ContinueThinkingPayload(
+                    action=StrategyAction.CONTINUE_THINKING,
+                    reasoning="No current step available, skipping...",
+                ),
+                should_continue=False,
+            )
 
         if self.agent_logger:
-            self.agent_logger.info(
-                f"🔄 Executing step {state.current_step + 1}: {current_step.description}"
-            )
+            self.agent_logger.info(f"🔄 {current_step.get_summary()}")
 
-            # Add step to context
-            self.context_manager.add_message(
-                role="user",
-                content=f"Step {state.current_step + 1}: {current_step.description}",
-            )
+        session.add_message(
+            role="user",
+            content=f"Executing Step {current_step.index + 1}: {current_step.description}",
+        )
 
-        # Execute the step
         step_result = await self._think_chain(use_tools=current_step.is_action)
+        step_result_content = step_result.content if step_result else None
 
-        # Record step result
+        state.current_plan.update_step_status(
+            current_step, step_result_content, state.max_retries_per_step
+        )
+
         step_data = {
-            "step_index": state.current_step,
+            "step_index": current_step.index,
             "step_description": current_step.description,
-            "result": step_result.content if step_result else None,
-            "success": step_result is not None,
+            "result": step_result_content,
+            "success": current_step.result.is_successful() if current_step.result else False,
             "timestamp": time.time(),
         }
         state.record_step_result(step_data)
 
-        # Reflect on progress
         reflection_result = await self.reflect_on_progress(
             task,
-            {"messages": self.context_manager.get_latest_n_messages(10)},
+            {"messages": session.get_prompt_context(last_n_messages=10)},
             reasoning_context,
         )
 
-        # Record reflection
         if reflection_result:
             state.record_reflection_result(reflection_result)
-
-        # Determine next action
-        goal_achieved = (
-            reflection_result.goal_achieved
-            if reflection_result
-            else False
-        )
-
-        if goal_achieved:
-            if self.agent_logger:
-                self.agent_logger.info("✅ Goal achieved according to reflection")
-            return StrategyResult(
-                action=StrategyAction.FINISH_TASK,
-                payload=FinishTaskPayload(
-                    action=StrategyAction.FINISH_TASK,
-                    final_answer=self.context.session.final_answer
-                    or "Goal achieved according to reflection",
-                    evaluation=EvaluationPayload(
-                        action=StrategyAction.EVALUATE_COMPLETION,
-                        is_complete=True,
-                        reasoning="\n".join(
-                            reflection_result.learning_insights
-                            if reflection_result
-                            else []
-                        ),
-                        confidence=reflection_result.completion_score
-                        if reflection_result
-                        else 1.0,
-                    ),
-                ),
-                should_continue=False,
-            )
-        else:
-            # Move to next step
-            state.current_step += 1
-            state.completed_actions.append(current_step.description)
-
-            if self.agent_logger:
-                self.agent_logger.info(f"📈 Moving to step {state.current_step + 1}")
 
         return StrategyResult(
             action=StrategyAction.CONTINUE_THINKING,
             payload=ContinueThinkingPayload(
                 action=StrategyAction.CONTINUE_THINKING,
-                reasoning="Continuing to next step",
+                reasoning=current_step.get_summary(),
             ),
             should_continue=True,
         )
+
