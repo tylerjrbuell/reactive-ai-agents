@@ -51,7 +51,7 @@ class StrategyManager:
         self.logger = agent_context.agent_logger or logging.getLogger(__name__)
         self.strategies: Dict[str, Type[BaseReasoningStrategy]] = {}
         self.active_strategy: Optional[BaseReasoningStrategy] = None
-        self.engine = ReasoningEngine(agent_context)
+        self.engine = agent_context.reasoning_engine
 
         # Auto-register built-in strategies
         self._register_built_in_strategies()

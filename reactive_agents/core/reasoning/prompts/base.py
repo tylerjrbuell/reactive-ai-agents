@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from datetime import datetime
 import json
 
+
 from reactive_agents.core.types.prompt_types import (
     ErrorRecoveryOutput,
     FinalAnswerOutput,
@@ -22,8 +23,8 @@ from reactive_agents.core.types.reasoning_component_types import Plan
 
 if TYPE_CHECKING:
     from reactive_agents.core.context.agent_context import AgentContext
-    from reactive_agents.core.reasoning.engine import ReasoningEngine
     from reactive_agents.core.types.agent_types import AgentThinkResult
+    from reactive_agents.core.types.execution_types import ExecutionResult
 
 # All valid prompt keys for registration and lookup
 PromptKey = Literal[
@@ -43,6 +44,7 @@ PromptKey = Literal[
     "tool_call_system",
     "memory_summarization",
     "ollama_manual_tool",
+    "execution_result_summary",
 ]
 
 
@@ -74,14 +76,18 @@ class PromptContext(BaseModel):
 class BasePrompt(ABC):
     """Base class for dynamic prompts."""
 
-    def __init__(self, context: "AgentContext", engine: "ReasoningEngine"):
+    def __init__(self, context: "AgentContext"):
         self.context = context
-        self.engine = engine
 
     @property
     @abstractmethod
     def output_model(self) -> Optional[Type[BaseModel]]:
         """The Pydantic model describing the expected output format, if any."""
+        return None
+
+    @property
+    def system_prompt(self) -> Optional[str]:
+        """The system prompt to be used for the prompt."""
         return None
 
     @abstractmethod
@@ -104,11 +110,11 @@ class BasePrompt(ABC):
         """
         # 1. Generate the prompt string
         prompt_string = self.generate(**kwargs)
-
         # 2. Call the engine's think method with the prompt and the output model
-        return await self.engine.think(
-            prompt_string,
+        return await self.context.reasoning_engine.think(
+            prompt=prompt_string,
             format=self.output_model.model_json_schema() if self.output_model else None,
+            system=self.system_prompt,
         )
 
     def _get_prompt_context(self, **kwargs) -> PromptContext:
@@ -386,6 +392,15 @@ class FinalAnswerPrompt(BasePrompt):
             except Exception:
                 reflection = {}
 
+        # Add messages summary
+        messages_summary = "\n".join(
+            [
+                f"{message.get('role')}: {message.get('content', '')[:100]}..."
+                for message in context.recent_messages
+                if message.get("content") is not None
+            ]
+        )
+
         # Get completion metrics
         completion_score = reflection.get("completion_score", 0.8)
         success_indicators = reflection.get("success_indicators", [])
@@ -394,6 +409,8 @@ class FinalAnswerPrompt(BasePrompt):
         )
 
         prompt = f"""You are a task completion specialist. Generate a comprehensive final answer based on task context and progress.\n\n        Task: {context.task}\n        Role: {context.role}\n        Instructions: {context.instructions}\n\n        Context and Progress:\n        - Completion Score: {completion_score}\n        - Success Indicators: {', '.join(success_indicators)}\n        - Progress Assessment: {progress_assessment}\n        - Iteration Count: {context.iteration_count}"""
+
+        prompt += f"\n\nRecent Messages:\n{messages_summary}\n"
 
         # Add memory context if available
         if context.relevant_memories:
@@ -474,19 +491,44 @@ class PlanGenerationPrompt(BasePrompt):
     def output_model(self) -> Optional[Type[BaseModel]]:
         return Plan
 
+    @property
+    def system_prompt(self) -> Optional[str]:
+        return """
+    Role: You are a task planner. 
+    Objective: You are given a task and a list of tools that can be used to complete the task.
+    You need to create a plan for the task using the following guidelines:
+    GUIDELINES:
+        - Break complex actions into multiple small steps
+        - Be specific about tool parameters and data sources
+        - Ensure each step produces actionable output for the next step
+        - A step should only be considered an action if it includes required tools. Otherwise it should not be an action.
+        - The plan should always include some actionable steps but not all steps should be actions.
+        - Each step status should be set to pending since the plan is not yet executed.
+        - Aim for 3-7 granular steps total (if possible) but more importantly enough steps to accomplish the task.
+        - Focus on tool usage, not reasoning steps
+        - Be this specific and granular for your task.
+        - **IMPORTANT** ALWAYS include verification steps in your plan to ensure each action accomplished what it was intended to do.
+        
+    """
+
     def generate(self, **kwargs) -> str:
         """Generate a plan generation prompt focused on granular, tool-based steps."""
         context = self._get_prompt_context(**kwargs)
 
-        prompt = f"""Break down this task into specific, granular tool actions:\n\nTASK: {context.task}\n\nAVAILABLE TOOLS:"""
+        prompt = f"""Break down the given task into specific, granular tool actions based on the following context:
+        
+        TASK: {context.task}
+        Role: {context.role}
+        Instructions: {context.instructions}
+        AVAILABLE TOOLS:
+        {json.dumps(context.tool_signatures, indent=2)}"""
 
-        # Add concise tool list
-        for sig in context.tool_signatures:
-            tool_name = sig.get("function", {}).get("name", "unknown")
-            tool_desc = sig.get("function", {}).get("description", "")[:60] + "..."
-            prompt += f"\n• {tool_name}: {tool_desc}"
-
-        prompt += f"""\n\nCreate a plan with small, specific steps. Each step should:\n- Use ONE tool to accomplish ONE thing\n- Be specific about what data to use\n- Build on results from previous steps\n\nGUIDELINES:\n- Break complex actions into multiple small steps\n- Be specific about tool parameters and data sources\n- Ensure each step produces actionable output for the next step\n- Aim for 3-7 granular steps total\n- Focus on tool usage, not reasoning steps\n\nBe this specific and granular for your task."""
+        prompt += f"""
+        Create a plan with small, specific steps. Each step should:
+        - Use ONE tool to accomplish ONE thing
+        - Be specific about what data to use
+        - Build on results from previous steps
+        """
 
         return prompt
 
@@ -704,6 +746,45 @@ class OllamaManualToolPrompt(BasePrompt):
         max_calls = kwargs.get("max_calls", 1)
         task = kwargs.get("task", context.task)
 
-        prompt = f"""Role: Tool Selection and configuration Expert\nObjective: Create {max_calls} tool call(s) for the given task using the available tool signatures\n\nGuidelines:\n- The tool call must adhere to the specific task\n- Use the tool signatures to effectively create tool calls that align with the task\n- Use the context provided in conjunction with the tool signatures to create tool calls that align with the task\n- Only use valid parameters and valid parameter data types and avoid using tool signatures that are not available\n- Check all data types are correct based on the tool signatures provided in available tools to avoid issues when the tool is used\n- Pay close attention to the signatures and parameters provided\n- Do not try to consolidate multiple tool calls into one call\n- Do not try to use tools that are not available\n\nTask: {task}\n\nAvailable Tool signatures: {tool_signatures}"""
+        prompt = f"""Role: Tool Selection and configuration Expert
+        Objective: Create {max_calls} tool call(s) for the task: {task} using the available tool signatures
+        Guidelines:
+        - The tool call must adhere to the specific task
+        - Use the tool signatures to effectively create tool calls that align with the task
+        - Use the context provided in conjunction with the tool signatures to create tool calls that align with the task
+        - Only use valid parameters and valid parameter data types and avoid using tool signatures that are not available
+        - Check all data types are correct based on the tool signatures provided in available tools to avoid issues when the tool is used
+        - Pay close attention to the signatures and parameters provided
+        - Do not try to consolidate multiple tool calls into one call
+        - Do not try to use tools that are not available
+        
+        Available Tool signatures: {json.dumps(tool_signatures, indent=2)}"""
 
         return prompt
+
+
+class ExecutionResultSummaryPrompt(BasePrompt):
+    """Dynamic prompt for generating a summary of an ExecutionResult."""
+
+    @property
+    def output_model(self) -> Optional[Type[BaseModel]]:
+        return None
+
+    def generate(self, **kwargs) -> str:
+        """Generate an execution result summary prompt."""
+        execution_result: Optional["ExecutionResult"] = kwargs.get("execution_result")
+        if not execution_result:
+            return "Cannot generate summary: ExecutionResult not provided."
+
+        agent_name = getattr(self.context, "agent_name", "the agent")
+
+        prompt = f"""
+        {execution_result.to_prompt_string()}
+
+        Please generate the summary now, speaking from my perspective as '{agent_name}'.
+        The summary should answer the questions: "What did I do?" and "How did I perform?".
+        Focus on the key outcomes, decisions, and any notable events like errors or strategy choices.
+        """
+        import textwrap
+
+        return textwrap.dedent(prompt).strip()

@@ -1,9 +1,11 @@
 from __future__ import annotations
-from typing import Dict, Any, List, Optional, Union, Callable, Awaitable, TYPE_CHECKING
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from enum import Enum
-from pydantic import BaseModel
-
+from pydantic import BaseModel, Field
 from reactive_agents.core.types.status_types import StepStatus
+
+if TYPE_CHECKING:
+    from reactive_agents.core.reasoning.engine import ReasoningEngine
 
 
 class ComponentType(Enum):
@@ -52,16 +54,22 @@ class StepResult(BaseModel):
 class PlanStep(BaseModel):
     """A step in a plan."""
 
-    index: int
-    description: str
-    required_tools: List[str]
-    purpose: str
-    is_action: bool
-    success_criteria: str
-    status: StepStatus = StepStatus.PENDING
-    result: Optional[StepResult] = None
-    retries: int = 0
-    is_crucial: bool = True
+    index: int = Field(description="The index of the step starting from 1")
+    description: str = Field(description="The description of the step")
+    required_tools: List[str] = Field(
+        description="The tools required to complete the step"
+    )
+    purpose: str = Field(description="The purpose of the step")
+    is_action: bool = Field(description="Whether the step is an action or not")
+    success_criteria: str = Field(description="The success criteria of the step")
+    status: StepStatus = Field(
+        default=StepStatus.PENDING, description="The status of the step"
+    )
+    result: Optional[StepResult] = Field(
+        default=None, description="The result of the step"
+    )
+    retries: int = Field(0, description="The number of retries of the step")
+    is_crucial: bool = Field(description="Whether the step is crucial to the task")
 
     def is_finished(self) -> bool:
         """Returns True if the step is completed or failed."""
@@ -69,7 +77,7 @@ class PlanStep(BaseModel):
 
     def get_summary(self) -> str:
         """Returns a one-line summary of the step's status."""
-        summary = f"Step {self.index + 1} ({self.description[:30]}...): {self.status.value}"
+        summary = f"Step {self.index}\nDescription: {self.description}\nStatus: {self.status.value}"
         if self.retries > 0:
             summary += f" (Retries: {self.retries})"
         return summary
@@ -132,6 +140,16 @@ class Plan(BaseModel):
         failed = len([s for s in self.plan_steps if s.status == StepStatus.FAILED])
         total = len(self.plan_steps)
         return f"Plan {completed}/{total} steps completed. {failed} failed."
+
+    async def get_final_answer(self, engine: ReasoningEngine) -> str:
+        """Returns a final answer for the plan."""
+        prompt = engine.get_prompt("final_answer", execution_result=self)
+        result = await prompt.get_completion()
+        return (
+            result.content
+            if result
+            else f"{'Task completed successfully.' if self.is_successful() else 'Task failed.'}"
+        )
 
 
 class ReflectionResult(BaseModel):

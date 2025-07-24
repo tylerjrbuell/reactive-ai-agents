@@ -32,6 +32,7 @@ from .prompts.base import (
     ToolCallSystemPrompt,
     MemorySummarizationPrompt,
     OllamaManualToolPrompt,
+    ExecutionResultSummaryPrompt,
 )
 
 from reactive_agents.core.context.context_manager import ContextManager
@@ -60,21 +61,22 @@ class ReasoningEngine:
 
         # Initialize prompt classes
         self._prompts: Dict[str, BasePrompt] = {
-            "system": SystemPrompt(context, self),
-            "planning": TaskPlanningPrompt(context, self),
-            "reflection": ReflectionPrompt(context, self),
-            "plan_generation": PlanGenerationPrompt(context, self),
-            "completion_validation": TaskCompletionValidationPrompt(context, self),
-            "plan_progress_reflection": PlanProgressReflectionPrompt(context, self),
-            "error_recovery": ErrorRecoveryPrompt(context, self),
-            "final_answer": FinalAnswerPrompt(context, self),
-            "tool_selection": ToolSelectionPrompt(context, self),
-            "strategy_transition": StrategyTransitionPrompt(context, self),
-            "plan_extension": PlanExtensionPrompt(context, self),
-            "task_goal_evaluation": TaskGoalEvaluationPrompt(context, self),
-            "tool_call_system": ToolCallSystemPrompt(context, self),
-            "memory_summarization": MemorySummarizationPrompt(context, self),
-            "ollama_manual_tool": OllamaManualToolPrompt(context, self),
+            "system": SystemPrompt(context),
+            "planning": TaskPlanningPrompt(context),
+            "reflection": ReflectionPrompt(context),
+            "plan_generation": PlanGenerationPrompt(context),
+            "completion_validation": TaskCompletionValidationPrompt(context),
+            "plan_progress_reflection": PlanProgressReflectionPrompt(context),
+            "error_recovery": ErrorRecoveryPrompt(context),
+            "final_answer": FinalAnswerPrompt(context),
+            "tool_selection": ToolSelectionPrompt(context),
+            "strategy_transition": StrategyTransitionPrompt(context),
+            "plan_extension": PlanExtensionPrompt(context),
+            "task_goal_evaluation": TaskGoalEvaluationPrompt(context),
+            "tool_call_system": ToolCallSystemPrompt(context),
+            "memory_summarization": MemorySummarizationPrompt(context),
+            "ollama_manual_tool": OllamaManualToolPrompt(context),
+            "execution_result_summary": ExecutionResultSummaryPrompt(context),
         }
 
     # === Prompt Management ===

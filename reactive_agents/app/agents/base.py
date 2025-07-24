@@ -164,7 +164,11 @@ class Agent(ABC, AgentLifecycleProtocol, AgentControlProtocol):
         start_time = time.time()
         try:
             self.agent_logger.info("Thinking (direct completion)...")
-
+            if self.context.model_provider_options:
+                self.agent_logger.debug(
+                    f"Using model provider options: {self.context.model_provider_options}"
+                )
+                kwargs["options"] = self.context.model_provider_options
             result = await self.model_provider.get_completion(**kwargs)
             # Metric Tracking
             execution_time = time.time() - start_time

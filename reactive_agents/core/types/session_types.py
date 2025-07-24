@@ -241,6 +241,7 @@ class AgentSession(BaseModel):
     """Session data for a single agent run."""
 
     # Core session data
+    agent_name: str = Field(default="Agent")
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     initial_task: str
     current_task: str

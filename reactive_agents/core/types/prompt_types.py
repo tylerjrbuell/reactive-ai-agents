@@ -49,8 +49,8 @@ class ToolCall(BaseModel):
     name: str
     arguments: Dict[str, Any]
 
-
 class FunctionCall(BaseModel):
+
     function: ToolCall
 
 

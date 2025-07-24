@@ -32,7 +32,6 @@ class ReactiveAgent(Agent):
         tool_processor: Optional[ToolProcessor] = None,
     ):
         self.config = config
-        print("config", config)
         # Create context if not provided (for builder pattern compatibility)
         if context is None:
             # Convert ReactAgentConfig to AgentContext by extracting fields
@@ -62,7 +61,7 @@ class ReactiveAgent(Agent):
 
         if self.agent_logger:
             self.agent_logger.info(
-                f"🚀 Starting reactive agent with task: {initial_task[:100]}..."
+                f"🚀 Starting reactive agent with task: {initial_task}..."
             )
 
         try:

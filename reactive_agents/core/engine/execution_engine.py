@@ -53,12 +53,9 @@ class ExecutionEngine:
         """Initialize strategy management components."""
         from reactive_agents.core.reasoning.strategy_manager import StrategyManager
         from reactive_agents.core.reasoning.task_classifier import TaskClassifier
-        from reactive_agents.core.reasoning.engine import (
-            get_reasoning_engine,
-        )
 
-        # Get shared engine
-        self.engine = get_reasoning_engine(self.context)
+        # Get shared engine from context
+        self.engine = self.context.reasoning_engine
 
         # Initialize managers
         self.strategy_manager = StrategyManager(self.context)
@@ -80,8 +77,6 @@ class ExecutionEngine:
         Returns:
             A structured, self-contained ExecutionResult object.
         """
-        if self.agent_logger:
-            self.agent_logger.info(f"🚀 Starting task: {initial_task[:100]}...")
 
         # Setup session
         self._setup_session(initial_task)
@@ -104,12 +99,12 @@ class ExecutionEngine:
             )
 
             # Prepare final result
-            return self._prepare_result(result)
+            return await self._prepare_result(result)
 
         except Exception as e:
             if self.agent_logger:
                 self.agent_logger.error(f"Execution failed: {e}")
-            return self._handle_error(e)
+            return await self._handle_error(e)
 
     def _setup_session(self, initial_task: str):
         """Setup session for task execution."""
@@ -409,7 +404,9 @@ class ExecutionEngine:
 
         return False
 
-    def _prepare_result(self, execution_details: Dict[str, Any]) -> ExecutionResult:
+    async def _prepare_result(
+        self, execution_details: Dict[str, Any]
+    ) -> ExecutionResult:
         """Prepare final execution result."""
         session = self.context.session
         session.end_time = time.time()
@@ -434,6 +431,7 @@ class ExecutionEngine:
             execution_details=execution_details,
             task_metrics=task_metrics,
         )
+        await result.generate_summary(self.engine)
 
         # Emit session end
         self.context.emit_event(
@@ -449,14 +447,14 @@ class ExecutionEngine:
 
         return result
 
-    def _handle_error(self, error: Exception) -> ExecutionResult:
+    async def _handle_error(self, error: Exception) -> ExecutionResult:
         """Handle execution errors."""
         self.context.session.add_error(
             source="ExecutionEngine",
             details={"error": str(error), "traceback": traceback.format_exc()},
             is_critical=True,
         )
-        return self._prepare_result({})
+        return await self._prepare_result({})
 
     # Control methods
     async def pause(self):

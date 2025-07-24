@@ -18,7 +18,9 @@ import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+
 if TYPE_CHECKING:
+    from reactive_agents.core.reasoning.engine import ReasoningEngine
     from reactive_agents.app.agents.reactive_agent import ReactiveAgent
     from reactive_agents.app.agents.base import Agent
 
@@ -169,6 +171,7 @@ class AgentContext(BaseModel):
     _agent: Optional["ReactiveAgent"] = (
         None  # Reference to the agent instance for strategies
     )
+    _reasoning_engine: Optional[Any] = None  # Lazy-loaded reasoning engine
 
     @staticmethod
     def _create_default_session() -> AgentSession:
@@ -192,8 +195,6 @@ class AgentContext(BaseModel):
 
     # Session State Holder (Reference to the current run's state)
     session: AgentSession = Field(default_factory=_create_default_session)
-
-    # !! REMOVED FIELDS previously here (initial_task, final_answer, messages, etc.) !!
 
     class Config:
         arbitrary_types_allowed = True
@@ -273,6 +274,9 @@ class AgentContext(BaseModel):
             self.agent_logger.info("State observer initialized.")
 
         # --- End Initialize Managers ---
+
+        # Set agent name
+        self.session.agent_name = self.agent_name
 
         # Initialize current task
         if not self.session.current_task and self.session.initial_task:
@@ -366,6 +370,19 @@ class AgentContext(BaseModel):
         if not self.workflow_manager:
             raise RuntimeError("WorkflowManager is not initialized in this context.")
         return self.workflow_manager
+
+    @property
+    def reasoning_engine(self) -> ReasoningEngine:
+        """Get the reasoning engine with lazy initialization."""
+        if self._reasoning_engine is None:
+            from reactive_agents.core.reasoning.engine import get_reasoning_engine
+
+            self._reasoning_engine = get_reasoning_engine(self)
+        return self._reasoning_engine
+
+    def get_reasoning_engine(self):
+        """Get the reasoning engine (convenience method)."""
+        return self.reasoning_engine
 
     def get_tools(self):
         return self.tool_manager.get_available_tools() if self.tool_manager else []

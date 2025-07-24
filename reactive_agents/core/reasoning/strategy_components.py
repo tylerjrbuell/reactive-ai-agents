@@ -158,20 +158,19 @@ class PlanningComponent(BaseComponent):
         Generate a plan for a task by having a conversation with the model.
         Returns a Plan Pydantic model with all steps as PlanStep and results as StepResult.
         """
-        self.log_usage(f"Generating plan for task: {task[:50]}...")
+        self.log_usage(f"Generating plan for task")
 
         context_manager = self.engine.get_context_manager()
         plan_prompt = self.engine.get_prompt("plan_generation", task=task)
-        thinking_result = await plan_prompt.get_completion(
-            format=Plan.model_json_schema()
-        )
+        thinking_result = await plan_prompt.get_completion()
+        print(f"Thinking result: {thinking_result}")
         if thinking_result:
             context_manager.add_message(
                 role="assistant",
                 content=f"Plan: {thinking_result.result_json}",
             )
 
-        self.log_usage(f"Raw thinking_result from plan generation: {thinking_result}")
+        # self.log_usage(f"Raw thinking_result from plan generation: {thinking_result}")
 
         if not thinking_result or not thinking_result.result_json:
             if self.agent_logger:
