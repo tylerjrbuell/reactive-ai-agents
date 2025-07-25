@@ -4,3 +4,5 @@ storage/
 agent_mcp/agent.db
 reactive_agents/agent_mcp/agent.db
 .cursor
+.pytest_cache
+.vscode
