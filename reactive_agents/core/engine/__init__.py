@@ -14,10 +14,6 @@ from ..context.agent_context import AgentContext
 
 # Event management
 from reactive_agents.core.events.agent_events import EventSubscription
-from reactive_agents.core.events.agent_observer import (
-    AgentStateObserver as AgentObserver,
-)
-from reactive_agents.core.events.event_manager import EventManager
 from reactive_agents.core.events.event_bus import EventBus
 
 # Memory management
@@ -39,16 +35,12 @@ from reactive_agents.core.workflows.workflow_manager import WorkflowManager
 __all__ = [
     # Core engine
     "ExecutionEngine",
-    "ReactiveExecutionEngine",
-    "TaskExecutor",
     "TaskClassifier",
     "MetricsManager",
     # Context
     "AgentContext",
     # Events
     "EventSubscription",
-    "AgentObserver",
-    "EventManager",
     "EventBus",
     # Memory
     "MemoryManager",

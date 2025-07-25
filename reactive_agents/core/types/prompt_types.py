@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional, Literal
 
 
-class TaskPlanningOutput(BaseModel):
+class SingleStepPlanningOutput(BaseModel):
     next_step: str = Field(description="Specific action to take")
     rationale: str = Field(description="Reasoning for this step")
     tool_needed: Optional[str] = Field(description="Tool name if required, null otherwise")
@@ -13,36 +13,7 @@ class TaskPlanningOutput(BaseModel):
     avoid_patterns: List[str] = Field(description="Patterns from memory to avoid")
 
 
-class ReflectionOutput(BaseModel):
-    progress_assessment: str = Field(
-        default="", description="Summary of current progress"
-    )
-    goal_achieved: bool = Field(
-        default=False, description="True ONLY if ALL steps succeeded AND no errors"
-    )
-    completion_score: float = Field(
-        default=0.0, ge=0.0, le=1.0, description="Based on successful_steps/total_steps"
-    )
-    next_action: Literal["continue", "retry", "complete"] = "continue"
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    blockers: List[str] = Field(
-        default_factory=list, description="List of current blockers"
-    )
-    success_indicators: List[str] = Field(
-        default_factory=list, description="List of positive indicators"
-    )
-    learning_insights: List[str] = Field(
-        default_factory=list, description="Insights from execution"
-    )
 
-    def to_prompt_format(self) -> str:
-        """Formats the reflection into a concise string for the next LLM call."""
-        blockers = f"Blockers: {', '.join(self.blockers)}" if self.blockers else "No blockers."
-        return (
-            f"Self-reflection: {self.progress_assessment}. "
-            f"Confidence: {self.confidence:.2f}. {blockers} "
-            f"Next action: {self.next_action}."
-        )
 
 
 class ToolCall(BaseModel):

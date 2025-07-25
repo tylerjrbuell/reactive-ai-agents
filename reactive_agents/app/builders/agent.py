@@ -23,6 +23,7 @@ import asyncio
 from typing_extensions import Literal
 from pydantic import BaseModel, Field
 
+from reactive_agents.core.types.execution_types import ExecutionResult
 from reactive_agents.providers.external.client import MCPClient
 from reactive_agents.core.types.confirmation_types import ConfirmationCallbackProtocol
 from reactive_agents.config.logging import LogLevel, formatter
@@ -31,7 +32,7 @@ from reactive_agents.config.mcp_config import MCPConfig
 from reactive_agents.app.agents.reactive_agent import ReactiveAgent
 from reactive_agents.core.tools.base import Tool
 from reactive_agents.core.types.event_types import AgentStateEvent
-from reactive_agents.core.events.agent_events import (
+from reactive_agents.core.types.event_types import (
     SessionStartedEventData,
     SessionEndedEventData,
     TaskStatusChangedEventData,
@@ -44,9 +45,8 @@ from reactive_agents.core.events.agent_events import (
     FinalAnswerSetEventData,
     MetricsUpdatedEventData,
     ErrorOccurredEventData,
-    EventCallback,
-    AsyncEventCallback,
 )
+from reactive_agents.core.events.event_bus import EventCallback, AsyncEventCallback
 from reactive_agents.core.types.agent_types import ReactAgentConfig
 from reactive_agents.core.types.reasoning_types import ReasoningStrategies
 from reactive_agents.config.natural_language_config import create_agent_from_nl
@@ -91,7 +91,7 @@ async def quick_create_agent(
     model: str = "ollama:cogito:14b",
     tools: List[str] = ["brave-search", "time"],
     interactive: bool = False,
-) -> Dict[str, Any]:
+) -> ExecutionResult:
     """
     Create and run a ReactiveAgent with minimal configuration
 
@@ -1232,20 +1232,18 @@ class ReactiveAgentBuilder:
             if hasattr(self, "_event_callbacks"):
                 for event_type, callbacks in self._event_callbacks.items():
                     for callback in callbacks:
-                        # Use the dynamic event system
-                        handler_name = f"on_{event_type.value}"
-                        if hasattr(agent, handler_name):
-                            handler = getattr(agent, handler_name)
-                            handler(callback)
+                        # Register with the agent's event bus
+                        if hasattr(agent, "_event_bus") and agent._event_bus:
+                            agent._event_bus.register_callback(event_type, callback)
 
             if hasattr(self, "_async_event_callbacks"):
                 for event_type, callbacks in self._async_event_callbacks.items():
                     for callback in callbacks:
-                        # Use the dynamic event system
-                        handler_name = f"on_{event_type.value}"
-                        if hasattr(agent, handler_name):
-                            handler = getattr(agent, handler_name)
-                            handler(callback)
+                        # Register async callbacks with the agent's event bus
+                        if hasattr(agent, "_event_bus") and agent._event_bus:
+                            agent._event_bus.register_async_callback(
+                                event_type, callback
+                            )
 
             return agent
 

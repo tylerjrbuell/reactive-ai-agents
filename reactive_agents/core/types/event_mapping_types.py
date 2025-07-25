@@ -9,7 +9,7 @@ from typing import Dict, Type, TypeVar, Union, get_type_hints, Callable, Any
 from typing_extensions import Literal, TypedDict
 
 from reactive_agents.core.types.event_types import AgentStateEvent
-from reactive_agents.core.events.agent_events import (
+from reactive_agents.core.types.event_types import (
     BaseEventData,
     SessionStartedEventData,
     SessionEndedEventData,
@@ -32,8 +32,8 @@ from reactive_agents.core.events.agent_events import (
     StopRequestedEventData,
     StoppedEventData,
     CancelledEventData,
-    EventCallback,
 )
+from reactive_agents.core.events.event_bus import EventCallback
 
 # Type variable for event data
 T = TypeVar("T", bound=BaseEventData)

@@ -37,7 +37,7 @@ class ComponentMetadata(BaseModel):
 class StepResult(BaseModel):
     """Result of a single step in a strategy."""
 
-    success: bool = True
+    success: bool
     step_name: str
     output: Dict[str, Any] = {}
     error: Optional[str] = None
@@ -77,7 +77,7 @@ class PlanStep(BaseModel):
 
     def get_summary(self) -> str:
         """Returns a one-line summary of the step's status."""
-        summary = f"Step {self.index}\nDescription: {self.description}\nStatus: {self.status.value}"
+        summary = f"Step {self.index}\nDescription: {self.description}\nStatus: {self.status.value}\nRequired Tools: {self.required_tools}"
         if self.retries > 0:
             summary += f" (Retries: {self.retries})"
         return summary
@@ -93,6 +93,13 @@ class Plan(BaseModel):
         """Get the next step to execute."""
         for step in self.plan_steps:
             if step.status == StepStatus.PENDING:
+                return step
+        return None
+
+    def get_last_failed_step(self) -> Optional[PlanStep]:
+        """Get the most recent step that has failed."""
+        for step in reversed(self.plan_steps):
+            if step.status == StepStatus.FAILED:
                 return step
         return None
 

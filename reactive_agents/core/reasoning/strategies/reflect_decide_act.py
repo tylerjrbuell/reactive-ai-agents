@@ -1,114 +1,72 @@
 from __future__ import annotations
 from typing import List
-from reactive_agents.core.types.reasoning_types import (
-    EvaluationPayload,
-    FinishTaskPayload,
-    ReasoningContext,
-    StrategyAction,
-)
-from reactive_agents.core.reasoning.strategies.base import (
-    BaseReasoningStrategy,
-    StrategyResult,
-    StrategyCapabilities,
-)
+
+from reactive_agents.core.types.reasoning_types import ReasoningContext
+from reactive_agents.core.reasoning.strategies.base import StrategyCapabilities
+from reactive_agents.core.reasoning.strategy_components import ComponentBasedStrategy
 from reactive_agents.core.types.session_types import (
     ReflectDecideActState,
     register_strategy,
 )
+from reactive_agents.core.reasoning.steps.base import BaseReasoningStep
+from reactive_agents.core.reasoning.steps.reflect_decide_act_steps import (
+    ReflectOnSituationStep,
+    DecideNextActionStep,
+    ExecuteActionStep,
+)
 
 
 @register_strategy("reflect_decide_act", ReflectDecideActState)
-class ReflectDecideActStrategy(BaseReasoningStrategy):
+class ReflectDecideActStrategy(ComponentBasedStrategy):
     """
-    Reflect-Decide-Act strategy skeleton for custom implementation.
+    A declarative implementation of the Reflect-Decide-Act strategy.
+
+    This strategy follows a continuous loop of observing, orienting,
+    deciding, and acting, making it suitable for dynamic and
+    unpredictable tasks.
     """
 
     @property
     def name(self) -> str:
-        # Return the unique name of this strategy
-        return "reflect_decide_act"  # placeholder
+        return "reflect_decide_act"
 
     @property
     def capabilities(self) -> List[StrategyCapabilities]:
-        # Return a list of capabilities this strategy supports
-        return []  # placeholder
+        return [
+            StrategyCapabilities.REFLECTION,
+            StrategyCapabilities.ADAPTATION,
+            StrategyCapabilities.TOOL_EXECUTION,
+        ]
 
     @property
     def description(self) -> str:
-        # Return a short description of the strategy
-        return "Reflect-Decide-Act strategy (skeleton)"  # placeholder
+        return "A dynamic strategy that continuously reflects, decides, and acts."
 
-    def _get_state(self) -> ReflectDecideActState:
-        """Get the strategy state from session, initializing if needed."""
+    @property
+    def steps(self) -> List[BaseReasoningStep]:
+        """Defines the Reflect-Decide-Act pipeline."""
+        return [
+            ReflectOnSituationStep(self.engine),
+            DecideNextActionStep(self.engine),
+            ExecuteActionStep(self.engine),
+        ]
+
+    async def initialize(self, task: str, reasoning_context: ReasoningContext) -> None:
+        """Initialize the strategy for a new task."""
         state = self.get_state()
         if not isinstance(state, ReflectDecideActState):
             raise TypeError(f"Expected ReflectDecideActState, got {type(state)}")
-        return state
 
-    async def initialize(self, task: str, reasoning_context: ReasoningContext) -> None:
-        """
-        Initialize the strategy for a new task.
-        - Use `self.get_state()` to get the strategy-specific state.
-        - Use `self.context.session` to access shared session data.
-        """
-        state = self._get_state()
         state.reset()
+
+        self.context.session.add_message(
+            role="system",
+            content=f"Role: {self.context.role}\nInstructions: {self.context.instructions}",
+        )
+        self.context.session.add_message(
+            role="user",
+            content=f"Task: {task}",
+        )
+
         if self.agent_logger:
             self.agent_logger.info("Initialized Reflect-Decide-Act Strategy.")
-
-    async def execute_iteration(
-        self, task: str, reasoning_context: ReasoningContext
-    ) -> StrategyResult:
-        """
-        Execute one iteration of the reflect-decide-act strategy.
-        - 1. Reflect: Use `self.reflect_on_progress()`
-        - 2. Decide: Use `self.decide_next_action()`
-        - 3. Act: Use `self._think_chain()` or other components.
-        - Use `self.context.session.add_error()` for robust error handling.
-        """
-        session = self.context.session
-        state = self._get_state()
-
-        # Example of RDA cycle
-        # 1. Reflect
-        # reflection = await self.reflect_on_progress(...)
-        # state.record_reflection_result(reflection)
-
-        # 2. Decide
-        # decision = await self.decide_next_action(...)
-        # state.record_decision_result(decision)
-
-        # 3. Act
-        # action_result = await self._think_chain(...)
-        # state.record_action_result(action_result)
-
-        # Check for completion
-        if session.has_failed:
-            return StrategyResult(
-                action=StrategyAction.FINISH_TASK,
-                payload=FinishTaskPayload(
-                    action=StrategyAction.FINISH_TASK,
-                    final_answer="Task failed.",
-                    evaluation=EvaluationPayload(
-                        action=StrategyAction.EVALUATE_COMPLETION,
-                        is_complete=False,
-                        reasoning="Task failed.",
-                        confidence=0.0,
-                    ),
-                ),
-                should_continue=False,
-            )
-
-        return StrategyResult(
-            action=StrategyAction.FINISH_TASK,
-            payload=FinishTaskPayload(
-                action=StrategyAction.FINISH_TASK,
-                final_answer="Task failed.",
-                evaluation=EvaluationPayload(
-                    action=StrategyAction.EVALUATE_COMPLETION,
-                    is_complete=False,
-                    reasoning="Task failed.",
-                    confidence=0.0,
-                ),
-            ),
-        )

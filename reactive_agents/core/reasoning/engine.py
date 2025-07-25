@@ -16,9 +16,10 @@ from reactive_agents.core.types.agent_types import (
 
 # Import the class-based prompt system
 from .prompts.base import (
+    PromptKey,
     BasePrompt,
     SystemPrompt,
-    TaskPlanningPrompt,
+    SingleStepPlanningPrompt,
     ReflectionPrompt,
     PlanGenerationPrompt,
     TaskCompletionValidationPrompt,
@@ -60,9 +61,9 @@ class ReasoningEngine:
         self._completed_actions: List[str] = []
 
         # Initialize prompt classes
-        self._prompts: Dict[str, BasePrompt] = {
+        self._prompts: Dict[PromptKey, BasePrompt] = {
             "system": SystemPrompt(context),
-            "planning": TaskPlanningPrompt(context),
+            "single_step_planning": SingleStepPlanningPrompt(context),
             "reflection": ReflectionPrompt(context),
             "plan_generation": PlanGenerationPrompt(context),
             "completion_validation": TaskCompletionValidationPrompt(context),
@@ -106,7 +107,7 @@ class ReasoningEngine:
                 self.agent_logger.error(f"Think operation failed: {e}")
             return None
 
-    def get_prompt(self, prompt_type: str, **kwargs) -> BasePrompt:
+    def get_prompt(self, prompt_type: PromptKey, **kwargs) -> BasePrompt:
         """Get a sophisticated prompt using the class-based system."""
 
         try:

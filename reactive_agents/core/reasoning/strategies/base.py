@@ -10,9 +10,9 @@ from reactive_agents.core.types.agent_types import (
 from reactive_agents.core.types.event_types import AgentStateEvent
 from reactive_agents.core.types.prompt_types import (
     FinalAnswerOutput,
-    ReflectionOutput,
     ToolSelectionOutput,
 )
+from reactive_agents.core.types.reasoning_component_types import ReflectionResult
 from reactive_agents.core.types.reasoning_types import (
     ActionPayload,
     EvaluationPayload,
@@ -164,7 +164,7 @@ class BaseReasoningStrategy(ABC):
         task: str,
         execution_results: Dict[str, Any],
         reasoning_context: ReasoningContext,
-    ) -> Optional[ReflectionOutput]:
+    ) -> Optional[ReflectionResult]:
         """
         Standard method for reflecting on progress in any strategy.
 
@@ -197,7 +197,7 @@ class BaseReasoningStrategy(ABC):
                 },
             )
 
-            return ReflectionOutput.model_validate(result.result_json)
+            return ReflectionResult.model_validate(result.result_json)
 
         return None
 

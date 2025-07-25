@@ -37,6 +37,12 @@ from reactive_agents.core.reasoning.strategies.base import (
 )
 from reactive_agents.core.reasoning.prompts.base import BasePrompt, PromptKey
 from reactive_agents.core.memory.vector_memory import MemoryItem
+from reactive_agents.core.reasoning.steps.base import BaseReasoningStep
+from reactive_agents.core.types.reasoning_types import (
+    ContinueThinkingPayload,
+    StrategyAction,
+)
+
 
 if TYPE_CHECKING:
     from reactive_agents.core.context.agent_context import AgentContext
@@ -82,21 +88,21 @@ class BaseComponent:
         if self.agent_logger:
             self.agent_logger.debug(f"{self.name}: {message}")
 
-    def _get_prompt(self, prompt_name: PromptKey, **kwargs: Any) -> str:
+    def _get_prompt(self, prompt_name: PromptKey, **kwargs: Any) -> BasePrompt:
         """
-        Get a prompt by name.
+        Get a prompt instance by name.
 
         Args:
             prompt_name (PromptKey): Name of the prompt
             **kwargs: Context to pass to the prompt (for fallback compatibility)
 
         Returns:
-            str: Prompt instance
+            BasePrompt: Prompt instance
         """
         prompt = self.engine.get_prompt(prompt_name, **kwargs)
         if not prompt:
             raise ValueError(f"Prompt {prompt_name} not found")
-        return prompt  # type: ignore
+        return prompt
 
 
 class ThinkingComponent(BaseComponent):
@@ -163,7 +169,6 @@ class PlanningComponent(BaseComponent):
         context_manager = self.engine.get_context_manager()
         plan_prompt = self.engine.get_prompt("plan_generation", task=task)
         thinking_result = await plan_prompt.get_completion()
-        print(f"Thinking result: {thinking_result}")
         if thinking_result:
             context_manager.add_message(
                 role="assistant",
@@ -279,13 +284,11 @@ class ReflectionComponent(BaseComponent):
         """
         self.log_usage("Reflecting on progress")
 
-        reflection_prompt_str = self._get_prompt(
+        reflection_prompt = self._get_prompt(
             "reflection", task=task, last_result=last_result
         )
 
-        reflection_result = await self.engine.think(
-            reflection_prompt_str, format="json"
-        )
+        reflection_result = await reflection_prompt.get_completion()
 
         if not reflection_result or not reflection_result.result_json:
             if self.agent_logger:
@@ -329,7 +332,7 @@ class ReflectionComponent(BaseComponent):
             f"Reflecting on plan progress (step {current_step_index+1}/{len(plan_steps)})"
         )
 
-        plan_reflection_prompt_str = self._get_prompt(
+        plan_reflection_prompt = self._get_prompt(
             "plan_progress_reflection",
             task=task,
             current_step_index=current_step_index,
@@ -337,9 +340,7 @@ class ReflectionComponent(BaseComponent):
             last_result=last_result,
         )
 
-        reflection_result = await self.engine.think(
-            plan_reflection_prompt_str, format="json"
-        )
+        reflection_result = await plan_reflection_prompt.get_completion()
 
         if not reflection_result or not reflection_result.result_json:
             if self.agent_logger:
@@ -459,7 +460,7 @@ class CompletionComponent(BaseComponent):
         """
         self.log_usage("Attempting to generate final answer")
 
-        final_answer_prompt_str = self._get_prompt(
+        final_answer_prompt = self._get_prompt(
             "final_answer",
             task=task,
             execution_summary=execution_summary,
@@ -468,8 +469,10 @@ class CompletionComponent(BaseComponent):
         )
 
         context_manager = self.engine.get_context_manager()
-        context_manager.add_message(role="user", content=final_answer_prompt_str)
-        final_answer_result = await self.engine.think_chain(use_tools=False)
+        context_manager.add_message(
+            role="user", content=final_answer_prompt.generate(**kwargs)
+        )
+        final_answer_result = await final_answer_prompt.get_completion()
 
         if not final_answer_result or not final_answer_result.result_json:
             if self.agent_logger:
@@ -535,14 +538,14 @@ class ErrorHandlingComponent(BaseComponent):
         """
         self.log_usage(f"Handling error: {last_error[:50]}...")
 
-        error_prompt_str = self._get_prompt(
+        error_prompt = self._get_prompt(
             "error_recovery",
             task=task,
             error_context=error_context,
             error_count=error_count,
             last_error=last_error,
         )
-        recovery_result = await self.engine.think(error_prompt_str, format="json")
+        recovery_result = await error_prompt.get_completion()
 
         if (
             not recovery_result
@@ -657,15 +660,13 @@ class StrategyTransitionComponent(BaseComponent):
         """
         self.log_usage(f"Evaluating strategy transition from {current_strategy}")
 
-        transition_prompt_str = self._get_prompt(
+        transition_prompt = self._get_prompt(
             "strategy_transition",
             current_strategy=current_strategy,
             available_strategies=available_strategies,
             performance_metrics=performance_metrics,
         )
-        transition_result = await self.engine.think(
-            transition_prompt_str, format="json"
-        )
+        transition_result = await transition_prompt.get_completion()
 
         if (
             not transition_result
@@ -769,7 +770,7 @@ class ComponentBasedStrategy(BaseReasoningStrategy):
     Base class for reasoning strategies built from components.
 
     This provides a foundation for building custom strategies
-    by composing reusable components.
+    by composing reusable, declarative reasoning steps.
     """
 
     def __init__(self, engine: ReasoningEngine):
@@ -807,12 +808,46 @@ class ComponentBasedStrategy(BaseReasoningStrategy):
             StrategyCapabilities.ADAPTATION,
         ]
 
+    @property
     @abstractmethod
+    def steps(self) -> List[BaseReasoningStep]:
+        """
+        Define the pipeline of reasoning steps for this strategy.
+        This must be implemented by all concrete strategies.
+        """
+        pass
+
     async def execute_iteration(
         self, task: str, reasoning_context: ReasoningContext
     ) -> StrategyResult:
-        """Execute one iteration of this reasoning strategy."""
-        pass
+        """
+        Execute one iteration of this reasoning strategy by running its
+        declarative pipeline of reasoning steps.
+        """
+        state = self.get_state()
+
+        for step in self.steps:
+            step.strategy = self  # Inject self into the step
+            result = await step.execute(state, task, reasoning_context)
+            if result is not None:
+                # The step terminated the iteration, so we return its result.
+                return result
+
+        # If the loop completes without any step terminating, it implies
+        # the pipeline finished its course for this iteration. We return a
+        # default result to continue to the next iteration.
+        if self.agent_logger:
+            self.agent_logger.debug(
+                "Step pipeline completed. Continuing to next iteration."
+            )
+
+        return StrategyResult.create(
+            payload=ContinueThinkingPayload(
+                action=StrategyAction.CONTINUE_THINKING,
+                reasoning="Completed a full reasoning cycle, continuing to next iteration.",
+            ),
+            should_continue=True,
+        )
 
     # Convenience methods to access components
     async def think(self, prompt: str) -> Optional[Dict[str, Any]]:

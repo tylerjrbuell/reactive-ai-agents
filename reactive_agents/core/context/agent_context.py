@@ -46,8 +46,8 @@ from reactive_agents.core.tools.tool_manager import ToolManager
 # --- Import AgentSession from its new location ---
 from reactive_agents.core.types.session_types import AgentSession
 
-# --- Import AgentStateObserver ---
-from reactive_agents.core.events.agent_observer import AgentStateObserver
+# --- Import EventBus ---
+from reactive_agents.core.events.event_bus import EventBus
 from reactive_agents.core.types.event_types import AgentStateEvent
 
 import tiktoken
@@ -140,18 +140,12 @@ class AgentContext(BaseModel):
     workflow_manager: Optional["WorkflowManager"] = None
     tool_manager: Optional["ToolManager"] = None
 
-    # --- Add State Observer ---
-    state_observer: Optional[AgentStateObserver] = None
+    # --- Add Event Bus ---
+    event_bus: Optional[EventBus] = None
     enable_state_observation: bool = True
-
-    # Event Bus for observability
-    event_bus: Optional[Any] = Field(default=None)  # EventBus for context observability
 
     # Observability
     observability: Optional[Any] = Field(default=None)  # ContextObservabilityManager
-
-    # Event bus for observability and monitoring
-    event_bus: Optional[Any] = Field(default=None)  # EventBus
 
     # Tool use policy: controls when tools are allowed in the agent loop
     tool_use_policy: Literal["always", "required_only", "adaptive", "never"] = (
@@ -268,10 +262,10 @@ class AgentContext(BaseModel):
         if self.enable_reactive_execution:
             self.task_classifier = TaskClassifier(context=self)
 
-        # Initialize state observer if enabled
+        # Initialize event bus if enabled
         if self.enable_state_observation:
-            self.state_observer = AgentStateObserver()
-            self.agent_logger.info("State observer initialized.")
+            self.event_bus = EventBus(self.agent_name)
+            self.agent_logger.info("Event bus initialized.")
 
         # --- End Initialize Managers ---
 
@@ -295,9 +289,9 @@ class AgentContext(BaseModel):
             event_type: The type of event being emitted
             data: The data associated with the event
         """
-        if self.state_observer and self.enable_state_observation:
+        if self.event_bus and self.enable_state_observation:
             # Include basic agent/session context with all events
-            context_data = {
+            event_data = {
                 "agent_name": self.agent_name,
                 "session_id": getattr(self.session, "session_id", None),
                 "task": getattr(self.session, "current_task", None),
@@ -305,8 +299,8 @@ class AgentContext(BaseModel):
                 "iterations": getattr(self.session, "iterations", 0),
             }
             # Merge with event-specific data (event data takes precedence)
-            event_data = {**context_data, **data}
-            self.state_observer.emit(event_type, event_data)
+            event_data = {**event_data, **data}
+            self.event_bus.emit(event_type, event_data)
 
     async def emit_event_async(
         self, event_type: AgentStateEvent, data: Dict[str, Any]
@@ -318,7 +312,7 @@ class AgentContext(BaseModel):
             event_type: The type of event being emitted
             data: The data associated with the event
         """
-        if self.state_observer and self.enable_state_observation:
+        if self.event_bus and self.enable_state_observation:
             # Include basic agent/session context with all events
             context_data = {
                 "agent_name": self.agent_name,
@@ -329,7 +323,7 @@ class AgentContext(BaseModel):
             }
             # Merge with event-specific data (event data takes precedence)
             event_data = {**context_data, **data}
-            await self.state_observer.emit_async(event_type, event_data)
+            await self.event_bus.emit_async(event_type, event_data)
 
     # Methods to interact with components will be added later
     # e.g., get_tools(), update_metrics(), save_memory(), get_reflection() etc.

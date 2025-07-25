@@ -15,10 +15,7 @@ from .engine import (
 # Event system
 from .events import (
     EventSubscription,
-    AgentObserver,
-    EventManager,
     EventBus,
-    AgentEventBus,
 )
 
 # Memory management
@@ -100,17 +97,12 @@ def initialize_core_framework(plugin_paths=None, load_plugins=True):
 __all__ = [
     # Engine
     "ExecutionEngine",
-    "ReactiveExecutionEngine",
-    "TaskExecutor",
     "TaskClassifier",
     "MetricsManager",
     "AgentContext",
     # Events
     "EventSubscription",
-    "AgentObserver",
-    "EventManager",
     "EventBus",
-    "AgentEventBus",
     # Memory
     "MemoryManager",
     "VectorMemoryManager",

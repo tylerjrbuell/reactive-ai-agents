@@ -1,66 +1,102 @@
 """
-Official EventBus Implementation
+Unified Event System for Reactive Agents
 
-This module provides a centralized, middleware-capable event system that replaces
-the current AgentStateObserver with enhanced functionality including:
+This module provides a single, comprehensive event system that replaces:
+- AgentStateObserver
+- EventManager
+- AgentEventManager
+- EventBus (simplified)
 
-- Event middleware for processing and filtering
-- Event persistence and replay
-- Distributed event handling
+Features:
 - Type-safe event subscriptions
-- Performance monitoring and debugging
+- Synchronous and asynchronous callbacks
+- Event statistics and debugging
+- Simple, clean API
+- Backward compatibility with existing code
 """
 
 from __future__ import annotations
 import asyncio
 import time
 import uuid
-from abc import ABC, abstractmethod
 from typing import (
-    Any,
     Dict,
     List,
-    Optional,
+    Any,
     Callable,
-    Awaitable,
+    Optional,
     Set,
     Union,
     Protocol,
     runtime_checkable,
-    TYPE_CHECKING,
+    Awaitable,
+    TypeVar,
+    Generic,
+    cast,
 )
-from datetime import datetime
 from dataclasses import dataclass, field
-from pydantic import BaseModel
 from enum import Enum
+from datetime import datetime
 
 from reactive_agents.core.types.event_types import AgentStateEvent
+from reactive_agents.core.types.event_types import (
+    BaseEventData,
+    SessionStartedEventData,
+    SessionEndedEventData,
+    TaskStatusChangedEventData,
+    IterationStartedEventData,
+    IterationCompletedEventData,
+    ToolCalledEventData,
+    ToolCompletedEventData,
+    ToolFailedEventData,
+    ReflectionGeneratedEventData,
+    FinalAnswerSetEventData,
+    MetricsUpdatedEventData,
+    ErrorOccurredEventData,
+    PauseRequestedEventData,
+    PausedEventData,
+    ResumeRequestedEventData,
+    ResumedEventData,
+    StopRequestedEventData,
+    StoppedEventData,
+    TerminateRequestedEventData,
+    TerminatedEventData,
+    CancelledEventData,
+    EventDataMapping,
+)
 
-if TYPE_CHECKING:
-    from reactive_agents.utils.logging import Logger
+# Type definitions
+T = TypeVar("T", bound=BaseEventData, contravariant=True)
 
 
-class EventPriority(Enum):
-    """Event priority levels"""
+# Protocol definitions for callbacks
+@runtime_checkable
+class EventCallback(Protocol, Generic[T]):
+    """Protocol for event callbacks with proper typing"""
 
-    LOW = "low"
-    NORMAL = "normal"
-    HIGH = "high"
-    CRITICAL = "critical"
+    def __call__(self, event: T) -> None: ...
+
+
+@runtime_checkable
+class AsyncEventCallback(Protocol, Generic[T]):
+    """Protocol for async event callbacks with proper typing"""
+
+    def __call__(self, event: T) -> Awaitable[None]: ...
+
+
+# Event data mapping is now imported from event_types.py
 
 
 @dataclass
 class Event:
-    """Enhanced event structure with metadata and routing information"""
+    """Enhanced event structure with metadata"""
 
+    type: AgentStateEvent = field()
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    type: str = ""
     data: Dict[str, Any] = field(default_factory=dict)
-    priority: EventPriority = EventPriority.NORMAL
     timestamp: float = field(default_factory=time.time)
     source: Optional[str] = None
     correlation_id: Optional[str] = None
-    tags: Set[str] = field(default_factory=set)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -69,482 +105,362 @@ class Event:
             self.timestamp = time.time()
 
 
-@runtime_checkable
-class EventHandler(Protocol):
-    """Protocol for event handlers"""
+class EventSubscription(Generic[T]):
+    """
+    A subscription to a specific event type with type-safe callbacks.
+    """
 
-    async def handle(self, event: Event) -> None:
-        """Handle an event"""
-        ...
-
-
-@runtime_checkable
-class EventMiddleware(Protocol):
-    """Protocol for event middleware"""
-
-    async def process(
-        self, event: Event, next_handler: Callable[[Event], Awaitable[None]]
-    ) -> None:
-        """Process an event before it reaches handlers"""
-        ...
-
-
-class EventPersistence(ABC):
-    """Abstract base for event persistence"""
-
-    @abstractmethod
-    async def store_event(self, event: Event) -> None:
-        """Store an event for replay/audit purposes"""
-        pass
-
-    @abstractmethod
-    async def get_events(
+    def __init__(
         self,
-        event_type: Optional[str] = None,
-        start_time: Optional[float] = None,
-        end_time: Optional[float] = None,
-        limit: int = 100,
-    ) -> List[Event]:
-        """Retrieve stored events"""
-        pass
-
-
-class MemoryEventPersistence(EventPersistence):
-    """In-memory event persistence for development/testing"""
-
-    def __init__(self, max_events: int = 10000):
-        self.events: List[Event] = []
-        self.max_events = max_events
-
-    async def store_event(self, event: Event) -> None:
-        """Store event in memory with size limit"""
-        self.events.append(event)
-        if len(self.events) > self.max_events:
-            self.events = self.events[-self.max_events :]
-
-    async def get_events(
-        self,
-        event_type: Optional[str] = None,
-        start_time: Optional[float] = None,
-        end_time: Optional[float] = None,
-        limit: int = 100,
-    ) -> List[Event]:
-        """Filter and return stored events"""
-        filtered_events = self.events
-
-        if event_type:
-            filtered_events = [e for e in filtered_events if e.type == event_type]
-
-        if start_time:
-            filtered_events = [e for e in filtered_events if e.timestamp >= start_time]
-
-        if end_time:
-            filtered_events = [e for e in filtered_events if e.timestamp <= end_time]
-
-        return filtered_events[-limit:] if limit else filtered_events
-
-
-class EventSubscription:
-    """Represents a subscription to an event type"""
-
-    def __init__(self, event_type: str, handler: EventHandler, event_bus: "EventBus"):
+        event_type: AgentStateEvent,
+        event_bus: "EventBus",
+    ):
         self.event_type = event_type
-        self.handler = handler
         self.event_bus = event_bus
-        self.active = True
+        self._callbacks: List[EventCallback[T]] = []
+        self._async_callbacks: List[AsyncEventCallback[T]] = []
 
-    def unsubscribe(self) -> None:
-        """Unsubscribe from the event"""
-        self.active = False
-        self.event_bus._remove_subscription(self)
+    def subscribe(self, callback: EventCallback[T]) -> "EventSubscription[T]":
+        """Subscribe a callback to this event."""
+        self._callbacks.append(callback)
+        self.event_bus._register_callback(self.event_type, callback)
+        return self
 
+    async def subscribe_async(
+        self, callback: AsyncEventCallback[T]
+    ) -> "EventSubscription[T]":
+        """Subscribe an async callback to this event."""
+        self._async_callbacks.append(callback)
+        self.event_bus._register_async_callback(self.event_type, callback)
+        return self
 
-class LoggingMiddleware:
-    """Middleware that logs all events"""
-
-    def __init__(self, logger: Optional["Logger"] = None):
-        self.logger = logger
-
-    async def process(
-        self, event: Event, next_handler: Callable[[Event], Awaitable[None]]
-    ) -> None:
-        """Log the event and continue processing"""
-        if self.logger:
-            self.logger.debug(f"Processing event: {event.type} (ID: {event.id[:8]})")
-
-        start_time = time.time()
-        try:
-            await next_handler(event)
-        finally:
-            processing_time = time.time() - start_time
-            if self.logger:
-                self.logger.debug(
-                    f"Event {event.type} processed in {processing_time:.3f}s"
-                )
-
-
-class FilteringMiddleware:
-    """Middleware that filters events based on criteria"""
-
-    def __init__(self, filter_func: Callable[[Event], bool]):
-        self.filter_func = filter_func
-
-    async def process(
-        self, event: Event, next_handler: Callable[[Event], Awaitable[None]]
-    ) -> None:
-        """Filter events based on criteria"""
-        if self.filter_func(event):
-            await next_handler(event)
-
-
-class RateLimitingMiddleware:
-    """Middleware that implements rate limiting"""
-
-    def __init__(self, max_events_per_second: float = 100.0):
-        self.max_events_per_second = max_events_per_second
-        self.event_times: List[float] = []
-
-    async def process(
-        self, event: Event, next_handler: Callable[[Event], Awaitable[None]]
-    ) -> None:
-        """Apply rate limiting"""
-        current_time = time.time()
-
-        # Clean old entries
-        cutoff_time = current_time - 1.0
-        self.event_times = [t for t in self.event_times if t > cutoff_time]
-
-        # Check rate limit
-        if len(self.event_times) < self.max_events_per_second:
-            self.event_times.append(current_time)
-            await next_handler(event)
-        # If rate limited, we silently drop the event
+    def unsubscribe_all(self) -> None:
+        """Unsubscribe all callbacks from this event."""
+        for callback in self._callbacks:
+            self.event_bus._unregister_callback(self.event_type, callback)
+        for callback in self._async_callbacks:
+            self.event_bus._unregister_async_callback(self.event_type, callback)
+        self._callbacks.clear()
+        self._async_callbacks.clear()
 
 
 class EventBus:
     """
-    Centralized event management system with middleware support.
+    Unified event system that combines the best features of all previous event systems.
 
-    This replaces the current AgentStateObserver with enhanced functionality:
-    - Middleware pipeline for event processing
-    - Event persistence and replay capabilities
-    - Performance monitoring and debugging
-    - Type-safe subscriptions with proper cleanup
+    This replaces:
+    - AgentStateObserver
+    - EventManager
+    - AgentEventManager
+    - Previous EventBus (simplified)
     """
 
-    def __init__(self, logger: Optional["Logger"] = None):
-        self.logger = logger
-        self.middleware: List[EventMiddleware] = []
-        self.subscribers: Dict[str, List[EventHandler]] = {}
-        self.subscriptions: List[EventSubscription] = []
-        self.persistence: Optional[EventPersistence] = None
-        self.stats = {
-            "events_emitted": 0,
-            "events_processed": 0,
-            "middleware_errors": 0,
-            "handler_errors": 0,
-            "processing_times": [],
-            "events_by_type": {},
-            "last_event_time": None,
-        }
-        self._running = True
-
-        # Add default logging middleware
-        if logger:
-            self.add_middleware(LoggingMiddleware(logger))
-
-    def add_middleware(self, middleware: EventMiddleware) -> None:
-        """Add event processing middleware"""
-        self.middleware.append(middleware)
-        if self.logger:
-            self.logger.debug(f"Added middleware: {type(middleware).__name__}")
-
-    def set_persistence(self, persistence: EventPersistence) -> None:
-        """Set event persistence handler"""
-        self.persistence = persistence
-        if self.logger:
-            self.logger.info(f"Event persistence enabled: {type(persistence).__name__}")
-
-    def subscribe(self, event_type: str, handler: EventHandler) -> EventSubscription:
-        """Subscribe to an event type"""
-        if event_type not in self.subscribers:
-            self.subscribers[event_type] = []
-
-        self.subscribers[event_type].append(handler)
-        subscription = EventSubscription(event_type, handler, self)
-        self.subscriptions.append(subscription)
-
-        if self.logger:
-            self.logger.debug(f"New subscription: {event_type}")
-
-        return subscription
-
-    def subscribe_function(
-        self, event_type: str, func: Callable[[Event], Awaitable[None]]
-    ) -> EventSubscription:
-        """Subscribe a function as an event handler"""
-
-        class FunctionHandler:
-            def __init__(self, func: Callable[[Event], Awaitable[None]]):
-                self.func = func
-
-            async def handle(self, event: Event) -> None:
-                await self.func(event)
-
-        return self.subscribe(event_type, FunctionHandler(func))
-
-    def _remove_subscription(self, subscription: EventSubscription) -> None:
-        """Internal method to remove a subscription"""
-        if subscription in self.subscriptions:
-            self.subscriptions.remove(subscription)
-
-        if subscription.event_type in self.subscribers:
-            if subscription.handler in self.subscribers[subscription.event_type]:
-                self.subscribers[subscription.event_type].remove(subscription.handler)
-
-    async def emit(
-        self, event: Union[Event, str], data: Optional[Dict[str, Any]] = None, **kwargs
-    ) -> None:
-        """
-        Emit an event to all subscribers through the middleware pipeline.
-
-        Args:
-            event: Event object or event type string
-            data: Event data (if event is a string)
-            **kwargs: Additional event properties
-        """
-        if not self._running:
-            return
-
-        # Create Event object if string provided
-        if isinstance(event, str):
-            event_obj = Event(type=event, data=data or {}, **kwargs)
-        else:
-            event_obj = event
-
-        # Update stats
-        self.stats["events_emitted"] += 1
-        self.stats["last_event_time"] = event_obj.timestamp
-        self.stats["events_by_type"][event_obj.type] = (
-            self.stats["events_by_type"].get(event_obj.type, 0) + 1
-        )
-
-        # Process through middleware pipeline
-        try:
-            await self._process_event(event_obj)
-        except Exception as e:
-            self.stats["middleware_errors"] += 1
-            if self.logger:
-                self.logger.error(f"Error processing event {event_obj.type}: {e}")
-
-    async def _process_event(self, event: Event) -> None:
-        """Process event through middleware pipeline"""
-
-        async def final_handler(processed_event: Event) -> None:
-            """Final handler that dispatches to subscribers"""
-            await self._dispatch_to_subscribers(processed_event)
-
-        # Build middleware chain
-        handler = final_handler
-        for middleware in reversed(self.middleware):
-            current_middleware = middleware
-            current_handler = handler
-
-            async def chained_handler(
-                e: Event, m=current_middleware, h=current_handler
-            ) -> None:
-                await m.process(e, h)
-
-            handler = chained_handler
-
-        # Execute the chain
-        start_time = time.time()
-        try:
-            await handler(event)
-            processing_time = time.time() - start_time
-            self.stats["processing_times"].append(processing_time)
-
-            # Keep only last 1000 processing times for memory efficiency
-            if len(self.stats["processing_times"]) > 1000:
-                self.stats["processing_times"] = self.stats["processing_times"][-1000:]
-
-            # Store event if persistence is enabled
-            if self.persistence:
-                await self.persistence.store_event(event)
-
-        except Exception as e:
-            self.stats["middleware_errors"] += 1
-            if self.logger:
-                self.logger.error(f"Middleware error for event {event.type}: {e}")
-
-    async def _dispatch_to_subscribers(self, event: Event) -> None:
-        """Dispatch event to all subscribers"""
-
-        if event.type not in self.subscribers:
-            return
-
-        handlers = self.subscribers[event.type][
-            :
-        ]  # Copy to avoid modification during iteration
-
-        # Dispatch to all handlers concurrently
-        if handlers:
-            tasks = []
-            for handler in handlers:
-                tasks.append(self._safe_handle(handler, event))
-
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-                self.stats["events_processed"] += 1
-
-    async def _safe_handle(self, handler: EventHandler, event: Event) -> None:
-        """Safely handle an event, catching and logging errors"""
-        try:
-            await handler.handle(event)
-        except Exception as e:
-            self.stats["handler_errors"] += 1
-            if self.logger:
-                self.logger.error(f"Handler error for event {event.type}: {e}")
-
-    async def replay_events(
-        self,
-        event_type: Optional[str] = None,
-        start_time: Optional[float] = None,
-        end_time: Optional[float] = None,
-        limit: int = 100,
-    ) -> int:
-        """
-        Replay stored events through the current subscriber set.
-
-        Returns:
-            Number of events replayed
-        """
-        if not self.persistence:
-            if self.logger:
-                self.logger.warning("No persistence configured, cannot replay events")
-            return 0
-
-        events = await self.persistence.get_events(
-            event_type, start_time, end_time, limit
-        )
-
-        replayed_count = 0
-        for event in events:
-            # Mark as replay to avoid re-storing
-            event.metadata["replayed"] = True
-            await self._dispatch_to_subscribers(event)
-            replayed_count += 1
-
-        if self.logger:
-            self.logger.info(f"Replayed {replayed_count} events")
-
-        return replayed_count
-
-    def get_stats(self) -> Dict[str, Any]:
-        """Get event bus statistics"""
-        avg_processing_time = (
-            sum(self.stats["processing_times"]) / len(self.stats["processing_times"])
-            if self.stats["processing_times"]
-            else 0
-        )
-
-        return {
-            **self.stats,
-            "avg_processing_time": avg_processing_time,
-            "active_subscribers": sum(
-                len(handlers) for handlers in self.subscribers.values()
-            ),
-            "middleware_count": len(self.middleware),
-            "persistence_enabled": self.persistence is not None,
-        }
-
-    def get_subscriber_count(self, event_type: str) -> int:
-        """Get number of subscribers for an event type"""
-        return len(self.subscribers.get(event_type, []))
-
-    async def close(self) -> None:
-        """Close the event bus and clean up resources"""
-        self._running = False
-
-        # Cancel all subscriptions
-        for subscription in self.subscriptions:
-            subscription.active = False
-
-        self.subscriptions.clear()
-        self.subscribers.clear()
-
-        if self.logger:
-            self.logger.info("EventBus closed")
-
-
-class AgentEventBus(EventBus):
-    """
-    Specialized EventBus for ReactiveAgent with pre-configured middleware
-    and AgentStateEvent integration.
-    """
-
-    def __init__(self, agent_name: str, logger: Optional["Logger"] = None):
-        super().__init__(logger)
+    def __init__(self, agent_name: str = "UnknownAgent"):
         self.agent_name = agent_name
 
-        # Add agent-specific middleware
-        self.add_middleware(FilteringMiddleware(self._agent_event_filter))
-        self.add_middleware(RateLimitingMiddleware(max_events_per_second=50.0))
+        # Callback storage
+        self._callbacks: Dict[AgentStateEvent, List[EventCallback]] = {
+            event_type: [] for event_type in AgentStateEvent
+        }
+        self._async_callbacks: Dict[AgentStateEvent, List[AsyncEventCallback]] = {
+            event_type: [] for event_type in AgentStateEvent
+        }
 
-        # Enable memory persistence for development
-        self.set_persistence(MemoryEventPersistence(max_events=5000))
+        # Session tracking
+        self._active_sessions: Set[str] = set()
 
-    def _agent_event_filter(self, event: Event) -> bool:
-        """Filter events specific to this agent"""
-        # Allow events without agent context or events for this agent
-        agent_name = event.data.get("agent_name")
-        return agent_name is None or agent_name == self.agent_name
+        # Statistics
+        self._stats = {
+            "events_emitted": 0,
+            "callbacks_invoked": 0,
+            "events_by_type": {event_type.value: 0 for event_type in AgentStateEvent},
+            "last_event_time": None,
+            "errors": 0,
+        }
 
-    async def emit_agent_event(
-        self,
-        event_type: AgentStateEvent,
-        data: Dict[str, Any],
-        priority: EventPriority = EventPriority.NORMAL,
+    # === Core Event Methods ===
+
+    def emit(self, event_type: AgentStateEvent, data: Dict[str, Any]) -> None:
+        """Emit a synchronous event."""
+        self._emit_event(event_type, data, is_async=False)
+
+    async def emit_async(
+        self, event_type: AgentStateEvent, data: Dict[str, Any]
     ) -> None:
-        """Emit an agent state event with proper context"""
+        """Emit an asynchronous event."""
+        await self._emit_event_async(event_type, data)
 
-        # Add agent context to event data
-        enhanced_data = {
-            "agent_name": self.agent_name,
+    def _emit_event(
+        self, event_type: AgentStateEvent, data: Dict[str, Any], is_async: bool = False
+    ) -> None:
+        """Internal method to emit events."""
+        # Update stats
+        self._stats["events_emitted"] += 1
+        self._stats["events_by_type"][event_type.value] += 1
+        self._stats["last_event_time"] = time.time()
+
+        # Add timestamp and agent context
+        event_data = {
             "timestamp": time.time(),
+            "event_type": event_type.value,
+            "agent_name": self.agent_name,
             **data,
         }
 
-        event = Event(
-            type=event_type.value,
-            data=enhanced_data,
-            priority=priority,
-            source=f"agent:{self.agent_name}",
-            tags={"agent_event", self.agent_name},
-        )
+        # Special handling for session events
+        if event_type == AgentStateEvent.SESSION_STARTED:
+            session_id = data.get("session_id")
+            if session_id in self._active_sessions:
+                return
+            if session_id:
+                self._active_sessions.add(session_id)
+        elif event_type == AgentStateEvent.SESSION_ENDED:
+            session_id = data.get("session_id")
+            if session_id:
+                self._active_sessions.discard(session_id)
 
-        await self.emit(event)
+        # Call synchronous callbacks
+        for callback in self._callbacks[event_type]:
+            try:
+                callback(event_data)
+                self._stats["callbacks_invoked"] += 1
+            except Exception as e:
+                self._stats["errors"] += 1
+                print(f"Error in event callback: {e}")
 
-    def subscribe_to_agent_event(
+    async def _emit_event_async(
+        self, event_type: AgentStateEvent, data: Dict[str, Any]
+    ) -> None:
+        """Internal method to emit async events."""
+        # Update stats
+        self._stats["events_emitted"] += 1
+        self._stats["events_by_type"][event_type.value] += 1
+        self._stats["last_event_time"] = time.time()
+
+        # Add timestamp and agent context
+        event_data = {
+            "timestamp": time.time(),
+            "event_type": event_type.value,
+            "agent_name": self.agent_name,
+            **data,
+        }
+
+        # Special handling for session events
+        if event_type == AgentStateEvent.SESSION_STARTED:
+            session_id = data.get("session_id")
+            if session_id in self._active_sessions:
+                return
+            if session_id:
+                self._active_sessions.add(session_id)
+        elif event_type == AgentStateEvent.SESSION_ENDED:
+            session_id = data.get("session_id")
+            if session_id:
+                self._active_sessions.discard(session_id)
+
+        # Call async callbacks concurrently
+        if self._async_callbacks[event_type]:
+            tasks = []
+            for callback in self._async_callbacks[event_type]:
+                try:
+                    tasks.append(callback(event_data))
+                except Exception as e:
+                    self._stats["errors"] += 1
+                    print(f"Error in async event callback: {e}")
+
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+                self._stats["callbacks_invoked"] += len(tasks)
+
+    # === Registration Methods ===
+
+    def _register_callback(
+        self, event_type: AgentStateEvent, callback: EventCallback
+    ) -> None:
+        """Register a synchronous callback."""
+        self._callbacks[event_type].append(callback)
+
+    def _register_async_callback(
+        self, event_type: AgentStateEvent, callback: AsyncEventCallback
+    ) -> None:
+        """Register an asynchronous callback."""
+        self._async_callbacks[event_type].append(callback)
+
+    def _unregister_callback(
+        self, event_type: AgentStateEvent, callback: EventCallback
+    ) -> None:
+        """Unregister a synchronous callback."""
+        if callback in self._callbacks[event_type]:
+            self._callbacks[event_type].remove(callback)
+
+    def _unregister_async_callback(
+        self, event_type: AgentStateEvent, callback: AsyncEventCallback
+    ) -> None:
+        """Unregister an asynchronous callback."""
+        if callback in self._async_callbacks[event_type]:
+            self._async_callbacks[event_type].remove(callback)
+
+    # === Fluent API Methods ===
+
+    def events(self, event_type: AgentStateEvent) -> EventSubscription:
+        """Get a subscription for a specific event type."""
+        return EventSubscription(event_type, self)
+
+    # === Convenience Methods for Common Events ===
+
+    def on_session_started(self) -> EventSubscription[SessionStartedEventData]:
+        """Subscribe to session started events."""
+        return self.events(AgentStateEvent.SESSION_STARTED)
+
+    def on_session_ended(self) -> EventSubscription[SessionEndedEventData]:
+        """Subscribe to session ended events."""
+        return self.events(AgentStateEvent.SESSION_ENDED)
+
+    def on_task_status_changed(self) -> EventSubscription[TaskStatusChangedEventData]:
+        """Subscribe to task status changed events."""
+        return self.events(AgentStateEvent.TASK_STATUS_CHANGED)
+
+    def on_iteration_started(self) -> EventSubscription[IterationStartedEventData]:
+        """Subscribe to iteration started events."""
+        return self.events(AgentStateEvent.ITERATION_STARTED)
+
+    def on_iteration_completed(self) -> EventSubscription[IterationCompletedEventData]:
+        """Subscribe to iteration completed events."""
+        return self.events(AgentStateEvent.ITERATION_COMPLETED)
+
+    def on_tool_called(self) -> EventSubscription[ToolCalledEventData]:
+        """Subscribe to tool called events."""
+        return self.events(AgentStateEvent.TOOL_CALLED)
+
+    def on_tool_completed(self) -> EventSubscription[ToolCompletedEventData]:
+        """Subscribe to tool completed events."""
+        return self.events(AgentStateEvent.TOOL_COMPLETED)
+
+    def on_tool_failed(self) -> EventSubscription[ToolFailedEventData]:
+        """Subscribe to tool failed events."""
+        return self.events(AgentStateEvent.TOOL_FAILED)
+
+    def on_reflection_generated(
         self,
-        event_type: AgentStateEvent,
-        handler: Union[EventHandler, Callable[[Event], Awaitable[None]]],
-    ) -> EventSubscription:
-        """Subscribe to a specific agent state event"""
+    ) -> EventSubscription[ReflectionGeneratedEventData]:
+        """Subscribe to reflection generated events."""
+        return self.events(AgentStateEvent.REFLECTION_GENERATED)
 
-        if callable(handler) and not hasattr(handler, "handle"):
-            # Handler is a function
-            return self.subscribe_function(event_type.value, handler)
-        else:
-            # Handler is an EventHandler protocol object
-            # Type assertion to help the type checker
-            event_handler: EventHandler = handler  # type: ignore
-            return self.subscribe(event_type.value, event_handler)
+    def on_final_answer_set(self) -> EventSubscription[FinalAnswerSetEventData]:
+        """Subscribe to final answer set events."""
+        return self.events(AgentStateEvent.FINAL_ANSWER_SET)
 
+    def on_metrics_updated(self) -> EventSubscription[MetricsUpdatedEventData]:
+        """Subscribe to metrics updated events."""
+        return self.events(AgentStateEvent.METRICS_UPDATED)
 
-# Convenience function for creating agent event buses
-def create_agent_event_bus(
-    agent_name: str, logger: Optional["Logger"] = None
-) -> AgentEventBus:
-    """Create a pre-configured event bus for an agent"""
-    return AgentEventBus(agent_name, logger)
+    def on_error_occurred(self) -> EventSubscription[ErrorOccurredEventData]:
+        """Subscribe to error occurred events."""
+        return self.events(AgentStateEvent.ERROR_OCCURRED)
+
+    def on_pause_requested(self) -> EventSubscription[PauseRequestedEventData]:
+        """Subscribe to pause requested events."""
+        return self.events(AgentStateEvent.PAUSE_REQUESTED)
+
+    def on_paused(self) -> EventSubscription[PausedEventData]:
+        """Subscribe to paused events."""
+        return self.events(AgentStateEvent.PAUSED)
+
+    def on_resume_requested(self) -> EventSubscription[ResumeRequestedEventData]:
+        """Subscribe to resume requested events."""
+        return self.events(AgentStateEvent.RESUME_REQUESTED)
+
+    def on_resumed(self) -> EventSubscription[ResumedEventData]:
+        """Subscribe to resumed events."""
+        return self.events(AgentStateEvent.RESUMED)
+
+    def on_stop_requested(self) -> EventSubscription[StopRequestedEventData]:
+        """Subscribe to stop requested events."""
+        return self.events(AgentStateEvent.STOP_REQUESTED)
+
+    def on_stopped(self) -> EventSubscription[StoppedEventData]:
+        """Subscribe to stopped events."""
+        return self.events(AgentStateEvent.STOPPED)
+
+    def on_terminate_requested(self) -> EventSubscription[TerminateRequestedEventData]:
+        """Subscribe to terminate requested events."""
+        return self.events(AgentStateEvent.TERMINATE_REQUESTED)
+
+    def on_terminated(self) -> EventSubscription[TerminatedEventData]:
+        """Subscribe to terminated events."""
+        return self.events(AgentStateEvent.TERMINATED)
+
+    def on_cancelled(self) -> EventSubscription[CancelledEventData]:
+        """Subscribe to cancelled events."""
+        return self.events(AgentStateEvent.CANCELLED)
+
+    # === Backward Compatibility Methods ===
+
+    def register_callback(
+        self, event_type: AgentStateEvent, callback: EventCallback
+    ) -> None:
+        """Backward compatibility method."""
+        self._register_callback(event_type, callback)
+
+    def register_async_callback(
+        self, event_type: AgentStateEvent, callback: AsyncEventCallback
+    ) -> None:
+        """Backward compatibility method."""
+        self._register_async_callback(event_type, callback)
+
+    def unregister_callback(
+        self, event_type: AgentStateEvent, callback: EventCallback
+    ) -> None:
+        """Backward compatibility method."""
+        self._unregister_callback(event_type, callback)
+
+    def unregister_async_callback(
+        self, event_type: AgentStateEvent, callback: AsyncEventCallback
+    ) -> None:
+        """Backward compatibility method."""
+        self._unregister_async_callback(event_type, callback)
+
+    # === Statistics and Debugging ===
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get event system statistics."""
+        return {
+            **self._stats,
+            "active_sessions": len(self._active_sessions),
+            "total_callbacks": sum(
+                len(callbacks) for callbacks in self._callbacks.values()
+            ),
+            "total_async_callbacks": sum(
+                len(callbacks) for callbacks in self._async_callbacks.values()
+            ),
+        }
+
+    def clear_stats(self) -> None:
+        """Clear event statistics."""
+        self._stats = {
+            "events_emitted": 0,
+            "callbacks_invoked": 0,
+            "events_by_type": {event_type.value: 0 for event_type in AgentStateEvent},
+            "last_event_time": None,
+            "errors": 0,
+        }
+
+    # === Utility Methods ===
+
+    def get_subscriber_count(self, event_type: AgentStateEvent) -> int:
+        """Get number of subscribers for an event type."""
+        return len(self._callbacks[event_type]) + len(self._async_callbacks[event_type])
+
+    def has_subscribers(self, event_type: AgentStateEvent) -> bool:
+        """Check if an event type has any subscribers."""
+        return bool(self._callbacks[event_type] or self._async_callbacks[event_type])
+
+    def get_all_event_types(self) -> List[AgentStateEvent]:
+        """Get all available event types."""
+        return list(AgentStateEvent)
+
+    def clear_all_subscriptions(self) -> None:
+        """Clear all event subscriptions."""
+        for event_type in AgentStateEvent:
+            self._callbacks[event_type].clear()
+            self._async_callbacks[event_type].clear()
+        self._active_sessions.clear()

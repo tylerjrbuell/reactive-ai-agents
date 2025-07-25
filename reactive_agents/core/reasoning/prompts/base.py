@@ -11,15 +11,14 @@ from reactive_agents.core.types.prompt_types import (
     FinalAnswerOutput,
     PlanExtensionOutput,
     PlanProgressReflectionOutput,
-    ReflectionOutput,
+    SingleStepPlanningOutput,
     StrategyTransitionOutput,
     TaskCompletionValidationOutput,
     TaskGoalEvaluationOutput,
-    TaskPlanningOutput,
     ToolCallSystemOutput,
     ToolSelectionOutput,
 )
-from reactive_agents.core.types.reasoning_component_types import Plan
+from reactive_agents.core.types.reasoning_component_types import Plan, ReflectionResult
 
 if TYPE_CHECKING:
     from reactive_agents.core.context.agent_context import AgentContext
@@ -29,7 +28,7 @@ if TYPE_CHECKING:
 # All valid prompt keys for registration and lookup
 PromptKey = Literal[
     "system",
-    "planning",
+    "single_step_planning",
     "reflection",
     "plan_generation",
     "step_execution",
@@ -232,12 +231,12 @@ class SystemPrompt(BasePrompt):
         return base_prompt
 
 
-class TaskPlanningPrompt(BasePrompt):
-    """Dynamic prompt for task planning."""
+class SingleStepPlanningPrompt(BasePrompt):
+    """Dynamic prompt for single step planning."""
 
     @property
     def output_model(self) -> Optional[Type[BaseModel]]:
-        return TaskPlanningOutput
+        return SingleStepPlanningOutput
 
     def generate(self, **kwargs) -> str:
         """Generate a planning prompt based on current context and strategy."""
@@ -285,7 +284,7 @@ class ReflectionPrompt(BasePrompt):
 
     @property
     def output_model(self) -> Optional[Type[BaseModel]]:
-        return ReflectionOutput
+        return ReflectionResult
 
     def generate(self, **kwargs) -> str:
         """Generate a reflection prompt based on current state."""
@@ -502,11 +501,10 @@ class PlanGenerationPrompt(BasePrompt):
         - Be specific about tool parameters and data sources
         - Ensure each step produces actionable output for the next step
         - A step should only be considered an action if it includes required tools. Otherwise it should not be an action.
-        - The plan should always include some actionable steps but not all steps should be actions.
+        - Not all steps require tools. Some steps may be purely reasoning steps to invoke thought processes.
+        - Choose tools required for each step very carefully and accurately and only if the step is an action.
         - Each step status should be set to pending since the plan is not yet executed.
-        - Aim for 3-7 granular steps total (if possible) but more importantly enough steps to accomplish the task.
-        - Focus on tool usage, not reasoning steps
-        - Be this specific and granular for your task.
+        - Aim for 3-7 steps total (if possible) but more importantly enough steps to accomplish the task.
         - **IMPORTANT** ALWAYS include verification steps in your plan to ensure each action accomplished what it was intended to do.
         
     """
@@ -524,10 +522,7 @@ class PlanGenerationPrompt(BasePrompt):
         {json.dumps(context.tool_signatures, indent=2)}"""
 
         prompt += f"""
-        Create a plan with small, specific steps. Each step should:
-        - Use ONE tool to accomplish ONE thing
-        - Be specific about what data to use
-        - Build on results from previous steps
+        Create a plan with intentional steps that are specific to the task and the tools available.
         """
 
         return prompt

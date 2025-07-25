@@ -403,6 +403,7 @@ async def main():
                 .with_instructions("Demonstrate control operations.")
                 .with_reasoning_strategy(ReasoningStrategies.PLAN_EXECUTE_REFLECT)
                 .with_mcp_tools(["time"])
+                .with_custom_tools([custom_weather_tool])
                 .with_max_iterations(10)
                 .build()
             )
@@ -426,7 +427,7 @@ async def main():
             print("\n--- Demonstrating Control Operations ---")
 
             await agent.pause()
-            await asyncio.sleep(10)
+            await asyncio.sleep(20)
 
             await agent.resume()
             await asyncio.sleep(3)
@@ -550,6 +551,9 @@ async def test():
                 .with_instructions(
                     "You are a gmail assistant, ensure you are logged into the gmail account and have access before you start."
                 )
+                # .with_instructions(
+                #     "You are a research assistant, you are given a task and you need to research the task and provide a final answer."
+                # )
                 .with_model("ollama:cogito:14b")
                 # .with_mcp_tools(["brave-search"])
                 # .with_custom_tools([custom_weather_tool])
@@ -570,37 +574,32 @@ async def test():
                 # .with_reflection(True)
                 # .with_vector_memory()
                 .with_model_provider_options(
-                    {"num_gpu": 256, "num_ctx": 4000, "temperature": 0.2}
+                    {"num_gpu": 256, "num_ctx": 10000, "temperature": 0}
                 )
+                .on_metrics_updated(lambda event: print(f"📈 Metrics updated: {event}"))
                 .build()
             )
         )
         task = """
-        Search for emails with query "category:spam" and move them to the archive,
-        Finally, send an email to tylerjrbuell@gmail.com with a summary of the emails that were moved to the archive.
+        ** Task **
+        1. Authenticate with the gmail account
+        2. Fetch the first 25 emails from the inbox
+        3. Analyze do a logical analysis of the emails that should either be retained (archive) or deleted (trash).
+        4. Then move all the emails to their respective new locations.
+        5. Send an email to tylerjrbuell@gmail.com with a summary of the emails that were processed.
         
-        # Example email summary template:
-        # <category> is the category of emails to move to the <trash> or <archive>
-        # <email_id> is the id of the email
-        # <subject> is the subject of the email
-        # <from> is the from of the email
-        # <snippet> is the snippet of the email
-        
-        Summary of processed <category> emails:
+        ** Rules **
+        - All emails found should be processed
+        - If an email is found that is not spam, and is not important, then move it to the archive
+        - If an email is found that is spam, then move it to the trash
+        - If an email is found that is important, then move it to the archive
+        - If an email is found that is social media related, then move it to the trash
+        - If an email is found that is promotional, then move it to the trash
+        - If an email is found that is not spam, and is important, then move it to the archive
 
-        1. Email ID: <email_id>
-        Subject: <subject>
-        From: <from>
-        Snippet: <snippet>
+        ** Output **
+        Send an email to tylerjrbuell@gmail.com with a detailed summary of the emails that were processed.
         
-        2. Email ID: <email_id>
-        Subject: <subject>
-        From: <from>
-        Snippet: <snippet>
-
-        All identified <category> emails have been moved to the <trash> or <archive>
-        
-
         """
 
         await agent.run(task)
@@ -638,7 +637,7 @@ async def test_reflect_decide_act():
         )
 
         # Test with a task that should use reflect-decide-act
-        task = "What is the current price of bitcoin, xrp, ethereum, solana? Create a markdown file called ./prices.md with the prices in a nice markdown table"
+        task = "Identify the current price of bitcoin, xrp, ethereum, solana then create a markdown file called ./prices.md with the prices in a nice markdown table"
         print(f"Running task: {task}")
         result = await agent.run(task)
 

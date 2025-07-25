@@ -334,7 +334,11 @@ class StrategyManager:
         """
         Get the enum value of the currently active strategy.
         """
-        return ReasoningStrategies(self.get_current_strategy_name())
+        strategy_name = self.get_current_strategy_name()
+        if strategy_name == "none":
+            # Return a default strategy when none is active
+            return ReasoningStrategies.ADAPTIVE
+        return ReasoningStrategies(strategy_name)
 
     def select_optimal_strategy(self, classification: Any) -> str:
         """

@@ -7,7 +7,7 @@ support for dynamic agent methods.
 
 from typing import Protocol, Callable, Any, Union, List, overload, Literal
 from typing_extensions import ParamSpec
-from reactive_agents.core.events.agent_events import (
+from reactive_agents.core.types.event_types import (
     SessionStartedEventData,
     SessionEndedEventData,
     TaskStatusChangedEventData,
@@ -29,8 +29,8 @@ from reactive_agents.core.events.agent_events import (
     StopRequestedEventData,
     StoppedEventData,
     CancelledEventData,
-    EventCallback,
 )
+from reactive_agents.core.events.event_bus import EventCallback
 
 # Union type for all possible event data types
 EventData = Union[

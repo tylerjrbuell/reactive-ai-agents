@@ -1,94 +1,64 @@
 from __future__ import annotations
 from typing import List
 
-from reactive_agents.core.types.reasoning_types import EvaluationPayload, FinishTaskPayload, ReasoningContext, StrategyAction
-from reactive_agents.core.reasoning.strategies.base import (
-    BaseReasoningStrategy,
-    StrategyResult,
-    StrategyCapabilities,
-)
+from reactive_agents.core.types.reasoning_types import ReasoningContext
+from reactive_agents.core.reasoning.strategies.base import StrategyCapabilities
+from reactive_agents.core.reasoning.strategy_components import ComponentBasedStrategy
 from reactive_agents.core.types.session_types import ReactiveState, register_strategy
+from reactive_agents.core.reasoning.steps.base import BaseReasoningStep
+from reactive_agents.core.reasoning.steps.reactive_steps import ReactiveActStep
+from reactive_agents.core.reasoning.steps.common import EvaluateTaskCompletionStep
 
 
 @register_strategy("reactive", ReactiveState)
-class ReactiveStrategy(BaseReasoningStrategy):
+class ReactiveStrategy(ComponentBasedStrategy):
     """
-    Reactive strategy skeleton for custom implementation.
+    An iterative strategy for reactive task execution.
+
+    This strategy follows a simple "act, then evaluate" loop, allowing it to
+    handle multi-step tasks without a formal plan. It acts, checks if it's
+    done, and repeats, making it robust for dynamic tasks.
     """
 
     @property
     def name(self) -> str:
-        # Return the unique name of this strategy
-        return "reactive"  # placeholder
+        return "reactive"
 
     @property
     def capabilities(self) -> List[StrategyCapabilities]:
-        # Return a list of capabilities this strategy supports
-        return []  # placeholder
+        return [
+            StrategyCapabilities.TOOL_EXECUTION,
+            StrategyCapabilities.ADAPTATION,
+        ]
 
     @property
     def description(self) -> str:
-        # Return a short description of the strategy
-        return "Reactive strategy (skeleton)"  # placeholder
-    
-    def _get_state(self) -> ReactiveState:
-        """Get the strategy state from session, initializing if needed."""
+        return "An iterative, reactive strategy that acts and then evaluates progress."
+
+    @property
+    def steps(self) -> List[BaseReasoningStep]:
+        """Defines the Act-Evaluate pipeline for this strategy."""
+        return [
+            ReactiveActStep(self.engine),
+            EvaluateTaskCompletionStep(self.engine),
+        ]
+
+    async def initialize(self, task: str, reasoning_context: ReasoningContext) -> None:
+        """Initialize the strategy for a new task."""
         state = self.get_state()
         if not isinstance(state, ReactiveState):
             raise TypeError(f"Expected ReactiveState, got {type(state)}")
-        return state
 
-    async def initialize(self, task: str, reasoning_context: ReasoningContext) -> None:
-        """
-        Initialize the strategy for a new task.
-        - Use `self.context.session` to access and modify session state.
-        - Example: self.context.session.add_message("assistant", "Initializing Reactive Strategy.")
-        """
-        state = self._get_state()
         state.reset()
+
+        self.context.session.add_message(
+            role="system",
+            content=f"Role: {self.context.role}\nInstructions: {self.context.instructions}",
+        )
+        self.context.session.add_message(
+            role="user",
+            content=f"Task: {task}",
+        )
+
         if self.agent_logger:
             self.agent_logger.info("Initialized Reactive Strategy.")
-
-    async def execute_iteration(
-        self, task: str, reasoning_context: ReasoningContext
-    ) -> StrategyResult:
-        """
-        Execute one iteration of the reactive strategy.
-        - Use `self.context.session` for state, e.g., `self.context.session.has_failed`.
-        - Use `self._think_chain()` to call the LLM.
-        - Return a StrategyResult indicating progress or completion.
-        """
-        session = self.context.session
-        state = self._get_state()
-
-        # Example: Add an error and finish if something goes wrong
-        if state.error_count > state.max_errors:
-            session.add_error("ReactiveStrategy", {"message": "Max errors reached"}, is_critical=True)
-            return StrategyResult(
-                action=StrategyAction.FINISH_TASK,
-                payload=FinishTaskPayload(
-                    action=StrategyAction.FINISH_TASK,
-                    final_answer="Task failed due to excessive errors.",
-                    evaluation=EvaluationPayload(
-                        action=StrategyAction.EVALUATE_COMPLETION,
-                        is_complete=False,
-                        reasoning="Max errors reached",
-                        confidence=0.0,
-                    ),
-                ),
-                should_continue=False,
-            )
-
-        return StrategyResult(
-            action=StrategyAction.FINISH_TASK,
-            payload=FinishTaskPayload(
-                action=StrategyAction.FINISH_TASK,
-                final_answer="Task failed due to excessive errors.",
-                evaluation=EvaluationPayload(
-                    action=StrategyAction.EVALUATE_COMPLETION,
-                    is_complete=False,
-                    reasoning="Max errors reached",
-                    confidence=0.0,
-                ),
-            ),
-        )

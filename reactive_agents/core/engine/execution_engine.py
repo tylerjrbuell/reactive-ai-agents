@@ -235,6 +235,14 @@ class ExecutionEngine:
             if self._check_control_signals():
                 break
 
+            # Handle pause state
+            if self._paused:
+                if self.agent_logger:
+                    self.agent_logger.info("⏸️ Execution paused, waiting for resume...")
+                await self._pause_event.wait()
+                if self.agent_logger:
+                    self.agent_logger.info("▶️ Execution resumed")
+
             self.context.session.iterations += 1
 
             if self.agent_logger:
@@ -459,18 +467,136 @@ class ExecutionEngine:
     # Control methods
     async def pause(self):
         """Pause execution."""
+        # Emit pause requested event
+        self.context.emit_event(
+            AgentStateEvent.PAUSE_REQUESTED,
+            {
+                "session_id": self.context.session.session_id,
+                "agent_name": self.context.agent_name,
+                "task": self.context.session.current_task,
+                "task_status": self.context.session.task_status.value,
+                "iterations": self.context.session.iterations,
+            },
+        )
+
         self._paused = True
         self._pause_event.clear()
 
+        # Emit paused event
+        self.context.emit_event(
+            AgentStateEvent.PAUSED,
+            {
+                "session_id": self.context.session.session_id,
+                "agent_name": self.context.agent_name,
+                "task": self.context.session.current_task,
+                "task_status": self.context.session.task_status.value,
+                "iterations": self.context.session.iterations,
+            },
+        )
+
     async def resume(self):
         """Resume execution."""
+        # Emit resume requested event
+        self.context.emit_event(
+            AgentStateEvent.RESUME_REQUESTED,
+            {
+                "session_id": self.context.session.session_id,
+                "agent_name": self.context.agent_name,
+                "task": self.context.session.current_task,
+                "task_status": self.context.session.task_status.value,
+                "iterations": self.context.session.iterations,
+            },
+        )
+
         self._paused = False
         self._pause_event.set()
 
+        # Emit resumed event
+        self.context.emit_event(
+            AgentStateEvent.RESUMED,
+            {
+                "session_id": self.context.session.session_id,
+                "agent_name": self.context.agent_name,
+                "task": self.context.session.current_task,
+                "task_status": self.context.session.task_status.value,
+                "iterations": self.context.session.iterations,
+            },
+        )
+
     async def terminate(self):
         """Terminate execution."""
+        # Emit terminate requested event
+        self.context.emit_event(
+            AgentStateEvent.TERMINATE_REQUESTED,
+            {
+                "session_id": self.context.session.session_id,
+                "agent_name": self.context.agent_name,
+                "task": self.context.session.current_task,
+                "task_status": self.context.session.task_status.value,
+                "iterations": self.context.session.iterations,
+            },
+        )
+
         self._terminate_requested = True
+
+        # Emit terminated event
+        self.context.emit_event(
+            AgentStateEvent.TERMINATED,
+            {
+                "session_id": self.context.session.session_id,
+                "agent_name": self.context.agent_name,
+                "task": self.context.session.current_task,
+                "task_status": self.context.session.task_status.value,
+                "iterations": self.context.session.iterations,
+            },
+        )
 
     async def stop(self):
         """Stop execution."""
+        # Emit stop requested event
+        self.context.emit_event(
+            AgentStateEvent.STOP_REQUESTED,
+            {
+                "session_id": self.context.session.session_id,
+                "agent_name": self.context.agent_name,
+                "task": self.context.session.current_task,
+                "task_status": self.context.session.task_status.value,
+                "iterations": self.context.session.iterations,
+            },
+        )
+
         self._stop_requested = True
+
+        # Emit stopped event
+        self.context.emit_event(
+            AgentStateEvent.STOPPED,
+            {
+                "session_id": self.context.session.session_id,
+                "agent_name": self.context.agent_name,
+                "task": self.context.session.current_task,
+                "task_status": self.context.session.task_status.value,
+                "iterations": self.context.session.iterations,
+            },
+        )
+
+    # === Control State Queries ===
+    def is_paused(self) -> bool:
+        """Check if execution is currently paused."""
+        return self._paused
+
+    def is_terminating(self) -> bool:
+        """Check if termination has been requested."""
+        return self._terminate_requested
+
+    def is_stopping(self) -> bool:
+        """Check if stop has been requested."""
+        return self._stop_requested
+
+    def get_control_state(self) -> Dict[str, Any]:
+        """Get current control state for monitoring."""
+        return {
+            "paused": self._paused,
+            "terminate_requested": self._terminate_requested,
+            "stop_requested": self._stop_requested,
+            "pause_event_set": self._pause_event.is_set(),
+        }
