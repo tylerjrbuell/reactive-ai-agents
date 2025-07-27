@@ -1,36 +1,23 @@
 from __future__ import annotations
 from abc import ABC, ABCMeta, abstractmethod
 from typing import List, Optional, Type, Dict, Any, Union, TYPE_CHECKING
-from pydantic import BaseModel
 import traceback
 import time
+
+# Import provider types from centralized location
+from reactive_agents.core.types.provider_types import (
+    CompletionMessage,
+    CompletionResponse,
+    ModelInfo,
+    ProviderStatus,
+    ProviderHealth,
+)
 
 from reactive_agents.core.types.status_types import TaskStatus
 from reactive_agents.core.types.event_types import AgentStateEvent
 
 if TYPE_CHECKING:
     from reactive_agents.core.context.agent_context import AgentContext
-
-
-class CompletionMessage(BaseModel):
-    content: str
-    role: Optional[str] = None
-    thinking: Optional[str] = None
-    tool_calls: Optional[list] = None
-    images: Optional[list] = None
-
-
-class CompletionResponse(BaseModel):
-    message: CompletionMessage
-    model: str
-    done: bool
-    done_reason: Optional[str] = None
-    prompt_tokens: Optional[int] = None
-    completion_tokens: Optional[int] = None
-    prompt_eval_duration: Optional[float] = None
-    load_duration: Optional[float] = None
-    total_duration: Optional[float] = None
-    created_at: Optional[str] = None
 
 
 # Dictionary to store registered model providers

@@ -2,17 +2,28 @@ from __future__ import annotations
 import asyncio
 import time
 import traceback
+import uuid
 from typing import Dict, Any, Optional, TYPE_CHECKING
 from reactive_agents.core.types.status_types import TaskStatus
 from reactive_agents.core.types.event_types import AgentStateEvent
 from reactive_agents.core.types.execution_types import ExecutionResult
 from reactive_agents.core.types.reasoning_types import (
     ReasoningContext,
-    ReasoningStrategies,
-    StrategyAction,
     FinishTaskPayload,
     EvaluationPayload,
     ErrorPayload,
+)
+from reactive_agents.core.reasoning.state_machine import (
+    StrategyStateMachine,
+    StrategyState,
+    StateTransitionTrigger,
+)
+from reactive_agents.core.reasoning.recovery import (
+    ErrorRecoveryOrchestrator,
+    ErrorContext,
+)
+from reactive_agents.core.reasoning.performance_monitor import (
+    StrategyPerformanceMonitor,
 )
 
 if TYPE_CHECKING:
@@ -39,6 +50,9 @@ class ExecutionEngine:
         # Initialize strategy management
         self._initialize_strategy_system()
 
+        # Initialize core systems
+        self._initialize_core_systems()
+
         # Control state
         self._paused = False
         self._pause_event = asyncio.Event()
@@ -47,7 +61,9 @@ class ExecutionEngine:
         self._stop_requested = False
 
         if self.agent_logger:
-            self.agent_logger.info("✅ Execution engine initialized")
+            self.agent_logger.info(
+                "🚀 ExecutionEngine | Initialized and ready"
+            )
 
     def _initialize_strategy_system(self):
         """Initialize strategy management components."""
@@ -62,13 +78,32 @@ class ExecutionEngine:
         self.task_classifier = TaskClassifier(self.context)
         self.context_manager = self.engine.get_context_manager()
 
+    def _initialize_core_systems(self):
+        """Initialize core architectural components."""
+        # State machine for formal state transitions
+        self.state_machine = StrategyStateMachine(StrategyState.INITIALIZING)
+
+        # Error recovery orchestrator for intelligent error handling
+        self.error_recovery = ErrorRecoveryOrchestrator()
+
+        # Performance monitor for strategy optimization
+        self.performance_monitor = StrategyPerformanceMonitor()
+
+        # Current execution tracking
+        self.current_execution_id: str = str(uuid.uuid4())
+
+        if self.agent_logger:
+            self.agent_logger.info(
+                "🏗️  Core systems initialized | State machine, error recovery, performance monitoring ready"
+            )
+
     async def execute(
         self,
         initial_task: str,
         cancellation_event: Optional[asyncio.Event] = None,
     ) -> ExecutionResult:
         """
-        Execute a task from start to finish.
+        Execute a task from start to finish with modern architecture.
 
         Args:
             initial_task: The task to execute
@@ -78,12 +113,32 @@ class ExecutionEngine:
             A structured, self-contained ExecutionResult object.
         """
 
-        # Setup session
-        self._setup_session(initial_task)
+        # Initialize state machine
+        await self.state_machine.transition_to(
+            StrategyState.INITIALIZING,
+            StateTransitionTrigger.START_EXECUTION,
+            {"task": initial_task, "execution_id": self.current_execution_id},
+        )
 
         try:
-            # Select strategy based on configuration
+            # Setup session
+            self._setup_session(initial_task)
+
+            # Transition to planning state
+            await self.state_machine.transition_to(
+                StrategyState.PLANNING, StateTransitionTrigger.START_EXECUTION
+            )
+
+            # Select strategy based on configuration and performance data
             await self._select_strategy(initial_task)
+
+            # Start performance tracking
+            self.performance_monitor.start_execution_tracking(
+                self.current_execution_id,
+                self.strategy_manager.get_current_strategy_name(),
+                initial_task,
+                {"session_id": self.context.session.session_id},
+            )
 
             # Initialize the active strategy for this task
             reasoning_context = ReasoningContext(
@@ -93,18 +148,40 @@ class ExecutionEngine:
                 initial_task, reasoning_context
             )
 
-            # Execute main loop
+            # Transition to execution state
+            await self.state_machine.transition_to(
+                StrategyState.EXECUTING, StateTransitionTrigger.PLANNING_COMPLETE
+            )
+
+            # Execute main reasoning loop
             result = await self._execute_loop(
                 initial_task, cancellation_event, reasoning_context
+            )
+
+            # Complete performance tracking
+            completion_score = 1.0 if result.get("final_answer") else 0.0
+            self.performance_monitor.complete_execution_tracking(
+                self.current_execution_id,
+                success=bool(result.get("final_answer")),
+                completion_score=completion_score,
+                final_metadata={
+                    "iterations": result.get("total_iterations", 0),
+                    "strategy": result.get("strategy", "unknown"),
+                },
+            )
+
+            # Transition to completion state
+            await self.state_machine.transition_to(
+                StrategyState.COMPLETING, StateTransitionTrigger.TASK_COMPLETE
             )
 
             # Prepare final result
             return await self._prepare_result(result)
 
         except Exception as e:
-            if self.agent_logger:
-                self.agent_logger.error(f"Execution failed: {e}")
-            return await self._handle_error(e)
+            # Handle errors with recovery
+            await self._handle_error(e, initial_task)
+            return await self._prepare_result({})
 
     def _setup_session(self, initial_task: str):
         """Setup session for task execution."""
@@ -142,7 +219,7 @@ class ExecutionEngine:
         )
 
     async def _select_strategy(self, task: str):
-        """Select execution strategy based on configuration."""
+        """Select execution strategy using performance data and task classification."""
         # Check if dynamic strategy switching is enabled
         dynamic_switching = getattr(
             self.context, "enable_dynamic_strategy_switching", True
@@ -150,7 +227,7 @@ class ExecutionEngine:
         configured_strategy = getattr(
             self.context,
             "reasoning_strategy",
-            "reactive",  # Changed default to reactive
+            "reactive",
         )
 
         # Convert strategy name to string if it's an enum
@@ -171,17 +248,56 @@ class ExecutionEngine:
                 )
             return
 
-        # For reactive or unset strategy, use task classification
-        if strategy_name in ["adaptive"]:
+        # Strategy selection with performance consideration
+        if strategy_name == "adaptive" and dynamic_switching:
+            # Check if we should switch based on performance
+            current_strategy = self.strategy_manager.get_current_strategy_name()
+            if current_strategy:
+                recommended_switch = self.performance_monitor.should_switch_strategy(
+                    current_strategy
+                )
+                if recommended_switch:
+                    if self.agent_logger:
+                        self.agent_logger.info(
+                            f"🔄 Performance monitor recommends switching from {current_strategy} to {recommended_switch}"
+                        )
+                    strategy_name = recommended_switch
+
+            # Use task classification with performance data
             if self.task_classifier:
                 classification = await self.task_classifier.classify_task(task)
-                # Create reasoning context for initialization
+
+                # Get performance rankings to inform selection
+                strategy_rankings = self.performance_monitor.get_strategy_rankings()
+
                 reasoning_context = ReasoningContext(
                     current_strategy=self.strategy_manager.get_current_strategy_enum()
                 )
+
                 strategy = await self.strategy_manager.select_and_initialize_strategy(
                     classification, task, reasoning_context
                 )
+
+                # Consider performance data in final selection
+                if strategy_rankings and len(strategy_rankings) > 1:
+                    # If selected strategy is performing poorly, consider alternatives
+                    selected_performance = next(
+                        (
+                            score
+                            for name, score in strategy_rankings
+                            if name == strategy
+                        ),
+                        0.5,
+                    )
+
+                    if selected_performance < 0.4 and strategy_rankings[0][1] > 0.7:
+                        # Switch to best performing strategy if current is poor
+                        best_strategy = strategy_rankings[0][0]
+                        if self.agent_logger:
+                            self.agent_logger.info(
+                                f"🎯 Overriding selection: {strategy} -> {best_strategy} (performance-based)"
+                            )
+                        strategy = best_strategy
 
                 self.context_manager.set_active_strategy(strategy)
 
@@ -197,7 +313,7 @@ class ExecutionEngine:
                 self.context_manager.set_active_strategy("reactive")
                 if self.agent_logger:
                     self.agent_logger.warning(
-                        "Using reactive strategy (no classifier available)"
+                        "⚠️  ExecutionEngine | Using reactive strategy (no classifier available)"
                     )
         else:
             # Use configured strategy but allow dynamic switching
@@ -214,7 +330,7 @@ class ExecutionEngine:
         cancellation_event: Optional[asyncio.Event] = None,
         reasoning_context: Optional[ReasoningContext] = None,
     ) -> Dict[str, Any]:
-        """Execute the main reasoning loop."""
+        """Execute the main reasoning loop with state management and error recovery."""
         iteration_results = []
         max_iterations = self.context.max_iterations or 20
 
@@ -228,7 +344,7 @@ class ExecutionEngine:
             # Check for cancellation
             if cancellation_event and cancellation_event.is_set():
                 if self.agent_logger:
-                    self.agent_logger.info("🛑 Cancelled by external event")
+                    self.agent_logger.info("🛑 ExecutionEngine | Task cancelled by external signal")
                 break
 
             # Check control signals
@@ -237,18 +353,29 @@ class ExecutionEngine:
 
             # Handle pause state
             if self._paused:
+                await self.state_machine.transition_to(
+                    StrategyState.PAUSED, StateTransitionTrigger.PAUSE_REQUESTED
+                )
                 if self.agent_logger:
-                    self.agent_logger.info("⏸️ Execution paused, waiting for resume...")
+                    self.agent_logger.info("⏸️  ExecutionEngine | Paused, waiting for resume signal")
                 await self._pause_event.wait()
+                await self.state_machine.transition_to(
+                    StrategyState.EXECUTING, StateTransitionTrigger.RESUME_REQUESTED
+                )
                 if self.agent_logger:
-                    self.agent_logger.info("▶️ Execution resumed")
+                    self.agent_logger.info("▶️  ExecutionEngine | Resumed execution")
 
             self.context.session.iterations += 1
+            # Update performance monitoring
+            self.performance_monitor.update_execution_progress(
+                self.current_execution_id,
+                iterations=self.context.session.iterations,
+            )
 
             if self.agent_logger:
                 self.agent_logger.info(
-                    f"🔄 Iteration {self.context.session.iterations}/{max_iterations} "
-                    f"using {self.strategy_manager.get_current_strategy_name()}"
+                    f"🔄 ExecutionEngine | Iteration {self.context.session.iterations}/{max_iterations} | "
+                    f"Strategy: {self.strategy_manager.get_current_strategy_name()}"
                 )
 
             # Emit iteration start
@@ -258,6 +385,7 @@ class ExecutionEngine:
                     "iteration": self.context.session.iterations,
                     "max_iterations": max_iterations,
                     "strategy": self.strategy_manager.get_current_strategy_name(),
+                    "state": self.state_machine.current_state.value,
                 },
             )
 
@@ -270,49 +398,55 @@ class ExecutionEngine:
                 # Append the structured result payload to the log
                 iteration_results.append(strategy_result.payload.model_dump())
 
-                # --- REFACTORED LOGIC ---
-                # This pattern is type-safe and easy for linters to analyze.
+                # Result processing with state transitions
                 match strategy_result.payload:
                     case FinishTaskPayload() as payload:
+                        await self.state_machine.transition_to(
+                            StrategyState.COMPLETING,
+                            StateTransitionTrigger.TASK_COMPLETE,
+                        )
                         self.context.session.final_answer = payload.final_answer
                         self.context.session.task_status = TaskStatus.COMPLETE
                         if self.agent_logger:
                             self.agent_logger.info(
-                                "✅ Task completed with final answer."
+                                "✅ ExecutionEngine | Task completed successfully"
                             )
-                        break  # Exit the loop
+                        break
 
                     case EvaluationPayload() as payload:
+                        await self.state_machine.transition_to(
+                            StrategyState.EVALUATING,
+                            StateTransitionTrigger.EXECUTION_STEP_COMPLETE,
+                        )
                         if self.agent_logger:
                             self.agent_logger.info(
-                                f"🧠 Task evaluation: is_complete={payload.is_complete}, reason: {payload.reasoning}"
+                                f"🧠 ExecutionEngine | Task evaluation: complete={payload.is_complete} | "
+                                f"Reasoning: {payload.reasoning[:100]}{'...' if len(payload.reasoning) > 100 else ''}"
                             )
                         if payload.is_complete:
-                            # The strategy thinks the task is done, but didn't provide
-                            # the final answer yet. Nudge it to do so.
                             self.context_manager.add_nudge(
                                 "Task evaluation indicates completion. Please provide the final answer now."
                             )
-                        # Continue the loop
-                        continue
-
-                    case ErrorPayload() as payload:
-                        if self.agent_logger:
-                            self.agent_logger.error(
-                                f"Strategy reported an error: {payload.error_message}"
-                            )
-                        self.context.session.add_error(
-                            source="Strategy",
-                            details={"message": payload.error_message},
-                            is_critical=payload.is_critical(),
+                        await self.state_machine.transition_to(
+                            StrategyState.EXECUTING,
+                            StateTransitionTrigger.EVALUATION_COMPLETE,
                         )
                         continue
 
+                    case ErrorPayload() as payload:
+                        await self._handle_strategy_error(payload, task)
+                        continue
+
                     case _:
-                        # Default case for CONTINUE_THINKING, CALL_TOOLS, or other actions
-                        # that just let the loop proceed. The strategy itself handles the
-                        # tool execution and state updates.
-                        pass
+                        # Default case for CONTINUE_THINKING, CALL_TOOLS, etc.
+                        await self.state_machine.transition_to(
+                            StrategyState.REFLECTING,
+                            StateTransitionTrigger.EXECUTION_STEP_COMPLETE,
+                        )
+                        await self.state_machine.transition_to(
+                            StrategyState.EXECUTING,
+                            StateTransitionTrigger.REFLECTION_COMPLETE,
+                        )
 
                 # Update context
                 reasoning_context.iteration_count = self.context.session.iterations
@@ -322,23 +456,23 @@ class ExecutionEngine:
                     if self.context.session.final_answer:
                         if self.agent_logger:
                             self.agent_logger.info(
-                                "🏁 Strategy completed with final answer"
+                                "🏁 ExecutionEngine | Strategy signaled completion with final answer"
                             )
                         break
                     else:
                         if self.agent_logger:
                             self.agent_logger.warning(
-                                "Strategy requested stop but no final answer was provided."
+                                "⚠️  ExecutionEngine | Strategy requested stop but no final answer provided"
                             )
                         self.context_manager.add_nudge(
                             "Give a complete final answer to the task using the final_answer tool"
                         )
 
-                # Check for final answer (redundant check, but safe)
+                # Check for final answer
                 if self.context.session.final_answer:
                     self.context.session.task_status = TaskStatus.COMPLETE
                     if self.agent_logger:
-                        self.agent_logger.info("✅ Final answer provided")
+                        self.agent_logger.info("✅ ExecutionEngine | Final answer provided")
                     break
 
                 # Emit iteration complete
@@ -347,6 +481,7 @@ class ExecutionEngine:
                     {
                         "iteration": self.context.session.iterations,
                         "result": strategy_result.payload.model_dump(),
+                        "state": self.state_machine.current_state.value,
                     },
                 )
 
@@ -354,23 +489,171 @@ class ExecutionEngine:
                 self.context_manager.summarize_and_prune()
 
             except Exception as e:
-                if self.agent_logger:
-                    self.agent_logger.error(
-                        f"Iteration {self.context.session.iterations} failed: {e}"
-                    )
-                self.context.session.add_error(
-                    source="ExecutionEngineLoop",
-                    details={"error": str(e), "traceback": traceback.format_exc()},
-                    is_critical=True,
-                )
-                continue
+                # Error handling with recovery
+                await self._handle_iteration_error(e, task, iteration_results)
 
         return {
             "iterations": iteration_results,
             "total_iterations": self.context.session.iterations,
             "final_answer": self.context.session.final_answer,
             "strategy": self.strategy_manager.get_current_strategy_name(),
+            "state_history": self.state_machine.get_state_history(),
         }
+
+    async def _handle_strategy_error(self, error_payload: ErrorPayload, task: str):
+        """Handle errors reported by strategies."""
+        await self.state_machine.transition_to(
+            StrategyState.ERROR_RECOVERY, StateTransitionTrigger.ERROR_OCCURRED
+        )
+
+        if self.agent_logger:
+            self.agent_logger.error(
+                f"❌ ExecutionEngine | Strategy error: {error_payload.error_message}"
+            )
+
+        # Create error context
+        error_context = ErrorContext(
+            task=task,
+            component="Strategy",
+            operation="execute_iteration",
+            iteration=self.context.session.iterations,
+            strategy=self.strategy_manager.get_current_strategy_name(),
+            error_message=error_payload.error_message,
+            error_type="StrategyError",
+        )
+
+        # Use error recovery orchestrator
+        recovery_result = await self.error_recovery.handle_error(
+            Exception(error_payload.error_message), error_context
+        )
+
+        # Update performance monitoring
+        self.performance_monitor.update_execution_progress(
+            self.current_execution_id,
+            error_count=len(self.context.session.errors),
+            error_message=error_payload.error_message,
+        )
+
+        # Record error in session
+        self.context.session.add_error(
+            source="Strategy",
+            details={"message": error_payload.error_message},
+            is_critical=error_payload.is_critical(),
+        )
+
+        # Apply recovery action if recommended
+        if (
+            recovery_result.should_switch_strategy
+            and recovery_result.recommended_strategy
+        ):
+            if self.agent_logger:
+                self.agent_logger.info(
+                    f"🔄 ExecutionEngine | Switching strategy due to error: {recovery_result.recommended_strategy}"
+                )
+            self.strategy_manager.set_strategy(recovery_result.recommended_strategy)
+
+        await self.state_machine.transition_to(
+            StrategyState.EXECUTING, StateTransitionTrigger.RECOVERY_COMPLETE
+        )
+
+    async def _handle_iteration_error(
+        self, error: Exception, task: str, iteration_results: list
+    ):
+        """Handle errors that occur during iteration execution."""
+        await self.state_machine.transition_to(
+            StrategyState.ERROR_RECOVERY, StateTransitionTrigger.ERROR_OCCURRED
+        )
+
+        if self.agent_logger:
+            self.agent_logger.error(
+                f"❌ ExecutionEngine | Iteration {self.context.session.iterations} failed: {error}"
+            )
+
+        # Create error context
+        error_context = ErrorContext(
+            task=task,
+            component="ExecutionEngineLoop",
+            operation="execute_iteration",
+            iteration=self.context.session.iterations,
+            strategy=self.strategy_manager.get_current_strategy_name(),
+            error_message=str(error),
+            error_type=type(error).__name__,
+            stack_trace=traceback.format_exc(),
+        )
+
+        # Use error recovery orchestrator
+        await self.error_recovery.handle_error(error, error_context)
+
+        # Update performance monitoring
+        self.performance_monitor.update_execution_progress(
+            self.current_execution_id,
+            error_count=len(self.context.session.errors),
+            error_message=str(error),
+        )
+
+        # Record error in session
+        self.context.session.add_error(
+            source="ExecutionEngineLoop",
+            details={"error": str(error), "traceback": traceback.format_exc()},
+            is_critical=True,
+        )
+
+        # Learn from recovery attempt
+        if self.context.session.errors:
+            # This would be updated when we know if recovery succeeded
+            pass
+
+        await self.state_machine.transition_to(
+            StrategyState.EXECUTING, StateTransitionTrigger.RECOVERY_COMPLETE
+        )
+
+    async def _handle_error(self, error: Exception, task: str):
+        """Handle execution errors with state machine and recovery."""
+        await self.state_machine.transition_to(
+            StrategyState.ERROR_RECOVERY, StateTransitionTrigger.ERROR_OCCURRED
+        )
+
+        if self.agent_logger:
+            self.agent_logger.error(f"❌ ExecutionEngine | Execution failed: {error}")
+
+        # Create error context
+        error_context = ErrorContext(
+            task=task,
+            component="ExecutionEngine",
+            operation="execute",
+            iteration=self.context.session.iterations if self.context.session else 0,
+            strategy=self.strategy_manager.get_current_strategy_name(),
+            error_message=str(error),
+            error_type=type(error).__name__,
+            stack_trace=traceback.format_exc(),
+        )
+
+        # Use error recovery orchestrator
+        await self.error_recovery.handle_error(error, error_context)
+
+        # Complete performance tracking with failure
+        self.performance_monitor.complete_execution_tracking(
+            self.current_execution_id,
+            success=False,
+            completion_score=0.0,
+            final_metadata={
+                "error": str(error),
+                "error_type": type(error).__name__,
+            },
+        )
+
+        # Record error in session
+        self.context.session.add_error(
+            source="ExecutionEngine",
+            details={"error": str(error), "traceback": traceback.format_exc()},
+            is_critical=True,
+        )
+
+        # Transition to failed state
+        await self.state_machine.transition_to(
+            StrategyState.FAILED, StateTransitionTrigger.TERMINATION_REQUESTED
+        )
+
 
     def _should_continue(self) -> bool:
         """Check if execution should continue."""
@@ -400,13 +683,13 @@ class ExecutionEngine:
         """Handle control signals (pause, stop, terminate)."""
         if self._terminate_requested:
             if self.agent_logger:
-                self.agent_logger.info("🛑 Termination requested")
+                self.agent_logger.info("🛑 ExecutionEngine | Termination requested")
             self.context.session.task_status = TaskStatus.CANCELLED
             return True
 
         if self._stop_requested:
             if self.agent_logger:
-                self.agent_logger.info("⏹️ Stop requested")
+                self.agent_logger.info("⏹️ ExecutionEngine | Stop requested")
             self.context.session.task_status = TaskStatus.CANCELLED
             return True
 
@@ -424,6 +707,9 @@ class ExecutionEngine:
             session.task_status = TaskStatus.COMPLETE
         elif session.task_status == TaskStatus.RUNNING:
             session.task_status = TaskStatus.ERROR
+
+        # Calculate and update session scores
+        self._update_session_scores(session, execution_details)
 
         # Get final metrics
         task_metrics = {}
@@ -455,14 +741,68 @@ class ExecutionEngine:
 
         return result
 
-    async def _handle_error(self, error: Exception) -> ExecutionResult:
-        """Handle execution errors."""
-        self.context.session.add_error(
-            source="ExecutionEngine",
-            details={"error": str(error), "traceback": traceback.format_exc()},
-            is_critical=True,
-        )
-        return await self._prepare_result({})
+    def _update_session_scores(self, session, execution_details: Dict[str, Any]) -> None:
+        """Update session scoring fields based on execution results."""
+        
+        # Calculate completion score
+        if session.final_answer and session.task_status == TaskStatus.COMPLETE:
+            session.completion_score = 1.0
+        elif session.final_answer:
+            session.completion_score = 0.8  # Has answer but maybe not complete
+        else:
+            session.completion_score = 0.0
+
+        # Calculate tool usage score
+        total_iterations = execution_details.get("total_iterations", session.iterations)
+        if total_iterations > 0:
+            # Higher score for successful tool usage, lower for errors
+            error_count = len(session.errors)
+            tool_efficiency = max(0.0, 1.0 - (error_count / max(1, total_iterations * 2)))
+            session.tool_usage_score = tool_efficiency
+        else:
+            session.tool_usage_score = 0.0
+
+        # Calculate progress score based on completion and iterations
+        max_iterations = self.context.max_iterations or 20
+        iteration_efficiency = 1.0 - (session.iterations / max_iterations)
+        if session.task_status == TaskStatus.COMPLETE:
+            session.progress_score = min(1.0, 0.5 + iteration_efficiency * 0.5)
+        elif session.iterations > 0:
+            session.progress_score = min(0.7, iteration_efficiency * 0.7)
+        else:
+            session.progress_score = 0.0
+
+        # Calculate answer quality score
+        if session.final_answer:
+            answer_length = len(session.final_answer)
+            if answer_length > 50:  # Substantial answer
+                session.answer_quality_score = 0.9
+            elif answer_length > 10:  # Basic answer
+                session.answer_quality_score = 0.7
+            else:  # Minimal answer
+                session.answer_quality_score = 0.5
+        else:
+            session.answer_quality_score = 0.0
+
+        # Calculate LLM evaluation score (based on success and errors)
+        if session.task_status == TaskStatus.COMPLETE and not session.errors:
+            session.llm_evaluation_score = 1.0
+        elif session.task_status == TaskStatus.COMPLETE:
+            session.llm_evaluation_score = 0.8
+        elif session.final_answer and not session.has_failed:
+            session.llm_evaluation_score = 0.6
+        else:
+            session.llm_evaluation_score = 0.3
+
+        if self.agent_logger:
+            self.agent_logger.info(
+                f"📊 ExecutionEngine | Final Scores - "
+                f"Completion: {session.completion_score:.2f}, "
+                f"Tool Usage: {session.tool_usage_score:.2f}, "
+                f"Progress: {session.progress_score:.2f}, "
+                f"Answer Quality: {session.answer_quality_score:.2f}, "
+                f"Overall: {session.overall_score:.2f}"
+            )
 
     # Control methods
     async def pause(self):

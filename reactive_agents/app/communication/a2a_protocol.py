@@ -4,76 +4,21 @@ import time
 import asyncio
 from typing import Dict, Any, List, Optional, Literal, Union, TYPE_CHECKING
 from pydantic import BaseModel, Field
-from enum import Enum
+
+# Import communication types from centralized location
+from reactive_agents.core.types.communication_types import (
+    MessageType,
+    MessagePriority,
+    A2AMessage,
+    A2AResponse,
+    A2ATaskStatus,
+    A2AAtomicTask,
+    A2AAgentCapability,
+    A2AAgentProfile,
+)
 
 if TYPE_CHECKING:
     from reactive_agents.app.agents.reactive_agent import ReactiveAgentV2
-
-
-class MessageType(Enum):
-    """Types of inter-agent messages."""
-
-    REQUEST = "request"
-    RESPONSE = "response"
-    DELEGATION = "delegation"
-    NOTIFICATION = "notification"
-    BROADCAST = "broadcast"
-    ERROR = "error"
-
-
-class MessagePriority(Enum):
-    """Message priority levels."""
-
-    LOW = "low"
-    NORMAL = "normal"
-    HIGH = "high"
-    URGENT = "urgent"
-
-
-class A2AMessage(BaseModel):
-    """Standard message format for agent-to-agent communication."""
-
-    message_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    timestamp: float = Field(default_factory=time.time)
-    message_type: MessageType
-    priority: MessagePriority = MessagePriority.NORMAL
-
-    # Sender and recipient info
-    sender_id: str
-    recipient_id: Optional[str] = None  # None for broadcast messages
-
-    # Message content
-    subject: str
-    content: Dict[str, Any]
-
-    # Context and metadata
-    conversation_id: Optional[str] = None
-    reply_to: Optional[str] = None
-    requires_response: bool = False
-    timeout_seconds: Optional[float] = None
-
-    # Delegation specific fields
-    delegated_task: Optional[str] = None
-    success_criteria: Optional[Dict[str, Any]] = None
-    shared_context: Optional[Dict[str, Any]] = None
-
-
-class A2AResponse(BaseModel):
-    """Response to an A2A message."""
-
-    response_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    timestamp: float = Field(default_factory=time.time)
-    original_message_id: str
-    sender_id: str
-
-    # Response content
-    success: bool
-    content: Dict[str, Any]
-    error_message: Optional[str] = None
-
-    # Result metadata
-    execution_time: Optional[float] = None
-    resources_used: Optional[List[str]] = None
 
 
 class A2ACommunicationProtocol:

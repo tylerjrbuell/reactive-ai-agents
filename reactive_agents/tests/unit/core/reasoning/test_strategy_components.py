@@ -15,6 +15,13 @@ from reactive_agents.core.reasoning.strategy_components import (
     MemoryIntegrationComponent,
     StrategyTransitionComponent,
 )
+from reactive_agents.core.types.reasoning_component_types import (
+    Plan,
+    ReflectionResult,
+    ToolExecutionResult,
+    CompletionResult,
+    StrategyTransitionResult,
+)
 
 
 class DummyEngine:
@@ -28,14 +35,37 @@ class DummyEngine:
         self.preserve_context = MagicMock()
         self.get_preserved_context = MagicMock(return_value=None)
         self.get_context_manager = MagicMock()
-        self.think = AsyncMock(return_value={"thought": "test"})
-        self.think_chain = AsyncMock(return_value={"chain": "test"})
+        
+        # Mock think methods to return appropriate structures
+        self.think = AsyncMock(return_value=MagicMock(result_json={"thought": "test"}))
+        
+        # Mock think_chain to return the expected structure with tool_calls
+        think_chain_result = MagicMock()
+        think_chain_result.tool_calls = [{"function": {"name": "test_tool"}}]
+        self.think_chain = AsyncMock(return_value=think_chain_result)
+        
         self.execute_tools = AsyncMock(return_value=[{"result": "ok"}])
         self.generate_final_answer = AsyncMock(return_value={"final_answer": "done"})
         self.complete_task_if_ready = AsyncMock(return_value={"is_complete": True})
-        self.get_prompt = MagicMock(
-            return_value=MagicMock(generate=MagicMock(return_value="prompt"))
-        )
+        
+        # Mock get_prompt to return a prompt object with async get_completion
+        mock_completion_result = MagicMock()
+        mock_completion_result.result_json = {
+            "plan_steps": [], 
+            "metadata": {},
+            "reflection": "test reflection",
+            "insights": ["test insight"],
+            "confidence": 0.8,
+            "is_complete": True,
+            "completion_score": 0.9,
+            "reasoning": "test reasoning",
+            "should_switch": False,
+            "recommended_strategy": None,
+            "rationale": "test rationale"
+        }
+        mock_prompt = MagicMock()
+        mock_prompt.get_completion = AsyncMock(return_value=mock_completion_result)
+        self.get_prompt = MagicMock(return_value=mock_prompt)
 
 
 @pytest_asyncio.fixture
@@ -55,7 +85,7 @@ async def test_thinking_component(infra):
 async def test_planning_component(infra):
     comp = PlanningComponent(infra)
     result = await comp.generate_plan("test task", MagicMock())
-    assert isinstance(result, dict)
+    assert isinstance(result, Plan)
     # TODO: Add more behavioral assertions
 
 
@@ -66,18 +96,18 @@ async def test_tool_execution_component(infra):
     assert isinstance(result, list)
     # TODO: Add more behavioral assertions
     result2 = await comp.select_and_execute_tool("test task", "step desc")
-    assert isinstance(result2, dict)
+    assert isinstance(result2, ToolExecutionResult)
 
 
 @pytest.mark.asyncio
 async def test_reflection_component(infra):
     comp = ReflectionComponent(infra)
     result = await comp.reflect_on_progress("test task", {"result": "ok"}, MagicMock())
-    assert isinstance(result, dict)
+    assert isinstance(result, ReflectionResult)
     result2 = await comp.reflect_on_plan_progress(
         "test task", 0, [{"description": "step1"}], {"result": "ok"}
     )
-    assert isinstance(result2, dict)
+    assert isinstance(result2, ReflectionResult)
 
 
 @pytest.mark.asyncio

@@ -6,3 +6,5 @@ reactive_agents/agent_mcp/agent.db
 .cursor
 .pytest_cache
 .vscode
+CLAUDE.md
+.serena

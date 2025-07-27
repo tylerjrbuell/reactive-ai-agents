@@ -4,103 +4,20 @@ import time
 import asyncio
 from typing import Dict, Any, List, Optional, Set, Union, TYPE_CHECKING
 from pydantic import BaseModel, Field
-from enum import Enum
 import networkx as nx
+
+# Import workflow types from centralized location
+from reactive_agents.core.types.workflow_types import (
+    WorkflowNodeType,
+    WorkflowNodeStatus,
+    WorkflowNode,
+    WorkflowDefinition,
+    WorkflowExecutionResult,
+)
 
 if TYPE_CHECKING:
     from reactive_agents.app.agents.reactive_agent import ReactiveAgentV2
     from reactive_agents.communication.a2a_protocol import A2ACommunicationProtocol
-
-
-class WorkflowNodeType(Enum):
-    """Types of workflow nodes."""
-
-    AGENT = "agent"
-    CONDITION = "condition"
-    PARALLEL = "parallel"
-    MERGE = "merge"
-    DELAY = "delay"
-
-
-class WorkflowNodeStatus(Enum):
-    """Status of a workflow node."""
-
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    SKIPPED = "skipped"
-
-
-class WorkflowNode(BaseModel):
-    """A node in the workflow graph."""
-
-    node_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    node_type: WorkflowNodeType
-    agent_name: Optional[str] = None  # For agent nodes
-    task_template: Optional[str] = None  # Task with placeholders
-    condition: Optional[str] = None  # For condition nodes
-    delay_seconds: Optional[float] = None  # For delay nodes
-
-    # Status and results
-    status: WorkflowNodeStatus = WorkflowNodeStatus.PENDING
-    result: Optional[Dict[str, Any]] = None
-    error_message: Optional[str] = None
-    start_time: Optional[float] = None
-    end_time: Optional[float] = None
-
-    # Dependencies
-    depends_on: List[str] = Field(default_factory=list)
-    outputs_to: List[str] = Field(default_factory=list)
-
-    # Context sharing
-    shared_context: Dict[str, Any] = Field(default_factory=dict)
-    context_mapping: Dict[str, str] = Field(default_factory=dict)  # key -> context_path
-
-
-class WorkflowDefinition(BaseModel):
-    """Definition of a complete workflow."""
-
-    workflow_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: str
-    description: Optional[str] = None
-
-    # Workflow nodes
-    nodes: Dict[str, WorkflowNode] = Field(default_factory=dict)
-
-    # Global configuration
-    global_context: Dict[str, Any] = Field(default_factory=dict)
-    timeout_seconds: Optional[float] = None
-    max_retries: int = 3
-    parallel_execution: bool = True
-
-    # Entry and exit points
-    entry_nodes: List[str] = Field(default_factory=list)
-    exit_nodes: List[str] = Field(default_factory=list)
-
-
-class WorkflowExecutionResult(BaseModel):
-    """Result of workflow execution."""
-
-    workflow_id: str
-    execution_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    start_time: float
-    end_time: Optional[float] = None
-
-    # Status
-    success: bool
-    status: str  # "completed", "failed", "timeout", "cancelled"
-
-    # Results
-    node_results: Dict[str, Any] = Field(default_factory=dict)
-    final_result: Optional[Any] = None
-    error_message: Optional[str] = None
-
-    # Metadata
-    total_nodes: int
-    completed_nodes: int
-    failed_nodes: int
-    execution_time: Optional[float] = None
 
 
 class WorkflowOrchestrator:

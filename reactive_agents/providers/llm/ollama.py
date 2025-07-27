@@ -106,7 +106,7 @@ class OllamaModelProvider(BaseModelProvider):
                 thinking=result.message.thinking,
                 role=result.message.role or "assistant",
                 tool_calls=(
-                    list(result.message.tool_calls)
+                    [tool_call.model_dump() for tool_call in result.message.tool_calls]
                     if result.message.tool_calls
                     else None
                 ),

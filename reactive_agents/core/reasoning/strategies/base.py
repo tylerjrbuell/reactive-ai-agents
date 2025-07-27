@@ -1,8 +1,15 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
-from enum import Enum
 import json
+
+# Import strategy types from centralized location
+from reactive_agents.core.types.strategy_types import (
+    StrategyCapabilities,
+    StrategyResult,
+)
+from reactive_agents.core.reasoning.protocols import ComponentContext
+
 from reactive_agents.core.types.agent_types import (
     AgentThinkChainResult,
     AgentThinkResult,
@@ -27,40 +34,6 @@ if TYPE_CHECKING:
     from reactive_agents.core.types.session_types import BaseStrategyState
 
 
-class StrategyCapabilities(Enum):
-    """Capabilities that a strategy can declare."""
-
-    TOOL_EXECUTION = "tool_execution"
-    PLANNING = "planning"
-    REFLECTION = "reflection"
-    MEMORY_USAGE = "memory_usage"
-    ADAPTATION = "adaptation"
-    COLLABORATION = "collaboration"
-
-
-from pydantic import BaseModel, Field
-
-
-class StrategyResult(BaseModel):
-    """
-    A strongly-typed result from a strategy iteration.
-    It contains a specific action and a corresponding payload with the required data.
-    """
-
-    action: StrategyAction
-    payload: ActionPayload = Field(..., discriminator="action")
-    should_continue: bool = True
-
-    # This allows creating the model with a simplified syntax
-    @classmethod
-    def create(
-        cls, payload: ActionPayload, should_continue: bool = True
-    ) -> "StrategyResult":
-        return cls(
-            action=payload.action, payload=payload, should_continue=should_continue
-        )
-
-
 class BaseReasoningStrategy(ABC):
     """
     Base class for all reasoning strategies.
@@ -79,6 +52,48 @@ class BaseReasoningStrategy(ABC):
         self.engine = engine
         self.context = engine.context
         self.agent_logger = engine.context.agent_logger
+
+    def create_component_context(self, task: str, operation: str = "execute") -> ComponentContext:
+        """
+        Create a ComponentContext for use with our enhanced component system.
+        
+        Args:
+            task: The current task being executed
+            operation: The operation being performed
+            
+        Returns:
+            ComponentContext for use with enhanced components
+        """
+        return ComponentContext(
+            task=task,
+            session_id=self.context.session.session_id if self.context.session else "unknown",
+            iteration=self.context.session.iterations if self.context.session else 0,
+            previous_results={},
+            available_tools=set(
+                tool.get("function", {}).get("name", "")
+                for tool in self.context.get_tool_signatures()
+            ),
+            metadata={
+                "strategy": self.name,
+                "operation": operation,
+                "capabilities": [cap.value for cap in self.capabilities]
+            }
+        )
+
+    def get_performance_metadata(self) -> Dict[str, Any]:
+        """
+        Get performance-related metadata for this strategy.
+        
+        Returns:
+            Dictionary containing performance metadata
+        """
+        return {
+            "strategy_name": self.name,
+            "capabilities": [cap.value for cap in self.capabilities],
+            "description": self.description,
+            "session_id": self.context.session.session_id if self.context.session else None,
+            "iterations": self.context.session.iterations if self.context.session else 0,
+        }
 
     @property
     @abstractmethod
