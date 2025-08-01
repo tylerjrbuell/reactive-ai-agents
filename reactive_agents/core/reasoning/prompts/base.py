@@ -112,7 +112,9 @@ class BasePrompt(ABC):
         # 2. Call the engine's think method with the prompt and the output model
         return await self.context.reasoning_engine.think(
             prompt=prompt_string,
-            format=self.output_model.model_json_schema() if self.output_model else None,
+            format=(
+                self.output_model.model_json_schema() if self.output_model else "json"
+            ),
             system=self.system_prompt,
         )
 

@@ -280,8 +280,8 @@ class ProviderTestConfiguration:
             "groq": ProviderConfig(
                 name="groq",
                 models={
-                    "llama-3.1-8b-instant": ModelConfig(
-                        name="llama-3.1-8b-instant",
+                    "llama-3.3-70b-versatile": ModelConfig(
+                        name="llama-3.3-70b-versatile",
                         max_tokens=8000,
                         context_window=131072,
                         capabilities={
@@ -297,8 +297,8 @@ class ProviderTestConfiguration:
                         typical_latency_ms=300,  # Very fast
                         reliability_score=0.88,
                     ),
-                    "llama3-8b-8192": ModelConfig(
-                        name="llama3-8b-8192",
+                    "moonshotai/kimi-k2-instruct": ModelConfig(
+                        name="moonshotai/kimi-k2-instruct",
                         max_tokens=8192,
                         context_window=8192,
                         capabilities={

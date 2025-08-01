@@ -23,15 +23,12 @@ class ToolExecutor:
         self.context = context
 
     async def execute_tool(
-        self, 
-        tool: ToolProtocol, 
-        tool_name: str, 
-        params: Dict[str, Any]
+        self, tool: ToolProtocol, tool_name: str, params: Dict[str, Any]
     ) -> Union[str, List[str], None]:
         """Execute a tool and handle all aspects of the execution."""
         try:
             tool_start_time = time.time()
-            
+
             # Log execution start
             if hasattr(self.context, "tool_logger") and self.context.tool_logger:
                 self.context.tool_logger.info(f"Using tool: {tool_name} with {params}")
@@ -110,7 +107,7 @@ class ToolExecutor:
         """Handle tool execution errors with detailed logging."""
         tb_str = traceback.format_exc()
         error_message = f"Error using tool {tool_name}: {str(error)}"
-        
+
         # Log error details
         if hasattr(self.context, "tool_logger") and self.context.tool_logger:
             self.context.tool_logger.error(error_message)
@@ -155,7 +152,8 @@ class ToolExecutor:
                     options=getattr(self.context, "model_provider_options", {}),
                 )
                 tool_action_summary = (
-                    summary_result.message.content.strip() or f"Executed tool {tool_name}."
+                    summary_result.message.content.strip()
+                    or f"Executed tool {tool_name}."
                 )
             else:
                 tool_action_summary = f"Executed tool {tool_name}."
@@ -163,15 +161,21 @@ class ToolExecutor:
             # Ensure tool summary is clearly marked
             if not tool_action_summary.startswith("[TOOL SUMMARY]"):
                 tool_action_summary = f"[TOOL SUMMARY] {tool_action_summary}"
+                self.context.session.add_message(
+                    role="assistant",
+                    content=tool_action_summary,
+                )
 
             # Enhanced logging for debugging
             if hasattr(self.context, "tool_logger") and self.context.tool_logger:
-                self.context.tool_logger.debug(f"Tool Action Summary: {tool_action_summary}")
+                self.context.tool_logger.debug(
+                    f"Tool Action Summary: {tool_action_summary}"
+                )
 
             # Add summary to context logs
             self.context.session.reasoning_log.append(tool_action_summary)
             self.context.session.task_progress.append(tool_action_summary)
-            
+
             return tool_action_summary
 
         except Exception as e:
@@ -180,13 +184,15 @@ class ToolExecutor:
                 self.context.tool_logger.error(
                     f"Failed to generate tool action summary for {tool_name}: {e}"
                 )
-            
+
             fallback_summary = f"Successfully executed tool '{tool_name}'."
             self.context.session.reasoning_log.append(fallback_summary)
             self.context.session.task_progress.append(fallback_summary)
             return fallback_summary
 
-    def parse_tool_arguments(self, tool_call: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+    def parse_tool_arguments(
+        self, tool_call: Dict[str, Any]
+    ) -> tuple[str, Dict[str, Any]]:
         """Parse tool call arguments with robust error handling."""
         tool_name = tool_call.get("function", {}).get("name")
         if not tool_name:

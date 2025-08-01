@@ -122,26 +122,26 @@ class BaseComponent:
     async def execute(self, context: ComponentContext) -> ComponentResult[Any]:
         """
         Default execute method - should be overridden by subclasses.
-        
+
         Args:
             context: The execution context
-            
+
         Returns:
             ComponentResult indicating operation not implemented
         """
         return ComponentResult.error_result(
             error=f"execute() not implemented for {self.name}",
-            retry_strategy=RetryStrategy.NONE
+            retry_strategy=RetryStrategy.NONE,
         )
 
     def can_retry(self, error: Exception, context: ComponentContext) -> bool:
         """
         Default retry logic - can be overridden by subclasses.
-        
+
         Args:
             error: The exception that occurred
             context: The execution context
-            
+
         Returns:
             True if the operation should be retried
         """
@@ -152,7 +152,7 @@ class BaseComponent:
     def get_capabilities(self) -> Set[str]:
         """
         Return the capabilities this component provides.
-        
+
         Returns:
             Set of capability names based on component type
         """
@@ -164,19 +164,25 @@ class BaseComponent:
             ComponentType.EVALUATION: {ComponentCapability.EVALUATION.value},
             ComponentType.COMPLETION: {ComponentCapability.COMPLETION.value},
             ComponentType.ERROR_HANDLING: {ComponentCapability.ERROR_HANDLING.value},
-            ComponentType.MEMORY_INTEGRATION: {ComponentCapability.MEMORY_INTEGRATION.value},
-            ComponentType.STRATEGY_TRANSITION: {ComponentCapability.STRATEGY_TRANSITION.value},
+            ComponentType.MEMORY_INTEGRATION: {
+                ComponentCapability.MEMORY_INTEGRATION.value
+            },
+            ComponentType.STRATEGY_TRANSITION: {
+                ComponentCapability.STRATEGY_TRANSITION.value
+            },
         }
         return capability_map.get(self.component_type, set())
 
-    def get_retry_strategy(self, error: Exception, context: ComponentContext) -> RetryStrategy:
+    def get_retry_strategy(
+        self, error: Exception, context: ComponentContext
+    ) -> RetryStrategy:
         """
         Determine the appropriate retry strategy for a given error.
-        
+
         Args:
             error: The exception that occurred
             context: The execution context
-            
+
         Returns:
             The recommended retry strategy
         """
@@ -190,14 +196,14 @@ class BaseComponent:
     def get_health_check(self) -> ComponentHealthCheck:
         """Get the current health status of this component."""
         performance_score = max(0.0, 1.0 - (self.error_count * 0.1))
-        
+
         return ComponentHealthCheck(
             status=self.status,
             last_success=self.last_success_time,
             error_count=self.error_count,
             performance_score=performance_score,
             dependencies_healthy=True,  # Assume healthy unless overridden
-            message=f"{self.name} component operational"
+            message=f"{self.name} component operational",
         )
 
     def _record_success(self) -> None:
@@ -211,61 +217,60 @@ class BaseComponent:
     def _record_error(self, error: Exception) -> None:
         """Record a failed operation."""
         self.error_count += 1
-        self.status = ComponentStatus.ERROR if self.error_count > 3 else ComponentStatus.READY
+        self.status = (
+            ComponentStatus.ERROR if self.error_count > 3 else ComponentStatus.READY
+        )
         if self.agent_logger:
-            self.agent_logger.warning(f"{self.name} component error #{self.error_count}: {error}")
+            self.agent_logger.warning(
+                f"{self.name} component error #{self.error_count}: {error}"
+            )
 
     async def _execute_with_monitoring(
-        self, 
-        operation: str,
-        func,
-        *args,
-        **kwargs
+        self, operation: str, func, *args, **kwargs
     ) -> ComponentResult[Any]:
         """
         Execute an operation with monitoring and error handling.
-        
+
         Args:
             operation: Name of the operation being performed
             func: The function to execute
             *args: Positional arguments for the function
             **kwargs: Keyword arguments for the function
-            
+
         Returns:
             ComponentResult with success/error information
         """
         start_time = time.time()
         self.status = ComponentStatus.BUSY
-        
+
         try:
             result = await func(*args, **kwargs)
             execution_time = (time.time() - start_time) * 1000  # Convert to ms
-            
+
             self._record_success()
-            
+
             return ComponentResult.success_result(
                 data=result,
                 confidence=1.0,
                 execution_time_ms=execution_time,
                 operation=operation,
-                component=self.name
+                component=self.name,
             )
-            
+
         except Exception as e:
             execution_time = (time.time() - start_time) * 1000
             self._record_error(e)
-            
+
             context = ComponentContext(
-                task="unknown",  # Will be filled by caller
-                session_id="unknown"
+                task="unknown", session_id="unknown"  # Will be filled by caller
             )
-            
+
             return ComponentResult.error_result(
                 error=str(e),
                 retry_strategy=self.get_retry_strategy(e, context),
                 execution_time_ms=execution_time,
                 operation=operation,
-                component=self.name
+                component=self.name,
             )
 
 
@@ -333,6 +338,7 @@ class PlanningComponent(BaseComponent):
         context_manager = self.engine.get_context_manager()
         plan_prompt = self.engine.get_prompt("plan_generation", task=task)
         thinking_result = await plan_prompt.get_completion()
+        print(f"thinking_result: {thinking_result}")
         if thinking_result:
             context_manager.add_message(
                 role="assistant",
@@ -436,28 +442,32 @@ class ReflectionComponent(BaseComponent):
     ):
         super().__init__(engine, ComponentType.REFLECTION, name, description)
 
-    async def execute(self, context: ComponentContext) -> ComponentResult[ReflectionResult]:
+    async def execute(
+        self, context: ComponentContext
+    ) -> ComponentResult[ReflectionResult]:
         """
         Execute reflection using the standardized interface.
-        
+
         Args:
             context: The execution context containing task and state information
-            
+
         Returns:
             ComponentResult containing the reflection result
         """
         return await self._execute_with_monitoring(
             operation="reflect_on_progress",
             func=self._internal_reflect_on_progress,
-            context=context
+            context=context,
         )
 
-    async def _internal_reflect_on_progress(self, context: ComponentContext) -> ReflectionResult:
+    async def _internal_reflect_on_progress(
+        self, context: ComponentContext
+    ) -> ReflectionResult:
         """Internal reflection logic that follows the original implementation."""
         # Extract parameters from context
         task = context.task
         last_result = context.previous_results.get("last_result", {})
-        
+
         self.log_usage("Reflecting on progress")
 
         reflection_prompt = self._get_prompt(
@@ -468,7 +478,7 @@ class ReflectionComponent(BaseComponent):
 
         if not reflection_result or not reflection_result.result_json:
             raise RuntimeError("Failed to generate reflection")
-            
+
         try:
             return ReflectionResult(**reflection_result.result_json)
         except Exception as e:
@@ -1115,56 +1125,57 @@ class ComponentBasedStrategy(BaseReasoningStrategy):
     ) -> ComponentResult[ReflectionResult]:
         """
         Reflection using the standardized component interface.
-        
+
         Args:
             task: The current task
             last_result: Result from the last step
             reasoning_context: Reasoning context
-            
+
         Returns:
             ComponentResult containing the reflection result
         """
-        if not self._reflection or not isinstance(self._reflection, ReflectionComponent):
+        if not self._reflection or not isinstance(
+            self._reflection, ReflectionComponent
+        ):
             return ComponentResult.error_result(
                 error="Reflection component not found",
-                retry_strategy=RetryStrategy.NONE
+                retry_strategy=RetryStrategy.NONE,
             )
-        
+
         # Create component context
         context = self.create_component_context(task, "reflect")
         context.previous_results["last_result"] = last_result
-        
+
         # Use the standard execute method
-        return await self._reflection.execute(context)  
+        return await self._reflection.execute(context)
 
     async def evaluate_with_context(
-        self, 
-        task: str, 
-        progress_summary: str = "", 
-        **kwargs: Any
+        self, task: str, progress_summary: str = "", **kwargs: Any
     ) -> ComponentResult[CompletionResult]:
         """
         Evaluation using the standardized component interface.
-        
+
         Args:
             task: The current task
             progress_summary: Summary of progress
             **kwargs: Additional context
-            
+
         Returns:
             ComponentResult containing the evaluation result
         """
-        if not self._evaluation or not isinstance(self._evaluation, TaskEvaluationComponent):
+        if not self._evaluation or not isinstance(
+            self._evaluation, TaskEvaluationComponent
+        ):
             return ComponentResult.error_result(
                 error="TaskEvaluation component not found",
-                retry_strategy=RetryStrategy.NONE
+                retry_strategy=RetryStrategy.NONE,
             )
-        
+
         # Create component context
         context = self.create_component_context(task, "evaluate")
         context.previous_results.update(kwargs)
         context.previous_results["progress_summary"] = progress_summary
-        
+
         # For evaluation, we need to call the original method since it's not yet using ComponentResult
         # This is a bridge until we fully migrate all components
         try:
@@ -1173,23 +1184,22 @@ class ComponentBasedStrategy(BaseReasoningStrategy):
             )
             return ComponentResult.success_result(
                 data=result,
-                confidence=result.confidence if hasattr(result, 'confidence') else 0.8
+                confidence=result.confidence if hasattr(result, "confidence") else 0.8,
             )
         except Exception as e:
             return ComponentResult.error_result(
-                error=str(e),
-                retry_strategy=RetryStrategy.EXPONENTIAL_BACKOFF
+                error=str(e), retry_strategy=RetryStrategy.EXPONENTIAL_BACKOFF
             )
 
     def get_component_health_status(self) -> Dict[str, Any]:
         """
         Get health status of all components.
-        
+
         Returns:
             Dictionary mapping component names to health status
         """
         health_status = {}
-        
+
         component_map = {
             "thinking": self._thinking,
             "planning": self._planning,
@@ -1201,27 +1211,27 @@ class ComponentBasedStrategy(BaseReasoningStrategy):
             "memory": self._memory,
             "transition": self._transition,
         }
-        
+
         for name, component in component_map.items():
-            if component and hasattr(component, 'get_health_check'):
+            if component and hasattr(component, "get_health_check"):
                 health_status[name] = component.get_health_check().model_dump()
             else:
                 health_status[name] = {
                     "status": "unknown",
-                    "message": f"{name} component not available or incompatible"
+                    "message": f"{name} component not available or incompatible",
                 }
-        
+
         return health_status
 
     def get_component_capabilities(self) -> Set[str]:
         """
         Get combined capabilities of all available components.
-        
+
         Returns:
             Set of all capabilities provided by components
         """
         all_capabilities = set()
-        
+
         component_map = {
             "thinking": self._thinking,
             "planning": self._planning,
@@ -1233,11 +1243,11 @@ class ComponentBasedStrategy(BaseReasoningStrategy):
             "memory": self._memory,
             "transition": self._transition,
         }
-        
+
         for component in component_map.values():
-            if component and hasattr(component, 'get_capabilities'):
+            if component and hasattr(component, "get_capabilities"):
                 all_capabilities.update(component.get_capabilities())
-        
+
         return all_capabilities
 
     async def evaluate(

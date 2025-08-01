@@ -12,7 +12,7 @@ import os
 import time
 from typing import List, Literal, Optional, Dict, Any
 
-DEFAULT_OPTIONS = {"temperature": 0.2, "num_gpu": 256, "num_ctx": 4000, "think": False}
+DEFAULT_OPTIONS = {"temperature": 0.2, "num_gpu": 256, "num_ctx": 10000, "think": False}
 
 
 class OllamaModelProvider(BaseModelProvider):

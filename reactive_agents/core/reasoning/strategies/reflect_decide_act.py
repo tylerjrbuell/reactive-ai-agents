@@ -60,10 +60,9 @@ class ReflectDecideActStrategy(ComponentBasedStrategy):
 
         state.reset()
 
-        self.context.session.add_message(
-            role="system",
-            content=f"Role: {self.context.role}\nInstructions: {self.context.instructions}",
-        )
+        # Use centralized system message creation
+        self._add_centralized_system_message()
+        
         self.context.session.add_message(
             role="user",
             content=f"Task: {task}",
@@ -71,7 +70,6 @@ class ReflectDecideActStrategy(ComponentBasedStrategy):
 
         if self.agent_logger:
             self.agent_logger.info("🚀 ReflectDecideActStrategy | Initialized and ready for dynamic task execution")
-
     async def execute_iteration(
         self, task: str, reasoning_context: ReasoningContext
     ) -> StrategyResult:

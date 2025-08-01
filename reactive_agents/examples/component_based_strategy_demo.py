@@ -13,9 +13,7 @@ from reactive_agents.core.types.reasoning_types import (
     ReasoningStrategies,
 )
 from reactive_agents.core.reasoning.engine import ReasoningEngine
-from reactive_agents.core.reasoning.strategies.enhanced_reactive_strategy import (
-    EnhancedReactiveStrategy,
-)
+from reactive_agents.core.reasoning.strategies.reactive import ReactiveStrategy
 from reactive_agents.core.context.context_manager import MessageRole
 
 
@@ -32,7 +30,7 @@ async def run_component_based_strategy():
 
     # Create engine and strategy
     engine = ReasoningEngine(agent.context)
-    strategy = EnhancedReactiveStrategy(engine)
+    strategy = ReactiveStrategy(engine)
 
     # Get context manager
     context_manager = engine.get_context_manager()
@@ -102,7 +100,7 @@ async def run_component_based_strategy():
         result = await strategy.execute_iteration(task, reasoning_context)
 
         logger.info(
-            f"Iteration {i+1} result: {result.action_taken}, continue: {result.should_continue}"
+            f"Iteration {i+1} result: {result.action}, continue: {result.should_continue}"
         )
 
         # Force pruning on the second iteration

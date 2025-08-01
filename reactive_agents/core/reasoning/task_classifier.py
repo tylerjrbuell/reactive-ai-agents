@@ -5,7 +5,9 @@ from reactive_agents.core.types.task_types import (
     TaskType,
     TaskClassification,
 )
-from reactive_agents.core.reasoning.performance_monitor import StrategyPerformanceMonitor
+from reactive_agents.core.reasoning.performance_monitor import (
+    StrategyPerformanceMonitor,
+)
 
 if TYPE_CHECKING:
     from reactive_agents.core.context.agent_context import AgentContext
@@ -20,84 +22,82 @@ class TaskClassifier:
         self.model_provider = context.model_provider
         self.performance_monitor: Optional[StrategyPerformanceMonitor] = None
 
-    def set_performance_monitor(self, performance_monitor: StrategyPerformanceMonitor) -> None:
+    def set_performance_monitor(
+        self, performance_monitor: StrategyPerformanceMonitor
+    ) -> None:
         """
         Set the performance monitor for strategy recommendation enhancement.
-        
+
         Args:
             performance_monitor: The performance monitor instance
         """
         self.performance_monitor = performance_monitor
 
     async def classify_task_with_performance(
-        self, 
-        task: str, 
-        context_messages: Optional[List[Dict[str, Any]]] = None
+        self, task: str, context_messages: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """
         Enhanced task classification that includes performance-based strategy recommendations.
-        
+
         Args:
             task: The task description to classify
             context_messages: Optional conversation context for better classification
-            
+
         Returns:
             Extended classification with performance-based recommendations
         """
         # Get base classification
         base_classification = await self.classify_task(task, context_messages)
-        
+
         # Create enhanced result with performance data
         enhanced_result = {
             "base_classification": base_classification.model_dump(),
             "performance_recommendations": {},
             "strategy_rankings": [],
             "recommended_strategy": None,
-            "confidence_adjustment": 0.0
+            "confidence_adjustment": 0.0,
         }
-        
+
         # Add performance-based recommendations if monitor is available
         if self.performance_monitor:
             strategy_rankings = self.performance_monitor.get_strategy_rankings()
             enhanced_result["strategy_rankings"] = strategy_rankings
-            
+
             # Get task-type specific recommendations
             task_type = base_classification.task_type
             performance_recommendations = self._get_performance_recommendations(
-                task_type, 
-                base_classification.complexity_score,
-                strategy_rankings
+                task_type, base_classification.complexity_score, strategy_rankings
             )
             enhanced_result["performance_recommendations"] = performance_recommendations
-            
+
             # Recommend best performing strategy for this task type
             recommended_strategy = self._recommend_strategy_by_performance(
-                task_type,
-                base_classification,
-                strategy_rankings
+                task_type, base_classification, strategy_rankings
             )
             enhanced_result["recommended_strategy"] = recommended_strategy
-            
+
             # Adjust confidence based on performance data availability
             if strategy_rankings:
-                enhanced_result["confidence_adjustment"] = 0.1  # Boost confidence when we have data
-        
+                enhanced_result["confidence_adjustment"] = (
+                    0.1  # Boost confidence when we have data
+                )
+
         return enhanced_result
 
     def _get_performance_recommendations(
-        self, 
-        task_type: TaskType, 
+        self,
+        task_type: TaskType,
         complexity_score: float,
-        strategy_rankings: List[tuple]
+        strategy_rankings: List[tuple],
     ) -> Dict[str, Any]:
         """
         Generate performance-based recommendations for a task type.
-        
+
         Args:
             task_type: The classified task type
             complexity_score: Task complexity score
             strategy_rankings: List of (strategy_name, performance_score) tuples
-            
+
         Returns:
             Dictionary containing performance recommendations
         """
@@ -105,77 +105,81 @@ class TaskClassifier:
             "high_performing_strategies": [],
             "avoid_strategies": [],
             "complexity_considerations": {},
-            "performance_insights": []
+            "performance_insights": [],
         }
-        
+
         if not strategy_rankings:
             recommendations["performance_insights"].append(
                 "No performance data available - using heuristic recommendations"
             )
             return recommendations
-        
+
         # Identify high and low performing strategies
         high_threshold = 0.7
         low_threshold = 0.4
-        
+
         for strategy_name, performance_score in strategy_rankings:
             if performance_score >= high_threshold:
-                recommendations["high_performing_strategies"].append({
-                    "strategy": strategy_name,
-                    "score": performance_score,
-                    "reason": f"High performance score: {performance_score:.2f}"
-                })
+                recommendations["high_performing_strategies"].append(
+                    {
+                        "strategy": strategy_name,
+                        "score": performance_score,
+                        "reason": f"High performance score: {performance_score:.2f}",
+                    }
+                )
             elif performance_score <= low_threshold:
-                recommendations["avoid_strategies"].append({
-                    "strategy": strategy_name,
-                    "score": performance_score,
-                    "reason": f"Low performance score: {performance_score:.2f}"
-                })
-        
+                recommendations["avoid_strategies"].append(
+                    {
+                        "strategy": strategy_name,
+                        "score": performance_score,
+                        "reason": f"Low performance score: {performance_score:.2f}",
+                    }
+                )
+
         # Add complexity-specific recommendations
         if complexity_score > 0.8:
-            recommendations["complexity_considerations"]["high_complexity"] = (
-                "Task has high complexity - consider strategies with planning capabilities"
-            )
+            recommendations["complexity_considerations"][
+                "high_complexity"
+            ] = "Task has high complexity - consider strategies with planning capabilities"
         elif complexity_score < 0.3:
-            recommendations["complexity_considerations"]["low_complexity"] = (
-                "Task has low complexity - reactive strategies may be sufficient"
-            )
-        
+            recommendations["complexity_considerations"][
+                "low_complexity"
+            ] = "Task has low complexity - reactive strategies may be sufficient"
+
         # Add general performance insights
         if len(strategy_rankings) >= 2:
             best_strategy, best_score = strategy_rankings[0]
             worst_strategy, worst_score = strategy_rankings[-1]
             performance_gap = best_score - worst_score
-            
+
             if performance_gap > 0.3:
                 recommendations["performance_insights"].append(
                     f"Significant performance gap detected: {best_strategy} "
                     f"({best_score:.2f}) vs {worst_strategy} ({worst_score:.2f})"
                 )
-        
+
         return recommendations
 
     def _recommend_strategy_by_performance(
         self,
         task_type: TaskType,
         classification: TaskClassification,
-        strategy_rankings: List[tuple]
+        strategy_rankings: List[tuple],
     ) -> Optional[Dict[str, Any]]:
         """
         Recommend the best strategy based on performance data and task characteristics.
-        
+
         Args:
             task_type: The classified task type
             classification: The base task classification
             strategy_rankings: List of (strategy_name, performance_score) tuples
-            
+
         Returns:
             Strategy recommendation with reasoning
         """
         if not strategy_rankings:
             return None
-        
+
         # Task type to preferred strategy mapping (heuristic baseline)
         task_strategy_preferences = {
             TaskType.SIMPLE_LOOKUP: ["reactive"],
@@ -186,22 +190,22 @@ class TaskClassifier:
             TaskType.PLANNING: ["plan_execute_reflect"],
             TaskType.EXECUTION: ["reactive", "plan_execute_reflect"],
         }
-        
+
         preferred_strategies = task_strategy_preferences.get(task_type, [])
-        
+
         # Find the best performing strategy among preferred ones
         best_preferred = None
         best_preferred_score = 0.0
-        
+
         for strategy_name, performance_score in strategy_rankings:
             if strategy_name in preferred_strategies:
                 if performance_score > best_preferred_score:
                     best_preferred = strategy_name
                     best_preferred_score = performance_score
-        
+
         # Get the overall best performing strategy
         best_overall, best_overall_score = strategy_rankings[0]
-        
+
         # Decision logic
         if best_preferred and best_preferred_score >= 0.6:
             # Use preferred strategy if it performs reasonably well
@@ -209,9 +213,9 @@ class TaskClassifier:
                 "strategy": best_preferred,
                 "confidence": min(0.9, classification.confidence + 0.1),
                 "reasoning": f"Best performing strategy ({best_preferred_score:.2f}) "
-                           f"for {task_type.value} tasks",
+                f"for {task_type.value} tasks",
                 "performance_score": best_preferred_score,
-                "selection_reason": "task_type_and_performance"
+                "selection_reason": "task_type_and_performance",
             }
         elif best_overall_score > 0.7:
             # Use best overall strategy if it's significantly better
@@ -220,33 +224,35 @@ class TaskClassifier:
                 "confidence": classification.confidence,
                 "reasoning": f"Best overall performing strategy ({best_overall_score:.2f})",
                 "performance_score": best_overall_score,
-                "selection_reason": "best_performance"
+                "selection_reason": "best_performance",
             }
         else:
             # Fall back to heuristic recommendation
-            fallback_strategy = preferred_strategies[0] if preferred_strategies else "reactive"
+            fallback_strategy = (
+                preferred_strategies[0] if preferred_strategies else "reactive"
+            )
             return {
                 "strategy": fallback_strategy,
                 "confidence": max(0.3, classification.confidence - 0.2),
                 "reasoning": f"Heuristic fallback for {task_type.value} tasks "
-                           f"(limited performance data)",
+                f"(limited performance data)",
                 "performance_score": None,
-                "selection_reason": "heuristic_fallback"
+                "selection_reason": "heuristic_fallback",
             }
 
     def get_strategy_performance_summary(self) -> Dict[str, Any]:
         """
         Get a summary of strategy performance data.
-        
+
         Returns:
             Summary of strategy performance information
         """
         if not self.performance_monitor:
             return {"available": False, "message": "No performance monitor configured"}
-        
+
         rankings = self.performance_monitor.get_strategy_rankings()
         summary = self.performance_monitor.get_performance_summary()
-        
+
         return {
             "available": True,
             "total_strategies": len(rankings),
@@ -255,7 +261,7 @@ class TaskClassifier:
             "recommendations": {
                 "high_performing": [name for name, score in rankings if score > 0.7],
                 "needs_improvement": [name for name, score in rankings if score < 0.4],
-            }
+            },
         }
 
     async def classify_task(
@@ -295,8 +301,63 @@ class TaskClassifier:
             )
 
             if response and response.message.content:
-                classification_data = json.loads(response.message.content)
-                return TaskClassification(**classification_data)
+                # Log the raw response for debugging
+                if self.agent_logger:
+                    self.agent_logger.debug(
+                        f"Raw classification response: {response.message.content[:500]}..."
+                    )
+
+                try:
+                    classification_data = json.loads(response.message.content)
+
+                    # Validate that we have the required fields
+                    if not isinstance(classification_data, dict):
+                        raise ValueError("Response is not a dictionary")
+
+                    # Check for required fields
+                    required_fields = ["task_type", "confidence", "reasoning"]
+                    missing_fields = [
+                        field
+                        for field in required_fields
+                        if field not in classification_data
+                    ]
+
+                    if missing_fields:
+                        raise ValueError(f"Missing required fields: {missing_fields}")
+
+                    # Validate task_type is a valid enum value
+                    task_type_value = classification_data.get("task_type")
+                    if task_type_value not in [t.value for t in TaskType]:
+                        raise ValueError(f"Invalid task_type: {task_type_value}")
+
+                    # Validate confidence is a number between 0 and 1
+                    confidence = classification_data.get("confidence")
+                    if not isinstance(confidence, (int, float)) or not (
+                        0.0 <= confidence <= 1.0
+                    ):
+                        raise ValueError(f"Invalid confidence value: {confidence}")
+
+                    # Validate reasoning is a string
+                    reasoning = classification_data.get("reasoning")
+                    if not isinstance(reasoning, str) or not reasoning.strip():
+                        raise ValueError("Reasoning must be a non-empty string")
+
+                    if self.agent_logger:
+                        self.agent_logger.debug(
+                            f"Successfully classified task as: {task_type_value} (confidence: {confidence})"
+                        )
+
+                    return TaskClassification(**classification_data)
+
+                except (json.JSONDecodeError, ValueError) as parse_error:
+                    if self.agent_logger:
+                        self.agent_logger.warning(
+                            f"JSON parsing/validation failed: {parse_error}. Content: {response.message.content[:200]}..."
+                        )
+                    raise
+            else:
+                if self.agent_logger:
+                    self.agent_logger.warning("No content received from model provider")
 
         except Exception as e:
             if self.agent_logger:
@@ -340,28 +401,62 @@ Available tools: {', '.join(available_tools)}
 
 {context_info}
 
-Respond with JSON in this exact format:
+CRITICAL: You MUST respond with valid JSON in this exact format. Do not include any text before or after the JSON object.
+
 {{
     "task_type": "<one of the task types above>",
-    "confidence": <float 0.0-1.0>,
+    "confidence": <float between 0.0 and 1.0>,
     "reasoning": "<explanation of classification>",
     "suggested_tools": ["<tool_name>", ...],
-    "complexity_score": <float 0.0-1.0>,
-    "requires_collaboration": <boolean>,
+    "complexity_score": <float between 0.0 and 1.0>,
+    "requires_collaboration": <boolean true or false>,
     "estimated_steps": <integer>
 }}
 
+Examples of valid responses:
+
+For a simple lookup task:
+{{
+    "task_type": "simple_lookup",
+    "confidence": 0.9,
+    "reasoning": "This is a straightforward information retrieval task that requires a single answer",
+    "suggested_tools": [],
+    "complexity_score": 0.2,
+    "requires_collaboration": false,
+    "estimated_steps": 1
+}}
+
+For a complex analysis task:
+{{
+    "task_type": "analysis",
+    "confidence": 0.8,
+    "reasoning": "This task requires data analysis and interpretation of multiple factors",
+    "suggested_tools": ["data_analyzer", "calculator"],
+    "complexity_score": 0.7,
+    "requires_collaboration": false,
+    "estimated_steps": 5
+}}
+
 Guidelines:
-- Consider the task's inherent complexity and requirements
-- Match available tools to task needs
-- Be conservative with collaboration requirements
-- Estimate realistic step counts (1-10 typical range)
-- Confidence should reflect certainty of classification"""
+- task_type: Must be one of the exact values listed above
+- confidence: Must be a number between 0.0 and 1.0
+- reasoning: Must be a non-empty string explaining your classification
+- suggested_tools: Array of tool names that might be useful (can be empty)
+- complexity_score: Number between 0.0 and 1.0 indicating task complexity
+- requires_collaboration: Boolean indicating if multiple agents would help
+- estimated_steps: Integer representing expected number of steps (1-10 typical)
+
+Remember: Respond ONLY with the JSON object, no additional text."""
 
     def _fallback_classification(
         self, task: str, available_tools: List[str]
     ) -> TaskClassification:
         """Provide a fallback classification when LLM classification fails."""
+
+        if self.agent_logger:
+            self.agent_logger.info(
+                "Using fallback classification due to LLM classification failure"
+            )
 
         # Simple heuristics for fallback
         task_lower = task.lower()
@@ -392,7 +487,7 @@ Guidelines:
         ):
             task_type = TaskType.TOOL_REQUIRED
 
-        return TaskClassification(
+        fallback_result = TaskClassification(
             task_type=task_type,
             confidence=0.5,  # Low confidence for fallback
             reasoning="Fallback classification based on keyword heuristics",
@@ -401,3 +496,10 @@ Guidelines:
             requires_collaboration=False,
             estimated_steps=max(1, int(complexity * 5)),
         )
+
+        if self.agent_logger:
+            self.agent_logger.info(
+                f"Fallback classification result: {task_type.value} (confidence: 0.5)"
+            )
+
+        return fallback_result

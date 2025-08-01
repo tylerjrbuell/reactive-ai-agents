@@ -67,10 +67,9 @@ class PlanExecuteReflectStrategy(ComponentBasedStrategy):
 
         state.reset()
 
-        self.context.session.add_message(
-            role="system",
-            content=f"Role: {self.context.role}\nInstructions: {self.context.instructions}",
-        )
+        # Use centralized system message creation
+        self._add_centralized_system_message()
+        
         self.context.session.add_message(
             role="user",
             content=f"Task: {task}",

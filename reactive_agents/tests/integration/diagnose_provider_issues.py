@@ -28,7 +28,22 @@ from reactive_agents.tests.integration.provider_test_config import get_test_conf
 
 @tool()
 async def simple_test_tool(message: str) -> str:
-    """Simple test tool that returns a processed message."""
+    """
+    Process and format a text message for testing tool functionality.
+
+    This tool takes a text message as input and returns it with a 'Processed: ' prefix
+    to verify that tool calling and parameter passing are working correctly.
+
+    Args:
+        message: The text message to process (required, must be a non-empty string)
+
+    Returns:
+        A formatted string with 'Processed: ' prefix followed by the original message
+
+    Example:
+        Input: "Hello World"
+        Output: "Processed: Hello World"
+    """
     return f"Processed: {message}"
 
 
@@ -164,9 +179,33 @@ class ProviderIssueDiagnoser:
             if model_results["success"]:
                 results["successful_tests"] += 1
                 print(f"    ✅ Basic functionality: OK")
+                print(
+                    f"       - Execution time: {model_results['execution_time']:.2f}s"
+                )
+                print(f"       - Tool calls: {model_results['tool_calls']}")
+                print(f"       - Iterations: {model_results['iterations_used']}")
+                if model_results["final_answer"]:
+                    answer_preview = (
+                        model_results["final_answer"][:100] + "..."
+                        if len(model_results["final_answer"]) > 100
+                        else model_results["final_answer"]
+                    )
+                    print(f"       - Final answer: {answer_preview}")
             else:
                 results["failed_tests"] += 1
                 print(f"    ❌ Basic functionality: FAILED - {model_results['error']}")
+                print(
+                    f"       - Execution time: {model_results['execution_time']:.2f}s"
+                )
+                print(f"       - Tool calls: {model_results['tool_calls']}")
+                print(f"       - Iterations: {model_results['iterations_used']}")
+                if model_results["tool_results"]:
+                    print(f"       - Tool results:")
+                    for tool_result in model_results["tool_results"]:
+                        status = "✅" if tool_result["success"] else "❌"
+                        print(
+                            f"         {status} {tool_result['name']}: {tool_result['params']} → {tool_result['result']}"
+                        )
                 results["critical_issues"].append(
                     f"Model {model_name}: {model_results['error']}"
                 )
@@ -188,6 +227,9 @@ class ProviderIssueDiagnoser:
             "execution_time": 0.0,
             "response_length": 0,
             "tool_calls": 0,
+            "final_answer": None,
+            "tool_results": [],
+            "iterations_used": 0,
         }
 
         try:
@@ -227,6 +269,30 @@ class ProviderIssueDiagnoser:
             test_result["success"] = result.status == TaskStatus.COMPLETE
             test_result["execution_time"] = end_time - start_time
             test_result["response_length"] = len(result.final_answer or "")
+            test_result["final_answer"] = result.final_answer
+            test_result["iterations_used"] = getattr(result, "iterations", 0)
+
+            # Get tool usage information from agent context
+            if hasattr(agent, "context") and hasattr(agent.context, "tool_manager"):
+                tool_history = (
+                    agent.context.tool_manager.tool_history
+                    if agent.context.tool_manager
+                    else []
+                )
+                test_result["tool_calls"] = len(tool_history)
+                test_result["tool_results"] = [
+                    {
+                        "name": entry["name"],
+                        "params": entry["params"],
+                        "result": (
+                            entry["result"][:200] + "..."
+                            if len(str(entry["result"])) > 200
+                            else entry["result"]
+                        ),
+                        "success": not entry.get("error", False),
+                    }
+                    for entry in tool_history
+                ]
 
             if not test_result["success"]:
                 test_result["error"] = f"Task failed with status: {result.status}"

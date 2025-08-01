@@ -120,6 +120,14 @@ class ExecutePlanStep(BaseReasoningStep):
             ),
             "timestamp": time.time(),
         }
+        self.context.session.add_message(
+            role="assistant",
+            content=f"""Step {step_data['step_index'] + 1} of {len(state.current_plan.plan_steps)}
+            \nDescription: {step_data['step_description']}
+            \nResult: {step_data['result']}
+            \nSuccess: {step_data['success']}
+            \nTimestamp: {step_data['timestamp']}""",
+        )
         state.record_step_result(step_data)
 
         # This step always continues to the next step in the pipeline (e.g., Reflection)

@@ -344,7 +344,10 @@ class AgentSession(BaseModel):
 
     def add_message(self, role: str, content: str) -> "AgentSession":
         """Adds a message to the session and returns self for chaining."""
-        self.messages.append({"role": role, "content": content})
+        message = {"role": role, "content": content}
+        if message in self.messages:
+            return self
+        self.messages.append(message)
         return self
 
     def add_error(

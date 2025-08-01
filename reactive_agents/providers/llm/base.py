@@ -112,6 +112,42 @@ class BaseModelProvider(ABC, metaclass=AutoRegisterModelMeta):
 
         raise error  # Re-raise the error after handling
 
+    def _adapt_context_for_provider(self, messages: List[dict], tools: Optional[List[dict]] = None) -> List[dict]:
+        """
+        Provider-specific context adaptation hook.
+        
+        This method allows providers to adapt agent context to fit their specific
+        SDK requirements and best practices without corrupting the agent's core context.
+        
+        Design Principles: 
+        - PRESERVE: Never replace agent role, instructions, or task context
+        - ADAPT: Modify format/structure to fit provider requirements
+        - MINIMAL: Keep adaptations focused and lightweight
+        - ADDITIVE: Append provider-specific hints when necessary
+        
+        Args:
+            messages: Original message chain from agent context
+            tools: Available tools for the interaction
+            
+        Returns:
+            Messages adapted for this provider's requirements
+            
+        Default implementation returns messages unchanged.
+        Providers should override to add specific adaptations.
+        
+        Examples of valid adaptations:
+        - Message role conversions (tool -> user for OpenAI)
+        - Tool format conversions (OpenAI -> Anthropic format)
+        - Adding provider-specific system context hints
+        - Message ordering adjustments for API requirements
+        
+        Examples of INVALID adaptations:
+        - Replacing agent role ("coding assistant" -> "helpful assistant")
+        - Overriding agent instructions or task context
+        - Changing the agent's personality or behavior guidelines
+        """
+        return messages
+
     @abstractmethod
     async def validate_model(self, **kwargs) -> dict:
         pass

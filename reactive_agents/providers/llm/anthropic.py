@@ -99,7 +99,7 @@ class AnthropicModelProvider(BaseModelProvider):
             tool_result = msg.get("content", "")
             return {
                 "role": "user",
-                "content": f"Tool result: {tool_result}"
+                "content": f"Tool result: {tool_result}".rstrip()
             }
         
         allowed = {"role", "content"}
@@ -110,6 +110,10 @@ class AnthropicModelProvider(BaseModelProvider):
             cleaned["role"] = "user"
         if "content" not in cleaned:
             cleaned["content"] = ""
+        
+        # Strip trailing whitespace from content to avoid Anthropic API errors
+        if isinstance(cleaned["content"], str):
+            cleaned["content"] = cleaned["content"].rstrip()
 
         return cleaned
 

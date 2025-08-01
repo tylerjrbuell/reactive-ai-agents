@@ -53,6 +53,44 @@ class BaseReasoningStrategy(ABC):
         self.context = engine.context
         self.agent_logger = engine.context.agent_logger
 
+    def _add_centralized_system_message(self) -> None:
+        """
+        Add centralized system message with Role + Instructions + Available Tools.
+        
+        This method creates a unified system message that includes:
+        - Agent role and instructions (core context)
+        - Available tools list (for better tool calling across all providers)
+        
+        This eliminates duplication across strategy implementations and provides
+        consistent tool context for all providers.
+        """
+        # Get available tools from context
+        available_tools = self.context.get_tool_signatures()
+        tool_names = [
+            tool.get("function", {}).get("name", "")
+            for tool in available_tools
+            if tool.get("type") == "function"
+        ]
+        
+        # Build comprehensive system message
+        system_content_parts = [
+            f"Role: {self.context.role}",
+            f"Instructions: {self.context.instructions}"
+        ]
+        
+        # Add tool context if tools are available
+        if tool_names:
+            tools_section = f"\nAvailable Tools: {', '.join(tool_names)}"
+            system_content_parts.append(tools_section)
+        
+        system_message = "\n".join(system_content_parts)
+        
+        # Add to session
+        self.context.session.add_message(
+            role="system",
+            content=system_message,
+        )
+
     def create_component_context(self, task: str, operation: str = "execute") -> ComponentContext:
         """
         Create a ComponentContext for use with our enhanced component system.

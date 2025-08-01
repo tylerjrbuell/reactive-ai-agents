@@ -54,6 +54,18 @@ class OpenAIModelProvider(BaseModelProvider):
         allowed = {"role", "content", "name", "tool_call_id", "tool_calls"}
         cleaned = {k: v for k, v in msg.items() if k in allowed}
 
+        # Handle tool messages - OpenAI has strict requirements for tool message ordering
+        # Convert tool messages to user messages with clear labeling
+        if cleaned.get("role") == "tool":
+            cleaned["role"] = "user"
+            # Preserve the tool result information in the content
+            original_content = cleaned.get("content", "")
+            tool_call_id = cleaned.get("tool_call_id", "unknown")
+            cleaned["content"] = f"[Tool Result for {tool_call_id}]: {original_content}"
+            
+            # Remove tool-specific fields since we're converting to user message
+            cleaned.pop("tool_call_id", None)
+
         # Ensure required fields are present
         if "role" not in cleaned:
             cleaned["role"] = "user"
@@ -61,6 +73,75 @@ class OpenAIModelProvider(BaseModelProvider):
             cleaned["content"] = ""
 
         return cleaned
+
+    def _validate_message_sequence(self, messages: List[dict]) -> List[dict]:
+        """Validate and fix message sequence for OpenAI's tool calling requirements."""
+        if not messages:
+            return messages
+            
+        validated_messages = []
+        i = 0
+        
+        while i < len(messages):
+            msg = messages[i]
+            
+            # If this is a tool message, ensure it follows an assistant message with tool_calls
+            if msg.get("role") == "tool":
+                # Look back to find the most recent assistant message with tool_calls
+                assistant_with_tools_idx = None
+                for j in range(len(validated_messages) - 1, -1, -1):
+                    if (validated_messages[j].get("role") == "assistant" and 
+                        validated_messages[j].get("tool_calls")):
+                        assistant_with_tools_idx = j
+                        break
+                
+                # If we found an assistant message with tool_calls, but it's not the immediate predecessor
+                if assistant_with_tools_idx is not None and assistant_with_tools_idx != len(validated_messages) - 1:
+                    # Remove any intermediate messages that aren't tool messages
+                    # Keep only tool messages that might be part of the same tool call sequence
+                    filtered_messages = validated_messages[:assistant_with_tools_idx + 1]
+                    for k in range(assistant_with_tools_idx + 1, len(validated_messages)):
+                        if validated_messages[k].get("role") == "tool":
+                            filtered_messages.append(validated_messages[k])
+                    validated_messages = filtered_messages
+                
+                validated_messages.append(msg)
+            else:
+                validated_messages.append(msg)
+            
+            i += 1
+        
+        return validated_messages
+
+    def _process_tool_calls(self, tool_calls):
+        """Process tool calls to ensure arguments are properly formatted as dictionaries."""
+        if not tool_calls:
+            return None
+            
+        processed_calls = []
+        for call in tool_calls:
+            processed_call = {
+                "id": call.id,
+                "type": call.type,
+                "function": {
+                    "name": call.function.name,
+                    "arguments": call.function.arguments,
+                },
+            }
+            
+            # Ensure function arguments are dictionaries, not JSON strings
+            args = processed_call["function"]["arguments"]
+            if isinstance(args, str):
+                try:
+                    processed_call["function"]["arguments"] = json.loads(args) if args else {}
+                except (json.JSONDecodeError, TypeError):
+                    processed_call["function"]["arguments"] = {}
+            elif not isinstance(args, dict):
+                processed_call["function"]["arguments"] = {}
+                    
+            processed_calls.append(processed_call)
+            
+        return processed_calls
 
     def validate_model(self, **kwargs) -> dict:
         """Validate that the model is supported by OpenAI."""
@@ -105,6 +186,9 @@ class OpenAIModelProvider(BaseModelProvider):
         try:
             # Clean messages
             cleaned_messages = [self._clean_message(msg) for msg in messages]
+            
+            # Validate message sequence for OpenAI's tool calling requirements
+            cleaned_messages = self._validate_message_sequence(cleaned_messages)
 
             # Merge options
             merged_options = {**self.default_options, **(options or {})}
@@ -138,19 +222,7 @@ class OpenAIModelProvider(BaseModelProvider):
             result = completion.choices[0]
 
             # Extract tool calls if present
-            tool_calls = None
-            if result.message.tool_calls:
-                tool_calls = [
-                    {
-                        "id": call.id,
-                        "type": call.type,
-                        "function": {
-                            "name": call.function.name,
-                            "arguments": call.function.arguments,
-                        },
-                    }
-                    for call in result.message.tool_calls
-                ]
+            tool_calls = self._process_tool_calls(result.message.tool_calls)
 
             message = CompletionMessage(
                 content=result.message.content or "",

@@ -2,7 +2,10 @@ from __future__ import annotations
 from typing import List
 
 from reactive_agents.core.types.reasoning_types import ReasoningContext
-from reactive_agents.core.reasoning.strategies.base import StrategyCapabilities, StrategyResult
+from reactive_agents.core.reasoning.strategies.base import (
+    StrategyCapabilities,
+    StrategyResult,
+)
 from reactive_agents.core.reasoning.strategy_components import ComponentBasedStrategy
 from reactive_agents.core.reasoning.protocols import RetryStrategy
 from reactive_agents.core.types.session_types import ReactiveState, register_strategy
@@ -52,49 +55,51 @@ class ReactiveStrategy(ComponentBasedStrategy):
 
         state.reset()
 
-        self.context.session.add_message(
-            role="system",
-            content=f"Role: {self.context.role}\nInstructions: {self.context.instructions}",
-        )
+        # Use centralized system message creation
+        self._add_centralized_system_message()
+
         self.context.session.add_message(
             role="user",
             content=f"Task: {task}",
         )
 
         if self.agent_logger:
-            self.agent_logger.info("🚀 ReactiveStrategy | Initialized and ready for task execution")
+            self.agent_logger.info(
+                "🚀 ReactiveStrategy | Initialized and ready for task execution"
+            )
 
     async def execute_iteration(
         self, task: str, reasoning_context: ReasoningContext
     ) -> StrategyResult:
         """
         Execute one iteration with comprehensive error handling and monitoring.
-        
+
         Args:
             task: The current task description
             reasoning_context: Context about current reasoning state
-            
+
         Returns:
             StrategyResult containing the strategy result
         """
         try:
             # Execute using the parent class iteration logic
             result = await super().execute_iteration(task, reasoning_context)
-            
+
             # Check component health during execution
             health_status = self.get_component_health_status()
             failed_components = [
-                name for name, status in health_status.items() 
+                name
+                for name, status in health_status.items()
                 if status.get("status") == "error"
             ]
-            
+
             if failed_components and self.agent_logger:
                 self.agent_logger.warning(
                     f"🔧 ReactiveStrategy | Component failures detected: {failed_components}"
                 )
-            
+
             return result
-            
+
         except Exception as e:
             if self.agent_logger:
                 self.agent_logger.error(
@@ -106,7 +111,7 @@ class ReactiveStrategy(ComponentBasedStrategy):
     def get_strategy_insights(self) -> dict:
         """
         Get insights about this strategy's current performance and capabilities.
-        
+
         Returns:
             Dictionary containing strategy insights
         """
@@ -114,27 +119,27 @@ class ReactiveStrategy(ComponentBasedStrategy):
             "strategy_type": "reactive",
             "optimal_for": [
                 "Simple tasks",
-                "Dynamic problem solving", 
+                "Dynamic problem solving",
                 "Tasks requiring quick adaptation",
-                "Exploratory tasks with unknown requirements"
+                "Exploratory tasks with unknown requirements",
             ],
             "characteristics": {
                 "planning_depth": "minimal",
                 "adaptability": "high",
                 "tool_usage": "dynamic",
-                "reflection_frequency": "per_iteration"
+                "reflection_frequency": "per_iteration",
             },
             "performance_factors": {
                 "iteration_efficiency": "high",
                 "complex_task_handling": "moderate",
                 "error_recovery": "good",
-                "resource_usage": "low"
+                "resource_usage": "low",
             },
             "component_utilization": {
                 "thinking": "high",
-                "tool_execution": "high", 
+                "tool_execution": "high",
                 "evaluation": "high",
                 "planning": "low",
-                "reflection": "moderate"
-            }
+                "reflection": "moderate",
+            },
         }
