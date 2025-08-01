@@ -86,6 +86,21 @@ class WorkflowManager(BaseModel):
 
         return all_met
 
+    def _check_dependencies_internal(self) -> bool:
+        """Internal method to check dependencies without updating context (avoids recursion)."""
+        if not self.workflow_dependencies or self.workflow_context is None:
+            return True  # No dependencies or no context = dependencies met
+
+        for dep_agent_name in self.workflow_dependencies:
+            dep_status = self.workflow_context.get(dep_agent_name, {}).get("status")
+
+            # Consider dependency met if status is COMPLETE or RESCOPED_COMPLETE
+            met_statuses = [str(TaskStatus.COMPLETE), str(TaskStatus.RESCOPED_COMPLETE)]
+            if dep_status not in met_statuses:
+                return False
+
+        return True
+
     def update_context(
         self, status: "TaskStatus", result: Optional[str] = None, **kwargs
     ):
@@ -120,7 +135,7 @@ class WorkflowManager(BaseModel):
             context_update: Dict[str, Any] = {
                 "status": status_str,
                 "iterations": self.context.session.iterations,
-                "dependencies_met": self.check_dependencies(),  # Re-check for current status
+                "dependencies_met": self._check_dependencies_internal(),  # Use internal method to avoid recursion
                 "last_updated": datetime.now().isoformat(),
             }
 

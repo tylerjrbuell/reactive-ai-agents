@@ -6,6 +6,7 @@ from reactive_agents.core.types.reasoning_types import (
     ContinueThinkingPayload,
     StrategyAction,
 )
+from reactive_agents.core.types.strategy_types import StrategyResult
 
 if TYPE_CHECKING:
     from reactive_agents.core.types.session_types import (
@@ -13,7 +14,7 @@ if TYPE_CHECKING:
         BaseStrategyState,
     )
     from reactive_agents.core.types.reasoning_types import ReasoningContext
-    from reactive_agents.core.reasoning.strategies.base import StrategyResult
+    pass  # StrategyResult imported above
 
 
 class ReactiveActStep(BaseReasoningStep):

@@ -75,13 +75,16 @@ class TestGoogleModelProvider:
 
     def test_validate_model_invalid(self, mock_env, mock_genai):
         """Test model validation with invalid model."""
-        # Mock no models available
+        # Create provider without calling validate_model in __init__
+        with patch.object(GoogleModelProvider, "validate_model"):
+            provider = GoogleModelProvider(model="invalid-model")
+
+        # Mock no models available for this specific test
         mock_genai.list_models.return_value = []
 
-        provider = GoogleModelProvider(model="invalid-model")
-        result = provider.validate_model()
-        assert result["valid"] is False
-        assert "not available" in result["error"]
+        # Now test validate_model separately - it should raise an exception
+        with pytest.raises(ValueError, match="not available"):
+            provider.validate_model()
 
     @pytest.mark.asyncio
     async def test_get_chat_completion_success(self, mock_env, mock_genai):
@@ -163,6 +166,10 @@ class TestGoogleModelProvider:
         # Mock response with no candidates
         mock_response = Mock()
         mock_response.candidates = []
+        # Mock usage_metadata to avoid validation errors
+        mock_response.usage_metadata = Mock()
+        mock_response.usage_metadata.prompt_token_count = 0
+        mock_response.usage_metadata.candidates_token_count = 0
 
         with patch.object(provider, "_retry_with_backoff") as mock_retry:
             mock_retry.return_value = mock_response

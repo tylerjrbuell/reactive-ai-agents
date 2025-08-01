@@ -166,10 +166,12 @@ class OpenAIModelProvider(BaseModelProvider):
                 done=True,
                 done_reason=result.finish_reason,
                 prompt_tokens=(
-                    completion.usage.prompt_tokens if completion.usage else None
+                    int(completion.usage.prompt_tokens or 0) if completion.usage else 0
                 ),
                 completion_tokens=(
-                    completion.usage.completion_tokens if completion.usage else None
+                    int(completion.usage.completion_tokens or 0)
+                    if completion.usage
+                    else 0
                 ),
                 total_duration=None,  # OpenAI doesn't provide timing info
                 created_at=str(completion.created),

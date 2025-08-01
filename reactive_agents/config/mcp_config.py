@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field, DirectoryPath, validator
+from pydantic import BaseModel, Field, DirectoryPath, field_validator
 import dotenv
 import os
 from pathlib import Path
@@ -41,7 +41,8 @@ class MCPServerConfig(BaseModel):
     )
     enabled: bool = Field(default=True, description="Whether this server is enabled")
 
-    @validator("working_dir", pre=True)
+    @field_validator("working_dir", mode="before")
+    @classmethod
     def validate_working_dir(cls, v):
         if v:
             # Support environment variable expansion

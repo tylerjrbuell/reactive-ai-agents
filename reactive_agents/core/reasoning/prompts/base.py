@@ -174,7 +174,7 @@ class BasePrompt(ABC):
                     )
 
         # Remove all PromptContext fields from kwargs to avoid duplicate parameter errors
-        prompt_context_fields = set(PromptContext.__fields__.keys())
+        prompt_context_fields = set(PromptContext.model_fields.keys())
         kwargs_without_duplicates = {
             k: v for k, v in kwargs.items() if k not in prompt_context_fields
         }

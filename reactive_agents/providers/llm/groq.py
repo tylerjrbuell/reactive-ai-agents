@@ -11,22 +11,39 @@ class GroqModelProvider(BaseModelProvider):
     def __init__(
         self, model="llama3-groq-70b-8192-tool-use-preview", options=None, context=None
     ):
-        self.name = __class__.id
-        self.model = model
-        self.options = options
-        self.context = context
-        self.client = Groq(api_key=os.environ["GROQ_API_KEY"])
-        self.validate_model()
+        # Call parent __init__ first for consistency
         super().__init__(model=model, options=options, context=context)
+
+        # Initialize Groq client
+        api_key = os.environ.get("GROQ_API_KEY")
+        if not api_key:
+            raise ValueError("GROQ_API_KEY environment variable is required")
+
+        self.client = Groq(api_key=api_key)
+
+        # Validate model after initialization
+        self.validate_model()
 
     def _clean_message(self, msg: dict):
         allowed = {"role", "content", "name", "tool_call_id"}
         return {k: v for k, v in msg.items() if k in allowed}
 
-    def validate_model(self, **kwargs):
-        supported_models = self.client.models.list().model_dump().get("data", [])
-        if self.model not in [m.get("id") for m in supported_models]:
-            raise Exception(f"Model {self.model} is not currently supported by Groq.")
+    def validate_model(self, **kwargs) -> dict:
+        """Validate that the model is supported by Groq."""
+        try:
+            supported_models = self.client.models.list().model_dump().get("data", [])
+            available_models = [m.get("id") for m in supported_models]
+
+            if self.model not in available_models:
+                raise ValueError(
+                    f"Model '{self.model}' is not supported by Groq. "
+                    f"Available models: {', '.join(available_models[:10])}..."
+                )
+
+            return {"valid": True, "model": self.model}
+        except Exception as e:
+            self._handle_error(e, "validation")
+            return {"valid": False, "error": str(e)}
 
     async def get_chat_completion(
         self,
@@ -70,19 +87,27 @@ class GroqModelProvider(BaseModelProvider):
                     done=True,
                     done_reason=result.finish_reason or None,
                     prompt_tokens=(
-                        completion.usage.prompt_tokens if completion.usage else None
+                        int(completion.usage.prompt_tokens or 0)
+                        if completion.usage
+                        else 0
                     ),
                     completion_tokens=(
-                        completion.usage.completion_tokens if completion.usage else None
+                        int(completion.usage.completion_tokens)
+                        if completion.usage
+                        else 0
                     ),
                     prompt_eval_duration=(
-                        completion.usage.prompt_time if completion.usage else None
+                        int(completion.usage.prompt_time or 0)
+                        if completion.usage
+                        else 0
                     ),
                     load_duration=(
-                        completion.usage.completion_time if completion.usage else None
+                        int(completion.usage.completion_time or 0)
+                        if completion.usage
+                        else 0
                     ),
                     total_duration=(
-                        completion.usage.total_time if completion.usage else None
+                        int(completion.usage.total_time or 0) if completion.usage else 0
                     ),
                     created_at=str(completion.created) if completion.created else None,
                 )
@@ -90,10 +115,9 @@ class GroqModelProvider(BaseModelProvider):
                 return completion
         except InternalServerError as e:
             self._handle_error(e, "chat_completion")
-            raise Exception(f"Groq Chat Completion Error: {e.message}")
+            raise Exception(f"Groq Internal Server Error: {e.message}")
         except BadRequestError as e:
-            self._handle_error(e, "chat_completion")
-            # Check for tool_use_failed code and handle gracefully
+            # Handle tool_use_failed gracefully but still use proper error handling
             error_data = getattr(e, "response", None)
             if error_data and hasattr(error_data, "json"):
                 error_json = error_data.json()
@@ -101,14 +125,15 @@ class GroqModelProvider(BaseModelProvider):
                     isinstance(error_json, dict)
                     and error_json.get("error", {}).get("code") == "tool_use_failed"
                 ):
-                    # Log and return a special response or None
-                    # You can customize this as needed
-                    print(
-                        f"Tool use failed: {error_json['error'].get('failed_generation')}"
+                    # Log the specific tool failure but still raise an exception for consistency
+                    tool_error = error_json["error"].get(
+                        "failed_generation", "Tool use failed"
                     )
-                    return None
-            # For other BadRequestErrors, you may want to re-raise or handle differently
-            raise Exception(f"Groq Chat Completion Error: {e.message}")
+                    self._handle_error(e, "chat_completion")
+                    raise Exception(f"Groq Tool Use Failed: {tool_error}")
+
+            self._handle_error(e, "chat_completion")
+            raise Exception(f"Groq Bad Request Error: {e.message}")
         except Exception as e:
             self._handle_error(e, "chat_completion")
             raise Exception(f"Groq Chat Completion Error: {e}")
@@ -116,78 +141,20 @@ class GroqModelProvider(BaseModelProvider):
     async def get_completion(
         self, **kwargs
     ) -> CompletionResponse | Stream[ChatCompletionChunk] | None:
-        client = Groq(api_key=os.environ["GROQ_API_KEY"])
         try:
-            completion = client.chat.completions.create(
-                model=self.model,
-                tools=kwargs["tools"] if kwargs.get("tools") else None,
-                messages=[
-                    {"role": "system", "content": kwargs["system"]},
-                    {"role": "user", "content": kwargs["prompt"]},
-                ],
-                response_format=(
-                    {"type": "json_object"}
-                    if kwargs.get("format") == "json"
-                    else {"type": "text"}
-                ),
-            )
-            if type(completion) is ChatCompletion:
-                result = completion.choices[0]
-                message = CompletionMessage(
-                    content=result.message.content if result.message.content else "",
-                    role="assistant",
-                    thinking=None,
-                    tool_calls=None,
-                )
-                return CompletionResponse(
-                    message=self.extract_and_store_thinking(
-                        message, call_context="completion"
-                    ),
-                    model=completion.model or self.model,
-                    done=True,
-                    done_reason=result.finish_reason or None,
-                    prompt_tokens=(
-                        completion.usage.prompt_tokens if completion.usage else None
-                    ),
-                    completion_tokens=(
-                        completion.usage.completion_tokens if completion.usage else None
-                    ),
-                    prompt_eval_duration=(
-                        completion.usage.prompt_time if completion.usage else None
-                    ),
-                    load_duration=(
-                        completion.usage.completion_time if completion.usage else None
-                    ),
-                    total_duration=(
-                        completion.usage.total_time if completion.usage else None
-                    ),
-                    created_at=str(completion.created) if completion.created else None,
-                )
-            elif type(completion) is Stream[ChatCompletionChunk]:
-                return completion
+            # Build messages for consistency with other providers
+            messages = []
+            if kwargs.get("system"):
+                messages.append({"role": "system", "content": kwargs["system"]})
+            messages.append({"role": "user", "content": kwargs.get("prompt", "")})
 
-        except InternalServerError as e:
-            self._handle_error(e, "completion")
-            # For InternalServerError, you may want to re-raise or handle differently
-            raise Exception(f"Groq Internal Server Error: {e.message}")
-        except BadRequestError as e:
-            self._handle_error(e, "completion")
-            # Check for tool_use_failed code and handle gracefully
-            error_data = getattr(e, "response", None)
-            if error_data and hasattr(error_data, "json"):
-                error_json = error_data.json()
-                if (
-                    isinstance(error_json, dict)
-                    and error_json.get("error", {}).get("code") == "tool_use_failed"
-                ):
-                    # Log and return a special response or None
-                    # You can customize this as needed
-                    print(
-                        f"Tool use failed: {error_json['error'].get('failed_generation')}"
-                    )
-                    return None
-            # For other BadRequestErrors, you may want to re-raise or handle differently
-            raise Exception(f"Groq Completion Error: {e.message}")
+            # Use chat completion for text completion (like other providers)
+            return await self.get_chat_completion(
+                messages=messages,
+                tools=kwargs.get("tools"),
+                format=kwargs.get("format", ""),
+                options=kwargs.get("options"),
+            )
 
         except Exception as e:
             self._handle_error(e, "completion")

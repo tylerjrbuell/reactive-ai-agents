@@ -16,8 +16,8 @@ from reactive_agents.core.types.workflow_types import (
 )
 
 if TYPE_CHECKING:
-    from reactive_agents.app.agents.reactive_agent import ReactiveAgentV2
-    from reactive_agents.communication.a2a_protocol import A2ACommunicationProtocol
+    from reactive_agents.app.agents.reactive_agent import ReactiveAgent
+    from reactive_agents.app.communication.a2a_protocol import A2ACommunicationProtocol
 
 
 class WorkflowOrchestrator:
@@ -34,14 +34,14 @@ class WorkflowOrchestrator:
     """
 
     def __init__(self):
-        self.agents: Dict[str, "ReactiveAgentV2"] = {}
+        self.agents: Dict[str, "ReactiveAgent"] = {}
         self.a2a_protocols: Dict[str, "A2ACommunicationProtocol"] = {}
         self.active_workflows: Dict[str, WorkflowDefinition] = {}
         self.execution_history: List[WorkflowExecutionResult] = []
 
     def register_agent(
         self,
-        agent: "ReactiveAgentV2",
+        agent: "ReactiveAgent",
         a2a_protocol: Optional["A2ACommunicationProtocol"] = None,
     ):
         """Register an agent for use in workflows."""
@@ -84,7 +84,7 @@ class WorkflowOrchestrator:
             status="running",
             total_nodes=len(workflow.nodes),
             completed_nodes=0,
-            failed_nodes=0,
+            failed_nodes=[],
         )
 
         try:
@@ -102,7 +102,7 @@ class WorkflowOrchestrator:
             # Finalize result
             result.end_time = time.time()
             result.execution_time = result.end_time - result.start_time
-            result.success = result.failed_nodes == 0
+            result.success = len(result.failed_nodes) == 0
             result.status = "completed" if result.success else "failed"
 
             # Extract final result from exit nodes
@@ -183,7 +183,7 @@ class WorkflowOrchestrator:
                             )
 
             except Exception as e:
-                result.failed_nodes += 1
+                result.failed_nodes.append(node_id)
                 result.node_results[node_id] = {"error": str(e)}
 
                 # Stop execution on failure (can be made configurable)
@@ -237,11 +237,17 @@ class WorkflowOrchestrator:
         # Execute task
         result = await agent.run(task)
 
+        # Handle both dictionary (mock) and ExecutionResult (real agent) return types
+        if isinstance(result, dict):
+            success = result.get("status") != "error"
+        else:
+            success = result.status.value != "error"
+
         return {
             "agent": node.agent_name,
             "task": task,
             "result": result,
-            "success": result.get("status") != "error",
+            "success": success,
         }
 
     async def _execute_condition_node(

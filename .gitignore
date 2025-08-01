@@ -8,3 +8,4 @@ reactive_agents/agent_mcp/agent.db
 .vscode
 CLAUDE.md
 .serena
+provider_analysis_*

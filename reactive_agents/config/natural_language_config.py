@@ -2,7 +2,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Dict, Any, List, Optional, Union, TYPE_CHECKING, cast
-from reactive_agents.core.types.agent_types import ReactAgentConfig
+from reactive_agents.core.types.agent_types import ReactiveAgentConfig
 
 if TYPE_CHECKING:
     from reactive_agents.providers.llm.base import BaseModelProvider
@@ -18,7 +18,7 @@ class NaturalLanguageConfigParser:
      with another agent using shared memory."
 
     Becomes:
-    ReactAgentConfig(
+    ReactiveAgentConfig(
         custom_tools=["pdf_reader", "summarize"],
         kwargs={"reasoning_strategy": "plan_execute_reflect"}
     )
@@ -142,15 +142,15 @@ Reasoning strategies:
 
 Parse this description into a valid JSON configuration:"""
 
-    async def parse_config(self, description: str) -> ReactAgentConfig:
+    async def parse_config(self, description: str) -> ReactiveAgentConfig:
         """
-        Parse a natural language description into a ReactAgentConfig.
+        Parse a natural language description into a ReactiveAgentConfig.
 
         Args:
             description: Natural language description of the desired agent
 
         Returns:
-            ReactAgentConfig object ready for agent creation
+            ReactiveAgentConfig object ready for agent creation
         """
         try:
             # Get configuration from LLM
@@ -169,8 +169,8 @@ Parse this description into a valid JSON configuration:"""
             # Enhance with defaults and validation
             enhanced_config = self._enhance_config(config_json, description)
 
-            # Create ReactAgentConfig
-            return ReactAgentConfig(**enhanced_config)
+            # Create ReactiveAgentConfig
+            return ReactiveAgentConfig(**enhanced_config)
 
         except Exception as e:
             # Fallback to heuristic parsing if LLM fails
@@ -215,7 +215,7 @@ Parse this description into a valid JSON configuration:"""
             "log_level": "info",
         }
 
-        # Set reasoning strategy in kwargs (since it's not a direct ReactAgentConfig parameter)
+        # Set reasoning strategy in kwargs (since it's not a direct ReactiveAgentConfig parameter)
         reasoning = config.get(
             "reasoning_strategy", "reactive"
         )  # Changed from reflect_decide_act
@@ -251,7 +251,7 @@ Parse this description into a valid JSON configuration:"""
 
         return enhanced
 
-    def _heuristic_parse(self, description: str) -> ReactAgentConfig:
+    def _heuristic_parse(self, description: str) -> ReactiveAgentConfig:
         """Fallback heuristic parsing when LLM fails."""
         description_lower = description.lower()
 
@@ -277,7 +277,7 @@ Parse this description into a valid JSON configuration:"""
         elif any(word in description_lower for word in ["simple", "quick", "basic"]):
             max_iterations = 10
 
-        return ReactAgentConfig(
+        return ReactiveAgentConfig(
             agent_name="heuristic_agent",
             role="AI Assistant",
             provider_model_name="ollama:llama3.2",

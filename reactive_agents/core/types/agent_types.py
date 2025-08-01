@@ -1,5 +1,5 @@
 from typing import List, Literal, Optional, Dict, Any, Set
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator, ConfigDict
 
 from reactive_agents.core.types.tool_types import ProcessedToolCall
 from reactive_agents.providers.external.client import MCPClient
@@ -31,7 +31,7 @@ class AgentThinkChainResult(BaseModel):
 
 
 # --- Agent Configuration Model ---
-class ReactAgentConfig(BaseModel):
+class ReactiveAgentConfig(BaseModel):
     # Required parameters
     agent_name: str = Field(description="Name of the agent.")
     provider_model_name: str = Field(description="Name of the LLM provider and model.")
@@ -184,8 +184,7 @@ class ReactAgentConfig(BaseModel):
         description="Additional keyword arguments passed to AgentContext.",
     )
 
-    class Config:
-        arbitrary_types_allowed = True  # Allow MCPClient etc.
+    model_config = ConfigDict(arbitrary_types_allowed=True)  # Allow MCPClient etc.
 
     @model_validator(mode="before")
     def capture_extra_kwargs(cls, values: Dict[str, Any]) -> Dict[str, Any]:

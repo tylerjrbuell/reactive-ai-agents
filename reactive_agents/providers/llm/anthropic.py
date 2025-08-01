@@ -36,7 +36,23 @@ class AnthropicModelProvider(BaseModelProvider):
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY environment variable is required")
 
-        self.client = Anthropic(api_key=api_key)
+        # Initialize Anthropic client with supported parameters
+        client_params = {"api_key": api_key}
+
+        # Add supported client parameters from options if they exist
+        if options:
+            supported_client_params = {
+                "base_url",
+                "timeout",
+                "max_retries",
+                "default_headers",
+                "default_query",
+            }
+            for param in supported_client_params:
+                if param in options:
+                    client_params[param] = options[param]
+
+        self.client = Anthropic(**client_params)  # type: ignore
 
         # Default options
         self.default_options = {
@@ -51,29 +67,76 @@ class AnthropicModelProvider(BaseModelProvider):
         self.validate_model()
 
     def _is_claude_3_model(self, model: str) -> bool:
-        """Check if the model is Claude 3 (supported by SDK)."""
-        claude_3_models = [
-            "claude-3-opus-20240229",
-            "claude-3-sonnet-20240229",
-            "claude-3-haiku-20240307",
-            "claude-3-5-sonnet-20240620",
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-haiku-20241022",
-        ]
-        return model in claude_3_models
+        """Check if the model is Claude 3+ (supported by modern messages API)."""
+        # Legacy models that require the old completion API
+        legacy_model_prefixes = ["claude-1", "claude-2"]
+        
+        # Check if it's a legacy model
+        for prefix in legacy_model_prefixes:
+            if model.startswith(prefix):
+                return False
+        
+        # All Claude 3+ models (including aliases) use the modern messages API
+        # This includes:
+        # - claude-3-5-sonnet-latest (alias for claude-3-5-sonnet-20241022)
+        # - claude-3-7-sonnet-latest (alias for claude-3-7-sonnet-20250219)  
+        # - claude-sonnet-4-0 (alias for claude-sonnet-4-20250514)
+        # - claude-opus-4-0 (alias for claude-opus-4-20250514)
+        modern_model_prefixes = ["claude-3", "claude-4", "claude-sonnet-4", "claude-opus-4"]
+        
+        for prefix in modern_model_prefixes:
+            if model.startswith(prefix):
+                return True
+                
+        # Default to modern API for unknown models (safer assumption)
+        return True
 
     def _clean_message(self, msg: dict) -> dict:
         """Clean message to only include fields supported by Anthropic API."""
+        # Handle tool results - Anthropic doesn't support "tool" role
+        if msg.get("role") == "tool":
+            # Convert tool results to user message with tool result content
+            tool_result = msg.get("content", "")
+            return {
+                "role": "user",
+                "content": f"Tool result: {tool_result}"
+            }
+        
         allowed = {"role", "content"}
         cleaned = {k: v for k, v in msg.items() if k in allowed}
 
-        # Ensure required fields are present
-        if "role" not in cleaned:
+        # Ensure required fields are present and roles are valid
+        if "role" not in cleaned or cleaned["role"] not in ["user", "assistant"]:
             cleaned["role"] = "user"
         if "content" not in cleaned:
             cleaned["content"] = ""
 
         return cleaned
+
+    def _convert_tools_to_anthropic_format(self, tools: List[dict]) -> List[dict]:
+        """Convert tools from OpenAI format to Anthropic format."""
+        converted_tools = []
+        
+        for tool in tools:
+            if tool.get("type") == "function" and "function" in tool:
+                # Convert from OpenAI format to Anthropic format
+                func_def = tool["function"]
+                converted_tool = {
+                    "type": "custom",
+                    "name": func_def["name"],
+                    "description": func_def.get("description", ""),
+                    "input_schema": func_def.get("parameters", {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    })
+                }
+                converted_tools.append(converted_tool)
+            else:
+                # Tool is already in the correct format or unknown format
+                converted_tools.append(tool)
+        
+        return converted_tools
 
     def _extract_system_message(
         self, messages: List[dict]
@@ -166,9 +229,9 @@ class AnthropicModelProvider(BaseModelProvider):
             if system_message:
                 api_params["system"] = system_message
 
-            # Add tools if present
+            # Add tools if present (convert to Anthropic format)
             if tools:
-                api_params["tools"] = tools
+                api_params["tools"] = self._convert_tools_to_anthropic_format(tools)
                 if tool_choice and tool_choice != "auto":
                     api_params["tool_choice"] = tool_choice
 
@@ -209,7 +272,7 @@ class AnthropicModelProvider(BaseModelProvider):
                                 "type": "function",
                                 "function": {
                                     "name": block.name,
-                                    "arguments": json.dumps(block.input),
+                                    "arguments": block.input,
                                 },
                             }
                         )
@@ -227,12 +290,8 @@ class AnthropicModelProvider(BaseModelProvider):
                 model=completion.model,
                 done=True,
                 done_reason=completion.stop_reason,
-                prompt_tokens=(
-                    completion.usage.input_tokens if completion.usage else None
-                ),
-                completion_tokens=(
-                    completion.usage.output_tokens if completion.usage else None
-                ),
+                prompt_tokens=completion.usage.input_tokens,
+                completion_tokens=completion.usage.output_tokens,
                 total_duration=None,  # Anthropic doesn't provide timing info
                 created_at=str(time.time()),
             )
@@ -314,8 +373,8 @@ class AnthropicModelProvider(BaseModelProvider):
                 model=self.model,
                 done=True,
                 done_reason=result.get("stop_reason"),
-                prompt_tokens=None,  # Legacy API doesn't provide token counts
-                completion_tokens=None,
+                prompt_tokens=0,  # Legacy API doesn't provide token counts
+                completion_tokens=0,
                 total_duration=None,
                 created_at=str(time.time()),
             )

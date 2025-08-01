@@ -3,12 +3,12 @@ import json
 from typing import Dict, Any, Optional, List
 
 from reactive_agents.app.agents.base import Agent
-from reactive_agents.core.types.agent_types import ReactAgentConfig
+from reactive_agents.core.types.agent_types import ReactiveAgentConfig
 from reactive_agents.core.context.agent_context import AgentContext
 from reactive_agents.core.engine.execution_engine import ExecutionEngine
 from reactive_agents.core.events.event_bus import EventBus
 from reactive_agents.config.validators.config_validator import ConfigValidator
-from reactive_agents.core.tools.tool_processor import ToolProcessor
+
 from reactive_agents.core.types.execution_types import ExecutionResult
 from reactive_agents.core.types.status_types import TaskStatus
 
@@ -26,10 +26,10 @@ class ReactiveAgent(Agent):
 
     def __init__(
         self,
-        config: ReactAgentConfig,
+        config: ReactiveAgentConfig,
         context: Optional[AgentContext] = None,
         event_bus: Optional[EventBus] = None,
-        tool_processor: Optional[ToolProcessor] = None,
+
     ):
         self.config = config
         # Create context if not provided (for builder pattern compatibility)
@@ -50,8 +50,7 @@ class ReactiveAgent(Agent):
         else:
             self._event_bus = event_bus
 
-        # Store tool processor for potential future use
-        self._tool_processor = tool_processor
+
 
         # Initialize execution engine
         self.execution_engine = ExecutionEngine(self)

@@ -554,7 +554,7 @@ async def test():
                 # .with_instructions(
                 #     "You are a research assistant, you are given a task and you need to research the task and provide a final answer."
                 # )
-                .with_model("ollama:cogito:14b")
+                .with_model("groq:qwen/qwen3-32b")
                 # .with_mcp_tools(["brave-search"])
                 # .with_custom_tools([custom_weather_tool])
                 .with_mcp_config(
@@ -568,25 +568,25 @@ async def test():
                     )
                 )
                 .with_log_level(LogLevel.DEBUG)
-                .with_reasoning_strategy(ReasoningStrategies.PLAN_EXECUTE_REFLECT)
-                .with_max_iterations(10)
+                .with_reasoning_strategy(ReasoningStrategies.ADAPTIVE)
+                .with_max_iterations(15)
                 .with_tool_caching(False)
                 # .with_reflection(True)
                 # .with_vector_memory()
-                .with_model_provider_options(
-                    {"num_gpu": 256, "num_ctx": 10000, "temperature": 0}
-                )
-                .on_metrics_updated(lambda event: print(f"📈 Metrics updated: {event}"))
+                # .with_model_provider_options(
+                #     {"num_gpu": 256, "num_ctx": 4000, "temperature": 0}
+                # )
+                # .on_metrics_updated(lambda event: print(f"📈 Metrics updated: {event}"))
                 .build()
             )
         )
         task = """
         ** Task **
         1. Authenticate with the gmail account
-        2. Fetch the first 25 emails from the inbox
-        3. Analyze do a logical analysis of the emails that should either be retained (archive) or deleted (trash).
-        4. Then move all the emails to their respective new locations.
-        5. Send an email to tylerjrbuell@gmail.com with a summary of the emails that were processed.
+        2. Fetch the first 25 *UNREAD* emails from the inbox
+        3. Perform a logical analysis summary of the email ID, categorizing them by importance as either retain (archive) or delete (trash) based on the rules below.
+        4. Then use the summary to move all the emails to their respective new locations.
+        5. Send an email to tylerjrbuell@gmail.com with a summary of the emails that were processed even if no emails were found.
         
         ** Rules **
         - All emails found should be processed

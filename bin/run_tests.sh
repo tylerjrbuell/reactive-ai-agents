@@ -71,6 +71,9 @@ while [[ $# -gt 0 ]]; do
             echo "  external                   Run external provider tests"
             echo "  commands                   Run command tests"
             echo "  output                     Run output tests"
+            echo "  provider-consistency       Run provider consistency tests"
+            echo "  provider-parameters        Run provider parameter validation tests"
+            echo "  provider-all               Run all provider integration tests"
             exit 0
             ;;
         *)
@@ -204,6 +207,18 @@ case $CATEGORY in
     "output")
         print_status "Running output tests..."
         $PYTEST_CMD reactive_agents/tests/unit/console/output/ -m "output"
+        ;;
+    "provider-consistency")
+        print_status "Running provider consistency tests..."
+        $PYTEST_CMD reactive_agents/tests/integration/test_provider_consistency.py -m "providers"
+        ;;
+    "provider-parameters")
+        print_status "Running provider parameter validation tests..."
+        $PYTEST_CMD reactive_agents/tests/integration/test_provider_parameters.py -m "providers"
+        ;;
+    "provider-all")
+        print_status "Running all provider integration tests..."
+        $PYTEST_CMD reactive_agents/tests/integration/ -m "providers"
         ;;
     *)
         print_error "Unknown category: $CATEGORY"

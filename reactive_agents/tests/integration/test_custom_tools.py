@@ -7,7 +7,7 @@ This file tests the integration of custom tools with the ReactiveAgentBuilder.
 import pytest
 import os
 from unittest.mock import patch, MagicMock, AsyncMock
-from reactive_agents.agents import ReactiveAgentBuilder
+from reactive_agents import ReactiveAgentBuilder
 from reactive_agents.core.tools.decorators import tool
 from reactive_agents.tests.integration.mcp_fixtures import (
     mock_agent_run,
@@ -51,25 +51,19 @@ CI_TIMEOUT = int(os.environ.get("PYTEST_TIMEOUT", "5"))
 
 @pytest.mark.asyncio
 @patch(
-    "reactive_agents.model_providers.ollama.OllamaModelProvider.validate_model",
+    "reactive_agents.providers.llm.ollama.OllamaModelProvider.validate_model",
     return_value=None,
 )
 @patch(
-    "reactive_agents.model_providers.factory.ModelProviderFactory.get_model_provider"
+    "reactive_agents.providers.llm.factory.ModelProviderFactory.get_model_provider"
 )
-@patch("reactive_agents.agents.react_agent.ReactAgent.check_tool_feasibility")
-@patch("reactive_agents.agents.react_agent.ReactAgent.run")
+@patch("reactive_agents.app.agents.reactive_agent.ReactiveAgent.run")
 async def test_builder_with_custom_tools_fixed(
     mock_run,
-    mock_check_tool_feasibility,
     mock_get_model_provider,
     model_validation_bypass,
 ):
     """Test the builder integration with custom tools (fixed) - no run mock"""
-    # Configure mock for check_tool_feasibility
-    mock_check_tool_feasibility.return_value = MagicMock(
-        required_tools={}, explanation="Mock feasibility check successful."
-    )
 
     # Configure mock model provider and its get_completion method
     mock_model_provider_instance = MagicMock()

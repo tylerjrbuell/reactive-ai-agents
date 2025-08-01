@@ -92,8 +92,8 @@ class TestContextManager:
         # Add window at latest message
         window = context_manager.add_window("test_window", importance=0.8)
         assert window.name == "test_window"
-        assert window.start_idx == 1
-        assert window.end_idx == 1
+        assert window.start_idx == 2  # Start at the next message index
+        assert window.end_idx == 2
         assert window.importance == 0.8
 
         # Add window at specific index
@@ -121,7 +121,7 @@ class TestContextManager:
         context_manager.add_message("assistant", "Response 1")
         context_manager.close_window(window)
 
-        assert window.start_idx == 1
+        assert window.start_idx == 2  # Start at the next message index
         assert window.end_idx == 2
 
         # Add and close window by name
@@ -138,7 +138,7 @@ class TestContextManager:
                 break
 
         assert second_window is not None
-        assert second_window.start_idx == 3
+        assert second_window.start_idx == 3  # Start at the next message index
         assert second_window.end_idx == 4
 
     def test_get_messages_by_role(self, mock_agent_context):

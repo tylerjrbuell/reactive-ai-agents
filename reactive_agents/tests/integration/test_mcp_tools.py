@@ -7,7 +7,7 @@ This file tests the integration of MCP tools with the ReactiveAgentBuilder.
 import pytest
 import os
 import asyncio
-from reactive_agents.agents import ReactiveAgentBuilder
+from reactive_agents import ReactiveAgentBuilder
 from reactive_agents.tests.integration.mcp_fixtures import (
     mock_mcp_initialize,
     mock_agent_run,

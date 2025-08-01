@@ -48,7 +48,7 @@ a2a-sdk = "^0.2.10"
 click = "^8.1.7"
 rich = "^13.7.0"
 openai = "^1.57.1"
-anthropic = "^0.38.0"
+anthropic = ">=0.45.2"
 google-generativeai = "^0.8.3"
 
 [tool.poetry.group.dev.dependencies]

@@ -196,7 +196,7 @@ class EventBus:
         """Internal method to emit events."""
         # Update stats
         self._stats["events_emitted"] += 1
-        self._stats["events_by_type"][event_type.value] += 1
+        self._stats["events_by_type"][event_type.value] += 1  # type: ignore
         self._stats["last_event_time"] = time.time()
 
         # Add timestamp and agent context
@@ -234,7 +234,7 @@ class EventBus:
         """Internal method to emit async events."""
         # Update stats
         self._stats["events_emitted"] += 1
-        self._stats["events_by_type"][event_type.value] += 1
+        self._stats["events_by_type"][event_type.value] += 1  # type: ignore
         self._stats["last_event_time"] = time.time()
 
         # Add timestamp and agent context
@@ -268,7 +268,12 @@ class EventBus:
                     print(f"Error in async event callback: {e}")
 
             if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                # Check for exceptions in the results
+                for result in results:
+                    if isinstance(result, Exception):
+                        self._stats["errors"] += 1
+                        print(f"Error in async event callback execution: {result}")
                 self._stats["callbacks_invoked"] += len(tasks)
 
     # === Registration Methods ===

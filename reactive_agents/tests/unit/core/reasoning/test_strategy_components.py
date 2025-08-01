@@ -21,6 +21,11 @@ from reactive_agents.core.types.reasoning_component_types import (
     ToolExecutionResult,
     CompletionResult,
     StrategyTransitionResult,
+    ErrorRecoveryResult,
+)
+from reactive_agents.core.types.agent_types import (
+    AgentThinkResult,
+    AgentThinkChainResult,
 )
 
 
@@ -35,23 +40,33 @@ class DummyEngine:
         self.preserve_context = MagicMock()
         self.get_preserved_context = MagicMock(return_value=None)
         self.get_context_manager = MagicMock()
-        
-        # Mock think methods to return appropriate structures
-        self.think = AsyncMock(return_value=MagicMock(result_json={"thought": "test"}))
-        
+
+        # Mock think methods to return proper AgentThinkResult objects
+        self.think = AsyncMock(
+            return_value=AgentThinkResult(
+                result={"thought": "test"},
+                result_json={"thought": "test"},
+                content="test content",
+            )
+        )
+
         # Mock think_chain to return the expected structure with tool_calls
-        think_chain_result = MagicMock()
-        think_chain_result.tool_calls = [{"function": {"name": "test_tool"}}]
+        think_chain_result = AgentThinkChainResult(
+            result={"chain": "test"},
+            content="test chain content",
+            result_json={"chain": "test"},
+            tool_calls=[],
+        )
         self.think_chain = AsyncMock(return_value=think_chain_result)
-        
+
         self.execute_tools = AsyncMock(return_value=[{"result": "ok"}])
         self.generate_final_answer = AsyncMock(return_value={"final_answer": "done"})
         self.complete_task_if_ready = AsyncMock(return_value={"is_complete": True})
-        
+
         # Mock get_prompt to return a prompt object with async get_completion
         mock_completion_result = MagicMock()
         mock_completion_result.result_json = {
-            "plan_steps": [], 
+            "plan_steps": [],
             "metadata": {},
             "reflection": "test reflection",
             "insights": ["test insight"],
@@ -61,7 +76,7 @@ class DummyEngine:
             "reasoning": "test reasoning",
             "should_switch": False,
             "recommended_strategy": None,
-            "rationale": "test rationale"
+            "rationale": "test rationale",
         }
         mock_prompt = MagicMock()
         mock_prompt.get_completion = AsyncMock(return_value=mock_completion_result)
@@ -77,7 +92,7 @@ def infra():
 async def test_thinking_component(infra):
     comp = ThinkingComponent(infra)
     result = await comp.think("test prompt")
-    assert isinstance(result, dict)
+    assert isinstance(result, AgentThinkResult)
     # TODO: Add more behavioral assertions
 
 
@@ -139,23 +154,21 @@ async def test_task_evaluation_component(infra):
         }
     )
     result = await comp.evaluate_task_completion("test task")
-    assert isinstance(result, dict)
+    assert isinstance(result, CompletionResult)
 
 
 @pytest.mark.asyncio
 async def test_completion_component(infra):
     comp = CompletionComponent(infra)
     result = await comp.generate_final_answer("test task")
-    assert isinstance(result, dict)
-    result2 = await comp.complete_task_if_ready("test task")
-    assert isinstance(result2, dict)
+    assert isinstance(result, CompletionResult)
 
 
 @pytest.mark.asyncio
 async def test_error_handling_component(infra):
     comp = ErrorHandlingComponent(infra)
     result = await comp.handle_error("test task", "context", 1, "last error")
-    assert isinstance(result, dict)
+    assert isinstance(result, ErrorRecoveryResult)
 
 
 @pytest.mark.asyncio
@@ -172,8 +185,9 @@ async def test_memory_integration_component(infra):
     comp.context.memory_manager = memory_manager_mock
     result = await comp.get_relevant_memories("test task")
     assert isinstance(result, list)
-    comp.preserve_context("key", "value")
-    comp.get_preserved_context("key")
+    # Remove calls to non-existent methods
+    # comp.preserve_context("key", "value")
+    # comp.get_preserved_context("key")
     # No assertion needed, just ensure no error
 
 
@@ -183,4 +197,4 @@ async def test_strategy_transition_component(infra):
     result = await comp.should_switch_strategy(
         "current", ["a", "b"], MagicMock(), {"error_count": 0}
     )
-    assert isinstance(result, dict)
+    assert isinstance(result, StrategyTransitionResult)

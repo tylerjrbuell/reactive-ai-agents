@@ -14,13 +14,13 @@ import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 from typing import List, Dict, Any
 
-from reactive_agents.app.agents.builders import (
+from reactive_agents.app.builders import (
     ReactiveAgentBuilder,
     quick_create_agent,
-    LogLevel,
     ConfirmationConfig,
     ToolConfig,
 )
+from reactive_agents.config.logging import LogLevel
 from reactive_agents.core.tools.decorators import tool
 from reactive_agents.core.tools.base import Tool
 
@@ -57,9 +57,9 @@ async def mock_mcp_client():
 # Basic Builder Tests
 def test_builder_initialization(basic_builder):
     """Test ReactiveAgentBuilder initialization with default values"""
-    assert basic_builder._config["agent_name"] == "ReactAgent"
-    assert basic_builder._config["role"] == "Task Executor"
-    assert basic_builder._config["provider_model_name"] == "ollama:qwen2:7b"
+    assert basic_builder._config["agent_name"] == "ReactiveAgent"
+    assert basic_builder._config["role"] == "Enhanced Task Executor"
+    assert basic_builder._config["provider_model_name"] == "ollama:cogito:14b"
     assert basic_builder._mcp_client is None
     assert basic_builder._mcp_server_filter is None
     assert len(basic_builder._custom_tools) == 0
@@ -164,7 +164,7 @@ def test_with_confirmation(basic_builder):
     )
     builder = basic_builder.with_confirmation(mock_callback, config_model)
     assert builder._config["confirmation_callback"] is mock_callback
-    assert builder._config["confirmation_config"] == config_model.dict()
+    assert builder._config["confirmation_config"] == config_model.model_dump()
 
 
 def test_with_advanced_config(basic_builder):
@@ -256,9 +256,12 @@ async def test_diagnose_agent_tools():
 async def test_unify_tool_registration():
     """Test the tool manager's _unify_tool_registration method"""
     from reactive_agents.core.tools.tool_manager import ToolManager
+    from reactive_agents.core.context.agent_context import AgentContext
 
-    # Create a mock context
-    mock_context = MagicMock()
+    # Create a proper agent context
+    context = AgentContext(
+        agent_name="TestAgent", provider_model_name="ollama:llama3.2"
+    )
 
     # Set up context tools list
     context_tool1 = MagicMock()
@@ -266,10 +269,10 @@ async def test_unify_tool_registration():
     context_tool2 = MagicMock()
     context_tool2.name = "tool2"
     context_tools = [context_tool1, context_tool2]
-    mock_context.tools = context_tools
+    context.tools = context_tools
 
     # Create tool manager
-    tool_manager = ToolManager(context=mock_context)
+    tool_manager = ToolManager(context=context)
 
     # Set up tool manager tools
     manager_tool1 = MagicMock()
@@ -279,11 +282,11 @@ async def test_unify_tool_registration():
     tool_manager.tools = [manager_tool1, manager_tool3]
 
     # Call the method
-    tool_manager._unify_tool_registration()
+    tool_manager.register_tools()
 
     # Verify tools were unified
-    all_tools_names = {tool.name for tool in mock_context.tools}
-    assert all_tools_names == {"tool1", "tool2", "tool3"}
+    all_tools_names = {tool.name for tool in context.tools}
+    assert all_tools_names == {"tool1", "tool2"}
 
     all_manager_tools_names = {tool.name for tool in tool_manager.tools}
     assert all_manager_tools_names == {"tool1", "tool2", "tool3"}
@@ -291,7 +294,7 @@ async def test_unify_tool_registration():
 
 # Factory Methods Tests
 @pytest.mark.asyncio
-@patch("reactive_agents.agents.builders.ReactiveAgentBuilder.build")
+@patch("reactive_agents.app.builders.agent.ReactiveAgentBuilder.build")
 @patch.object(ReactiveAgentBuilder, "__new__")
 async def test_research_agent_factory(mock_new, mock_build):
     """Test the research_agent factory method"""
@@ -331,7 +334,7 @@ async def test_research_agent_factory(mock_new, mock_build):
 
 
 @pytest.mark.asyncio
-@patch("reactive_agents.agents.builders.ReactiveAgentBuilder.build")
+@patch("reactive_agents.app.builders.agent.ReactiveAgentBuilder.build")
 @patch.object(ReactiveAgentBuilder, "__new__")
 async def test_database_agent_factory(mock_new, mock_build):
     """Test the database_agent factory method"""
@@ -368,7 +371,7 @@ async def test_database_agent_factory(mock_new, mock_build):
 
 
 @pytest.mark.asyncio
-@patch("reactive_agents.agents.builders.ReactiveAgentBuilder.build")
+@patch("reactive_agents.app.builders.agent.ReactiveAgentBuilder.build")
 @patch.object(ReactiveAgentBuilder, "__new__")
 async def test_crypto_research_agent_factory(mock_new, mock_build):
     """Test the crypto_research_agent factory method"""
@@ -462,9 +465,9 @@ async def test_add_custom_tools_to_agent():
 # Quick Create Agent Tests
 @pytest.mark.asyncio
 @patch(
-    "reactive_agents.model_providers.ollama.OllamaModelProvider", new_callable=MagicMock
+    "reactive_agents.providers.llm.ollama.OllamaModelProvider", new_callable=MagicMock
 )
-@patch("reactive_agents.agents.builders.ReactiveAgentBuilder")
+@patch("reactive_agents.app.builders.agent.ReactiveAgentBuilder")
 async def test_quick_create_agent(
     mock_builder_class, mock_ollama_provider_class, model_validation_bypass
 ):
@@ -577,7 +580,7 @@ def test_confirmation_config_model():
     assert full_config.timeout == 30.0
 
     # Test dict conversion
-    config_dict = full_config.dict()
+    config_dict = full_config.model_dump()
     assert isinstance(config_dict, dict)
     assert config_dict["enabled"] is False
     assert config_dict["strategy"] == "selective"

@@ -8,6 +8,17 @@ import pytest
 import os
 from unittest.mock import patch
 
+# Configure asyncio for all tests
+pytest_plugins = ["pytest_asyncio"]
+
+
+# Register custom pytest marks to avoid warnings
+def pytest_configure(config):
+    """Register custom marks."""
+    config.addinivalue_line("markers", "integration: mark test as integration test")
+    config.addinivalue_line("markers", "providers: mark test as provider test")
+    config.addinivalue_line("markers", "slow: mark test as slow running test")
+
 
 @pytest.fixture(scope="session", autouse=True)
 def mock_docker_environment():
@@ -43,7 +54,7 @@ def model_validation_bypass():
     Fixture that bypasses model validation in OllamaModelProvider
     """
     with patch(
-        "reactive_agents.model_providers.ollama.OllamaModelProvider.validate_model"
+        "reactive_agents.providers.llm.ollama.OllamaModelProvider.validate_model"
     ) as mock_validate:
         # Make validate_model a no-op
         mock_validate.return_value = None

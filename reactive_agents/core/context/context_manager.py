@@ -150,7 +150,7 @@ class ContextManager:
         self, name: str, start_idx: Optional[int] = None, importance: float = 1.0
     ) -> ContextWindow:
         """
-        Create a new context window starting at the given index or latest message.
+        Create a new context window starting at the given index or next message.
 
         Args:
             name: Name of the window
@@ -161,7 +161,7 @@ class ContextManager:
             The created window
         """
         if start_idx is None:
-            start_idx = len(self.messages) - 1
+            start_idx = len(self.messages)  # Start at the next message index
 
         window = ContextWindow(
             name=name, start_idx=start_idx, end_idx=start_idx, importance=importance
@@ -280,12 +280,8 @@ class ContextManager:
         Get optimal pruning configuration based on model capabilities.
         This is used by ContextManager for strategy-aware context management.
         """
-        # Try to use the agent's method if available
-        if hasattr(self, "get_optimal_pruning_config"):
-            return self.get_optimal_pruning_config()
-
         # Fallback to reasonable defaults
-        model_name = getattr(self, "provider_model_name", "")
+        model_name = getattr(self.agent_context, "provider_model_name", "")
         if "gpt-4" in model_name:
             return {"max_tokens": 120000, "max_messages": 60}
         elif "gpt-3.5" in model_name:

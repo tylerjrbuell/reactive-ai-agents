@@ -54,7 +54,9 @@ def apply_ci_mocks():
     # Overwrite the entire MCPClient implementation
     from reactive_agents.tests.integration.mcp_fixtures import SimpleMockMCPClient
 
-    patch_mcp = patch("reactive_agents.agent_mcp.client.MCPClient", SimpleMockMCPClient)
+    patch_mcp = patch(
+        "reactive_agents.providers.external.client.MCPClient", SimpleMockMCPClient
+    )
     patches.append(patch_mcp)
 
     # Apply all patches

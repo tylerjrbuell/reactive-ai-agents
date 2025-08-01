@@ -147,7 +147,7 @@ class MemoryManager(BaseModel):
                     self.context.reflection_manager.reflections
                 )
 
-            memory_dict = self.agent_memory.dict()
+            memory_dict = self.agent_memory.model_dump()
             memory_json = json.dumps(
                 memory_dict, indent=2, default=str
             )  # Use default=str for datetime etc.

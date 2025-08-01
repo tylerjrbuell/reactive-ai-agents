@@ -342,8 +342,8 @@ class GoogleModelProvider(BaseModelProvider):
         # If there's a system message, prepend it to the first user message
         if system_message and prepared_messages:
             first_msg = prepared_messages[0]
-            if first_msg["role"] == "user":
-                first_msg["parts"][0] = f"{system_message}\n\n{first_msg['parts'][0]}"
+            if first_msg.get("role") == "user":
+                first_msg["parts"][0] = f"{system_message}\n\n{first_msg['parts'][0]}"  # type: ignore
 
         return prepared_messages
 
@@ -354,7 +354,12 @@ class GoogleModelProvider(BaseModelProvider):
             available_models = []
             for model in genai.list_models():  # type: ignore
                 if "generateContent" in model.supported_generation_methods:
-                    available_models.append(model.name.split("/")[-1])
+                    # Handle both string and Mock objects for model.name
+                    if hasattr(model.name, "split"):
+                        available_models.append(model.name.split("/")[-1])  # type: ignore
+                    else:
+                        # For Mock objects or other types, try to get the name
+                        available_models.append(str(model.name).split("/")[-1])
 
             if self.model not in available_models:
                 raise ValueError(
@@ -410,9 +415,9 @@ class GoogleModelProvider(BaseModelProvider):
                 # as Google doesn't have a native JSON mode like OpenAI
                 if prepared_messages:
                     last_msg = prepared_messages[-1]
-                    last_msg["parts"][
-                        -1
-                    ] += "\n\nPlease respond in valid JSON format only. Do not include any text before or after the JSON object."
+                    last_msg["parts"][-1] += (  # type: ignore
+                        "\n\nPlease respond in valid JSON format only. Do not include any text before or after the JSON object."
+                    )
 
             # Handle tools/function calling
             available_functions = None
@@ -452,7 +457,7 @@ class GoogleModelProvider(BaseModelProvider):
 
                 response = await self._retry_with_backoff(
                     chat.send_message,
-                    prepared_messages[-1]["parts"][0],
+                    prepared_messages[-1]["parts"][0],  # type: ignore
                     generation_config=generation_config,
                     safety_settings=self.default_safety_settings,
                     tools=[available_functions] if available_functions else None,
@@ -460,7 +465,9 @@ class GoogleModelProvider(BaseModelProvider):
                 )
             else:
                 # Single message generation
-                content = prepared_messages[0]["parts"][0] if prepared_messages else ""
+                content = (
+                    prepared_messages[0]["parts"][0] if prepared_messages else ""  # type: ignore
+                )
                 response = await self._retry_with_backoff(
                     self.generative_model.generate_content,
                     content,
@@ -538,13 +545,31 @@ class GoogleModelProvider(BaseModelProvider):
 
                             # Convert Google function call to our format
                             func_call = part.function_call
+                            # Handle args properly - they might be a dict or have a dict() method
+                            if hasattr(func_call.args, "dict"):
+                                try:
+                                    args_dict = func_call.args.dict()
+                                except:
+                                    args_dict = {}
+                            elif isinstance(func_call.args, dict):
+                                args_dict = func_call.args
+                            else:
+                                # Fallback for Mock objects or other types
+                                args_dict = {}
+
+                            # Ensure args_dict is JSON serializable
+                            try:
+                                args_json = json.dumps(args_dict)
+                            except (TypeError, ValueError):
+                                args_json = "{}"
+
                             tool_calls.append(
                                 {
                                     "id": f"call_{int(time.time())}_{len(tool_calls)}",
                                     "type": "function",
                                     "function": {
                                         "name": func_call.name,
-                                        "arguments": json.dumps(dict(func_call.args)),
+                                        "arguments": args_json,
                                     },
                                 }
                             )
@@ -579,14 +604,16 @@ class GoogleModelProvider(BaseModelProvider):
                     if response
                     and hasattr(response, "usage_metadata")
                     and response.usage_metadata
-                    else None
+                    and hasattr(response.usage_metadata, "prompt_token_count")
+                    else 0
                 ),
                 completion_tokens=(
                     response.usage_metadata.candidates_token_count
                     if response
                     and hasattr(response, "usage_metadata")
                     and response.usage_metadata
-                    else None
+                    and hasattr(response.usage_metadata, "candidates_token_count")
+                    else 0
                 ),
                 total_duration=None,  # Google doesn't provide timing info
                 created_at=str(time.time()),

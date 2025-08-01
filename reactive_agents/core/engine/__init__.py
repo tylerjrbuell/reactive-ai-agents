@@ -22,7 +22,7 @@ from reactive_agents.core.memory.vector_memory import VectorMemoryManager
 
 # Tool management
 from reactive_agents.core.tools.tool_manager import ToolManager
-from reactive_agents.core.tools.tool_processor import ToolProcessor
+
 from reactive_agents.core.tools.data_extractor import DataExtractor
 
 # Reasoning components
@@ -47,7 +47,7 @@ __all__ = [
     "VectorMemoryManager",
     # Tools
     "ToolManager",
-    "ToolProcessor",
+
     "DataExtractor",
     # Reasoning
     "StrategyManager",

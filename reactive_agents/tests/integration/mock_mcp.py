@@ -113,7 +113,9 @@ def apply_mcp_mocks():
     ):
 
         # Replace the entire MCPClient class with our mock
-        mcp_mock = patch("reactive_agents.agent_mcp.client.MCPClient", MockMCPClient)
+        mcp_mock = patch(
+            "reactive_agents.providers.external.client.MCPClient", MockMCPClient
+        )
         mocks.append(mcp_mock)
 
         # Patch subprocess in other modules that might use it

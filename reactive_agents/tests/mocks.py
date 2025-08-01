@@ -1,16 +1,54 @@
 from typing import Dict, Any, List, Optional
 from unittest.mock import AsyncMock
 from reactive_agents.providers.external.client import MCPClient
+from reactive_agents.core.types.provider_types import (
+    CompletionResponse,
+    CompletionMessage,
+)
+from reactive_agents.providers.llm.base import BaseModelProvider
 
 
-class MockModelProvider:
-    def __init__(self, name: str = "mock", model: str = "mock:latest"):
-        self.name = name
+class MockModelProvider(BaseModelProvider):
+    def __init__(
+        self,
+        model: str = "mock:latest",
+        options: Optional[Dict[str, Any]] = None,
+        context: Optional[Any] = None,
+    ):
+        self.name = "mock"
         self.model = model
-        self.get_completion = AsyncMock(return_value={"response": "mock response"})
-        self.get_chat_completion = AsyncMock(
-            return_value={"message": {"content": "mock response", "role": "assistant"}}
+
+        # Create proper CompletionResponse objects with JSON content
+        mock_response = CompletionResponse(
+            message=CompletionMessage(
+                content='{"completion": false, "completion_score": 0.3, "reasoning": "Task not yet complete", "missing_requirements": []}',
+                role="assistant",
+            ),
+            model=model,
+            total_duration=1000000,  # 1ms in nanoseconds
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=15,
         )
+
+        # Store the mock response for the methods to return
+        self._mock_response = mock_response
+
+    async def get_completion(self, **kwargs):
+        """Mock implementation of get_completion."""
+        return self._mock_response
+
+    async def get_chat_completion(self, **kwargs):
+        """Mock implementation of get_chat_completion."""
+        return self._mock_response
+
+    async def validate_model(self, model_name: str) -> bool:
+        """Mock implementation of validate_model."""
+        return True
+
+
+# Register the mock provider with the factory
+BaseModelProvider.register_provider(MockModelProvider)
 
 
 class MockMCPClient(MCPClient):

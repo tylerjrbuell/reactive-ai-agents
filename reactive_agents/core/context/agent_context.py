@@ -13,7 +13,7 @@ from typing import (
     Set,
 )
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -190,8 +190,7 @@ class AgentContext(BaseModel):
     # Session State Holder (Reference to the current run's state)
     session: AgentSession = Field(default_factory=_create_default_session)
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def __init__(self, **data):
         # Call Pydantic's __init__ first to set up fields correctly

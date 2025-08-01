@@ -79,7 +79,7 @@ def mock_mcp_initialize():
         return mock_client
 
     # Patch MCPClient and its initialize method
-    with patch("reactive_agents.agent_mcp.client.MCPClient") as mock_mcp_class:
+    with patch("reactive_agents.providers.external.client.MCPClient") as mock_mcp_class:
         # Make the mock class return a MagicMock with a proper initialize method
         mock_instance = MagicMock()
         mock_instance.initialize = mock_initialize
@@ -93,7 +93,7 @@ def mock_agent_run():
     """
     Fixture that sets up a proper mock for ReactAgent.run
     """
-    with patch("reactive_agents.agents.react_agent.ReactAgent.run") as mock_run:
+    with patch("reactive_agents.app.agents.reactive_agent.ReactiveAgent.run") as mock_run:
         mock_run.return_value = {"status": "complete", "result": "Test successful"}
         yield mock_run
 
@@ -104,7 +104,7 @@ def model_validation_bypass():
     Fixture that bypasses model validation in OllamaModelProvider
     """
     with patch(
-        "reactive_agents.model_providers.ollama.OllamaModelProvider.validate_model"
+        "reactive_agents.providers.llm.ollama.OllamaModelProvider.validate_model"
     ) as mock_validate:
         # Make validate_model a no-op
         mock_validate.return_value = None

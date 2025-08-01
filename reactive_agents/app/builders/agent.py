@@ -5,6 +5,7 @@ This module provides builder classes and utility functions to simplify
 the creation and configuration of agents.
 """
 
+import json
 from typing import (
     Any,
     Dict,
@@ -21,7 +22,7 @@ from typing import (
 )
 import asyncio
 from typing_extensions import Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from reactive_agents.core.types.execution_types import ExecutionResult
 from reactive_agents.providers.external.client import MCPClient
@@ -47,7 +48,7 @@ from reactive_agents.core.types.event_types import (
     ErrorOccurredEventData,
 )
 from reactive_agents.core.events.event_bus import EventCallback, AsyncEventCallback
-from reactive_agents.core.types.agent_types import ReactAgentConfig
+from reactive_agents.core.types.agent_types import ReactiveAgentConfig
 from reactive_agents.core.types.reasoning_types import ReasoningStrategies
 from reactive_agents.config.natural_language_config import create_agent_from_nl
 
@@ -81,8 +82,7 @@ class ConfirmationConfig(BaseModel):
     allowed_silent_tools: List[str] = Field(default_factory=list)
     timeout: Optional[float] = None
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 # Convenience function for the absolute simplest agent creation
@@ -170,7 +170,7 @@ class ReactiveAgentBuilder:
         Natural language configuration:
         ```python
         agent = await (ReactiveAgentBuilder()
-                .with_natural_language_config(
+                .with_config_prompt(
                     "Create an agent that can research topics and analyze data"
                 )
                 .build())
@@ -205,6 +205,7 @@ class ReactiveAgentBuilder:
             "model_provider_options": {},
             "mcp_client": None,
             "min_completion_score": 1.0,
+            "builder_prompt": None,
             "instructions": "Solve tasks efficiently using dynamic reasoning strategies.",
             "max_iterations": 10,
             "reflect_enabled": True,
@@ -228,7 +229,7 @@ class ReactiveAgentBuilder:
             "tool_use_policy": "adaptive",
             "tool_use_max_consecutive_calls": 3,
             # Advanced configuration
-            "reasoning_strategy": "reactive",  # Changed from reflect_decide_act
+            "reasoning_strategy": "adaptive",
             "enable_reactive_execution": True,
             "enable_dynamic_strategy_switching": True,
             "kwargs": {},
@@ -246,7 +247,14 @@ class ReactiveAgentBuilder:
         # Advanced features
         self._vector_memory_enabled: bool = False
         self._vector_memory_collection: Optional[str] = None
-        self._natural_language_config: Optional[str] = None
+
+    def from_prompt(self, agent_description: str, task: str) -> "ReactiveAgentBuilder":
+        """
+        Create an agent from a prompt.
+        """
+        self._config["builder_prompt"] = agent_description
+        self._config["initial_task"] = task
+        return self
 
     # Basic configuration methods
     def with_name(self, name: str) -> "ReactiveAgentBuilder":
@@ -386,19 +394,7 @@ class ReactiveAgentBuilder:
         self._config["enable_reactive_execution"] = enabled
         return self
 
-    # Natural language and vector memory configuration
-    def with_natural_language_config(self, description: str) -> "ReactiveAgentBuilder":
-        """
-        Configure the agent using natural language description.
-
-        This will use the natural language configuration parser to automatically
-        set up the agent based on the description.
-
-        Args:
-            description: Natural language description of the desired agent
-        """
-        self._natural_language_config = description
-        return self
+    # vector memory configuration
 
     def with_vector_memory(
         self, collection_name: Optional[str] = None
@@ -559,7 +555,7 @@ class ReactiveAgentBuilder:
         if config:
             # Convert Pydantic model to dict if needed
             if isinstance(config, ConfirmationConfig):
-                config = config.dict()
+                config = config.model_dump()
             self._config["confirmation_config"] = config
 
         return self
@@ -1183,27 +1179,46 @@ class ReactiveAgentBuilder:
         Returns:
             ReactiveAgent: A fully configured agent ready to use
         """
-        # Process natural language configuration if provided
-        if self._natural_language_config:
-            try:
-                # Skip natural language config processing for now to avoid complexity
-                # TODO: Implement proper natural language config processing with model provider
-                self._logger.info(
-                    f"Natural language config provided: {self._natural_language_config[:100]}..."
-                )
-                self._logger.warning(
-                    "Natural language config processing not yet implemented"
-                )
-                # TODO: Implement natural language config processing
-                # Merge natural language configuration with current config
-                # for key, value in nl_config.dict().items():
-                #     if value is not None and key not in [
-                #         "agent_name",
-                #         "role",
-                #     ]:  # Preserve explicit settings
-                #         self._config[key] = value0
-            except Exception as e:
-                self._logger.warning(f"Failed to process natural language config: {e}")
+        if self._config["builder_prompt"]:
+            valid_dynamic_config_keys = [
+                "agent_name",
+                "role",
+                "initial_task",
+                "instructions",
+                "reasoning_strategy",
+                "max_iterations",
+                "enable_caching",
+                "use_memory_enabled",
+            ]
+            self._logger.info(f"Building agent from prompt...")
+            from reactive_agents.providers.llm.factory import ModelProviderFactory
+
+            model_provider = ModelProviderFactory.get_model_provider(
+                self._config["provider_model_name"]
+            )
+
+            config = {key: self._config[key] for key in valid_dynamic_config_keys}
+
+            result = await model_provider.get_completion(
+                system="""
+                Role: You are an agent configuration builder. You are given a description of the agent and you need to build an agent configuration based on the description and the initial config. Do not stray from the initial config keys. Respond in only valid json.
+                Instructions:
+                - Create ideal config values to build the most accurate and effective agent for the given task and agent description.
+                - You must respond in valid json matching the schema of the initial config.
+                - You must not stray from the initial config keys.
+                - You must not add any new keys to the config.
+                - You must not remove any keys from the config.
+                """,
+                prompt=f"""
+                Task: {self._config["initial_task"]}
+                AgentDescription: {self._config["builder_prompt"]}
+                Initial config: {json.dumps(config, indent=4)}
+                """,
+                format="json",
+            )
+            config = json.loads(result.message.content)
+            self._logger.info(f"Agent config: {json.dumps(config, indent=4)}")
+            self._config.update(config)
 
         # Configure vector memory if enabled
         if self._vector_memory_enabled:
@@ -1223,8 +1238,8 @@ class ReactiveAgentBuilder:
             self._config["tools"] = self._custom_tools
 
         try:
-            # Create ReactAgentConfig and ReactiveAgent
-            agent_config = ReactAgentConfig(**self._config)
+            # Create ReactiveAgentConfig and ReactiveAgent
+            agent_config = ReactiveAgentConfig(**self._config)
             agent = ReactiveAgent(config=agent_config)
             await agent.initialize()
 

@@ -42,7 +42,7 @@ def integration_mock_environment():
 
         # --- Patch and Configure OllamaModelProvider Separately ---
         ollama_patcher = patch(
-            "reactive_agents.model_providers.ollama.OllamaModelProvider",
+            "reactive_agents.providers.llm.ollama.OllamaModelProvider",
             new_callable=MagicMock,  # Use MagicMock as new_callable
         )
         # Start the ollama patcher immediately to get the mocked class
@@ -69,7 +69,8 @@ def integration_mock_environment():
         patches.extend(
             [
                 patch(
-                    "reactive_agents.agent_mcp.client.MCPClient", SimpleMockMCPClient
+                    "reactive_agents.providers.external.client.MCPClient",
+                    SimpleMockMCPClient,
                 ),
                 patch("subprocess.Popen", mock_subprocess.Popen),
                 patch(

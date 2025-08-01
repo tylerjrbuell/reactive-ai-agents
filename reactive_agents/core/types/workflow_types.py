@@ -79,17 +79,25 @@ class WorkflowExecutionResult(BaseModel):
     """Result of a workflow execution."""
     
     workflow_id: str
+    execution_id: Optional[str] = None
     status: str
     start_time: float
     end_time: Optional[float] = None
     total_duration: Optional[float] = None
+    execution_time: Optional[float] = None
+    success: bool = False
+    
+    # Node tracking
+    total_nodes: int = 0
+    completed_nodes: int = 0
+    failed_nodes: List[str] = Field(default_factory=list)
     
     # Node results
     node_results: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
-    failed_nodes: List[str] = Field(default_factory=list)
     
     # Global context after execution
     final_context: Dict[str, Any] = Field(default_factory=dict)
+    final_result: Dict[str, Any] = Field(default_factory=dict)
     
     # Error information
     error_message: Optional[str] = None

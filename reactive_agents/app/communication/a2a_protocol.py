@@ -18,7 +18,7 @@ from reactive_agents.core.types.communication_types import (
 )
 
 if TYPE_CHECKING:
-    from reactive_agents.app.agents.reactive_agent import ReactiveAgentV2
+    from reactive_agents.app.agents.reactive_agent import ReactiveAgent
 
 
 class A2ACommunicationProtocol:
@@ -33,7 +33,7 @@ class A2ACommunicationProtocol:
     - Async message handling
     """
 
-    def __init__(self, agent: "ReactiveAgentV2"):
+    def __init__(self, agent: "ReactiveAgent"):
         self.agent = agent
         self.agent_id = agent.context.agent_name
 
@@ -292,7 +292,6 @@ class A2ACommunicationProtocol:
                 sender_id=self.agent_id,
                 success=True,
                 content={"result": result},
-                execution_time=result.get("execution_time"),
             )
         except Exception as e:
             return A2AResponse(
@@ -306,7 +305,7 @@ class A2ACommunicationProtocol:
     async def _handle_delegation(self, message: A2AMessage) -> Optional[A2AResponse]:
         """Handle a task delegation."""
         task = message.delegated_task or message.content.get(
-            "task", "No task specified"
+            "delegated_task", message.content.get("task", "No task specified")
         )
 
         if self.agent.agent_logger:
@@ -329,7 +328,6 @@ class A2ACommunicationProtocol:
                 sender_id=self.agent_id,
                 success=True,
                 content={"result": result, "task": task},
-                execution_time=result.get("execution_time"),
             )
         except Exception as e:
             return A2AResponse(
@@ -375,7 +373,7 @@ class A2ACommunicationProtocol:
 
 # Convenience functions for easy A2A setup
 async def create_agent_network(
-    agents: List["ReactiveAgentV2"],
+    agents: List["ReactiveAgent"],
 ) -> List[A2ACommunicationProtocol]:
     """
     Create a fully connected network of agents with A2A communication.
